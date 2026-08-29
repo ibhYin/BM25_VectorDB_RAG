@@ -1,0 +1,18 @@
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+.chroma*/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+.web_upload_jobs.json
+output/
+
+# Local documents and reproducible generated data.
+data/raw/*
+!data/raw/README.md
+data/kg/
+data/kg_aligned/
+data/triples/

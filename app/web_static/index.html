@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>知识库工作台</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">R</div>
+        <div>
+          <h1>知识库工作台</h1>
+          <p id="service-summary">正在连接服务...</p>
+        </div>
+      </div>
+      <div class="header-status">
+        <span class="status-pill loading" id="vector-status"><span class="loading-spinner" aria-hidden="true"></span><span>加载中</span></span>
+        <span class="status-pill loading" id="model-status"><span class="loading-spinner" aria-hidden="true"></span><span>加载中</span></span>
+        <button class="icon-button" id="refresh-button" type="button" title="刷新状态" aria-label="刷新状态">↻</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <aside class="knowledge-panel" aria-label="知识库管理">
+        <section class="summary-grid" aria-label="索引统计">
+          <article class="summary-item">
+            <span>入库文档</span>
+            <strong id="document-count"><span class="loading-spinner" role="status" aria-label="加载中"></span></strong>
+          </article>
+          <article class="summary-item">
+            <span>向量切片</span>
+            <strong id="chunk-count"><span class="loading-spinner" role="status" aria-label="加载中"></span></strong>
+          </article>
+        </section>
+
+        <section class="upload-panel" aria-label="文档上传">
+          <div class="panel-title">
+            <h2>添加文档</h2>
+            <span id="upload-limit">PDF / Markdown / TXT</span>
+          </div>
+          <div class="drop-zone" id="drop-zone" role="button" tabindex="0" aria-describedby="drop-zone-description">
+            <span class="drop-mark" aria-hidden="true">↑</span>
+            <strong>拖拽文件到这里</strong>
+            <span id="drop-zone-description">或选择文件后自动上传并入向量库</span>
+          </div>
+          <input id="file-input" class="visually-hidden" type="file" multiple accept=".pdf,.md,.txt" />
+          <button class="secondary-button" id="choose-files-button" type="button">选择文件</button>
+        </section>
+
+        <section class="jobs-panel" aria-label="上传任务">
+          <div class="panel-title">
+            <h2>处理任务</h2>
+            <span id="queue-summary">空闲</span>
+          </div>
+          <div class="job-list" id="job-list" aria-live="polite" aria-busy="true">
+            <div class="loading-state"><span class="loading-spinner" aria-hidden="true"></span><span>加载中</span></div>
+          </div>
+        </section>
+
+        <section class="library-panel" aria-label="已入库文档">
+          <div class="panel-title">
+            <h2>已入库文档</h2>
+            <button class="text-button" id="reload-documents-button" type="button">刷新</button>
+          </div>
+          <div class="document-list" id="document-list" aria-live="polite" aria-busy="true">
+            <div class="loading-state"><span class="loading-spinner" aria-hidden="true"></span><span>加载中</span></div>
+          </div>
+        </section>
+      </aside>
+
+      <section class="chat-panel" aria-label="知识库问答">
+        <div class="chat-header">
+          <div>
+            <h2>问答</h2>
+            <p id="run-status" role="status" aria-live="polite">就绪</p>
+          </div>
+          <button class="icon-button" id="clear-chat-button" type="button" title="清空对话" aria-label="清空对话">⌫</button>
+        </div>
+
+        <div class="chat-stream" id="chat-stream" aria-live="polite">
+          <div class="empty-chat">
+            <strong>等待提问</strong>
+            <span>答案将引用知识库中的 chunk_id。</span>
+          </div>
+        </div>
+
+        <form class="ask-form" id="ask-form">
+          <label class="visually-hidden" for="question">问题</label>
+          <textarea id="question" rows="2" placeholder="输入问题..."></textarea>
+          <button class="send-button" id="ask-button" type="submit" title="发送" aria-label="发送">↑</button>
+        </form>
+      </section>
+
+      <aside class="context-panel" aria-label="检索上下文">
+        <div class="panel-title">
+          <h2>问答过程</h2>
+        </div>
+        <div class="process-list" id="process-list" aria-live="polite"></div>
+        <div class="panel-title context-title">
+          <h2>匹配内容</h2>
+        </div>
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-tab="vector" type="button" role="tab" aria-selected="true">向量</button>
+          <button class="tab" data-tab="graph" type="button" role="tab" aria-selected="false">图谱</button>
+        </div>
+        <div class="context-list" id="context-list" aria-live="polite"></div>
+      </aside>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
