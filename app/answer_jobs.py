@@ -9,7 +9,7 @@ from typing import Any
 from app.config import Settings
 
 
-STAGES = ("encode", "vector_search", "graph_search", "answer")
+STAGES = ("encode", "vector_search", "answer")
 
 
 def utc_now() -> str:
@@ -43,7 +43,6 @@ class AnswerJobStore:
                 "error": "",
                 "answer": "",
                 "vector_hits": [],
-                "graph_context": [],
                 "created_at": now,
                 "started_at": "",
                 "finished_at": "",
@@ -116,7 +115,6 @@ class AnswerJobStore:
                 status="completed",
                 answer=result.get("answer", ""),
                 vector_hits=result.get("vector_hits", []),
-                graph_context=result.get("graph_context", []),
                 finished_at=utc_now(),
             )
 
@@ -131,7 +129,6 @@ class AnswerJobStore:
             for name, state in job["stages"].items()
         }
         snapshot["vector_hits"] = [dict(hit) for hit in job["vector_hits"]]
-        snapshot["graph_context"] = list(job["graph_context"])
         return snapshot
 
     def _prune_locked(self) -> None:

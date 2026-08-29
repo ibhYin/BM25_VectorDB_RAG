@@ -19,7 +19,6 @@ class Settings(BaseSettings):
     chunk_size: int = 800
     chunk_overlap: int = 120
     retrieval_top_k: int = 4
-    graph_result_limit: int = 8
     max_concurrent_answers: int = 8
     max_request_bytes: int = 1_048_576
     max_upload_bytes: int = 100 * 1024 * 1024
@@ -28,11 +27,6 @@ class Settings(BaseSettings):
 
     data_dir: Path = Path("data/raw")
     chroma_persist_dir: Path = Path(".chroma")
-
-    neo4j_uri: str = "bolt://localhost:7687"
-    neo4j_username: str = "neo4j"
-    neo4j_password: str = "password"
-    neo4j_database: str = "neo4j"
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -48,10 +42,6 @@ class Settings(BaseSettings):
         "embedding_api_key",
         "embedding_base_url",
         "ocr_model",
-        "neo4j_uri",
-        "neo4j_username",
-        "neo4j_password",
-        "neo4j_database",
         mode="before",
     )
     @classmethod
@@ -67,8 +57,8 @@ class Settings(BaseSettings):
             raise ValueError("CHUNK_SIZE must be greater than zero")
         if not 0 <= self.chunk_overlap < self.chunk_size:
             raise ValueError("CHUNK_OVERLAP must be between zero and CHUNK_SIZE")
-        if self.retrieval_top_k <= 0 or self.graph_result_limit <= 0:
-            raise ValueError("retrieval limits must be greater than zero")
+        if self.retrieval_top_k <= 0:
+            raise ValueError("RETRIEVAL_TOP_K must be greater than zero")
         if self.max_concurrent_answers <= 0:
             raise ValueError("MAX_CONCURRENT_ANSWERS must be greater than zero")
         if self.ocr_max_pages is not None and self.ocr_max_pages <= 0:

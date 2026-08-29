@@ -13,6 +13,3 @@ output/
 # Local documents and reproducible generated data.
 data/raw/*
 !data/raw/README.md
-data/kg/
-data/kg_aligned/
-data/triples/

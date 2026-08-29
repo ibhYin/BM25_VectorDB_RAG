@@ -1,7 +1,5 @@
 const state = {
-  activeContext: "vector",
   vectorHits: [],
-  graphContext: [],
   answerJob: null,
   jobs: [],
   documents: [],
@@ -31,7 +29,6 @@ const elements = {
   question: document.querySelector("#question"),
   contextList: document.querySelector("#context-list"),
   processList: document.querySelector("#process-list"),
-  tabs: document.querySelectorAll(".tab"),
 };
 
 async function requestJson(url, options = {}) {
@@ -381,7 +378,6 @@ async function ask(event) {
     renderProcess();
     const result = await waitForAnswer(job.id);
     state.vectorHits = result.vector_hits || [];
-    state.graphContext = result.graph_context || [];
     addChatMessage("answer", result.answer || "未生成答案");
     renderContext();
     setRunStatusLoading(false, "回答完成");
@@ -428,7 +424,6 @@ function updateRunStatusFromJob(job) {
 const processDefinitions = [
   ["encode", "问题编码"],
   ["vector_search", "向量搜索"],
-  ["graph_search", "图谱搜索"],
   ["answer", "生成答案"],
 ];
 
@@ -482,10 +477,6 @@ function stageDetail(key, stage) {
   if (key === "vector_search") {
     return `${detail.matches || 0} 个匹配 · Top ${detail.top_k || 0}${duration}`;
   }
-  if (key === "graph_search" && stage.status === "degraded") {
-    return detail.message || "已降级";
-  }
-  if (key === "graph_search") return `${detail.matches || 0} 条关系${duration}`;
   if (key === "answer") return `${detail.model || "LLM"}${duration}`;
   return "完成";
 }
@@ -521,8 +512,7 @@ function addChatMessage(type, text) {
 }
 
 function renderContext() {
-  const items =
-    state.activeContext === "vector" ? state.vectorHits : state.graphContext;
+  const items = state.vectorHits;
   elements.contextList.replaceChildren();
 
   if (!items.length) {
@@ -534,14 +524,7 @@ function renderContext() {
   }
 
   for (const item of items) {
-    if (state.activeContext === "vector") {
-      elements.contextList.append(createVectorHitCard(item));
-      continue;
-    }
-    const card = document.createElement("article");
-    card.className = "context-card";
-    card.textContent = item;
-    elements.contextList.append(card);
+    elements.contextList.append(createVectorHitCard(item));
   }
 }
 
@@ -588,7 +571,6 @@ function clearChat() {
   empty.append(title, detail);
   elements.chatStream.append(empty);
   state.vectorHits = [];
-  state.graphContext = [];
   state.answerJob = null;
   renderProcess();
   renderContext();
@@ -636,17 +618,6 @@ elements.question.addEventListener("keydown", (event) => {
     elements.askForm.requestSubmit();
   }
 });
-
-for (const tab of elements.tabs) {
-  tab.addEventListener("click", () => {
-    state.activeContext = tab.dataset.tab;
-    for (const item of elements.tabs) {
-      item.classList.toggle("active", item === tab);
-      item.setAttribute("aria-selected", String(item === tab));
-    }
-    renderContext();
-  });
-}
 
 renderContext();
 renderProcess();

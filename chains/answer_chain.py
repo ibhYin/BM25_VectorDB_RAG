@@ -12,12 +12,11 @@ from chains.models import get_chat_model
 def generate_answer(
     question: str,
     vector_context: list[str],
-    graph_context: list[str],
     model_name: str,
     openai_api_key: str = "",
     openai_base_url: str = "",
 ) -> str:
-    """根据向量检索和知识图谱上下文生成最终中文回答。"""
+    """根据向量检索上下文生成最终中文回答。"""
 
     llm = get_chat_model(model_name, openai_api_key, openai_base_url)
 
@@ -29,7 +28,6 @@ def generate_answer(
         {
             "question": question,
             "vector_context": "\n\n".join(vector_context) or "无",
-            "graph_context": "\n\n".join(graph_context) or "无",
         }
     )
 

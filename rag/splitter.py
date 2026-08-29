@@ -7,7 +7,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
 def ensure_document_metadata(documents: list[Document]) -> list[Document]:
-    """Attach stable document metadata required by downstream RAG/KG stages."""
+    """Attach stable document metadata required by indexing and retrieval."""
 
     for document in documents:
         source = str(document.metadata.get("source") or "unknown")

@@ -220,7 +220,7 @@ def should_merge_pdf_line(previous: str, current: str) -> bool:
     # 断词换行优先合并，尽量还原原句。
     if previous.endswith(("-", "－")):
         return True
-    # 已有明确句末标点时保留边界，方便 KG 抽取主谓宾线索。
+    # 已有明确句末标点时保留边界，避免破坏完整语义。
     if re.search(r"[。！？；：.!?;:]$", previous):
         return False
     # 疑似标题不和正文互相吞并，保留章节边界。

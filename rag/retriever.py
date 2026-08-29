@@ -1,5 +1,4 @@
 from langchain_core.documents import Document
-from langchain_core.vectorstores import VectorStoreRetriever
 
 
 def format_documents(documents: list[Document]) -> list[str]:
@@ -20,16 +19,6 @@ def format_documents(documents: list[Document]) -> list[str]:
         )
 
     return formatted
-
-
-def retrieve_vector_context(
-    retriever: VectorStoreRetriever,
-    question: str,
-) -> list[str]:
-    documents = retriever.invoke(question)
-    return format_documents(documents)
-
-
 def build_vector_hits(
     results: list[tuple[Document, float]],
 ) -> list[dict[str, object]]:

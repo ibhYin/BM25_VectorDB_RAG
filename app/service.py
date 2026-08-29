@@ -1,18 +1,17 @@
+from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from contextlib import contextmanager
+from time import perf_counter
 from threading import BoundedSemaphore, Condition
-from typing import TYPE_CHECKING
+from typing import TypedDict
 
 from app.config import Settings, get_settings
 from rag.indexer import build_vector_index
 from rag.loaders import load_document_file
+from rag.retriever import build_vector_hits, format_vector_hits
 from rag.splitter import split_documents
-from rag.vector_store import get_vector_store, replace_documents
-
-
-if TYPE_CHECKING:
-    from app.graph import RagState
+from rag.vector_store import get_embeddings, get_vector_store, replace_documents
 
 
 class KnowledgeBaseLock:
@@ -68,7 +67,6 @@ answer_limiter = BoundedSemaphore(get_settings().max_concurrent_answers)
 class IngestResult:
     documents: int
     chunks: int
-    build_kg: bool
     rebuild: bool
     data_dir: Path
 
@@ -83,10 +81,9 @@ class FileIngestResult:
 def ingest_knowledge_base(
     settings: Settings,
     data_dir: Path | None = None,
-    build_kg: bool = False,
     rebuild: bool = False,
 ) -> IngestResult:
-    """Build the vector index and optionally write the same chunks to Neo4j."""
+    """Build the vector index from every supported document in one directory."""
 
     with knowledge_base_lock.write():
         source_dir = data_dir or settings.data_dir
@@ -105,22 +102,7 @@ def ingest_knowledge_base(
             rebuild=rebuild,
         )
 
-        if build_kg:
-            from kg.extractor import extract_knowledge_graph_from_chunk
-            from kg.neo4j_store import KnowledgeGraphStore
-
-            kg_store = KnowledgeGraphStore(settings)
-            kg_store.setup_schema()
-            for chunk in chunks:
-                extraction = extract_knowledge_graph_from_chunk(
-                    chunk=chunk,
-                    model_name=settings.llm_model,
-                    openai_api_key=settings.openai_api_key,
-                    openai_base_url=settings.openai_base_url,
-                )
-                kg_store.upsert_extraction(extraction, chunk)
-
-    return IngestResult(len(documents), len(chunks), build_kg, rebuild, source_dir)
+    return IngestResult(len(documents), len(chunks), rebuild, source_dir)
 
 
 def ingest_files(settings: Settings, paths: list[Path]) -> FileIngestResult:
@@ -215,27 +197,95 @@ def list_indexed_documents(settings: Settings) -> list[dict[str, object]]:
     )
 
 
+class AnswerResult(TypedDict):
+    question: str
+    vector_context: list[str]
+    vector_hits: list[dict[str, object]]
+    answer: str
+
+
+ProgressCallback = Callable[[str, str, dict[str, object]], None]
+
+
 def answer_question(
     question: str,
     settings: Settings,
-    progress=None,
-) -> "RagState":
-    """Run the shared RAG workflow used by both CLI and Web."""
-
-    from app.graph import build_rag_graph
+    progress: ProgressCallback | None = None,
+) -> AnswerResult:
+    """Encode, retrieve and answer through the shared CLI/Web RAG pipeline."""
 
     question = question.strip()
     if not question:
         raise ValueError("Question is required")
 
+    def report(stage: str, status: str, **detail: object) -> None:
+        if progress is not None:
+            progress(stage, status, detail)
+
     with answer_limiter:
         with knowledge_base_lock.read():
-            return build_rag_graph(settings, progress=progress).invoke(
-                {
-                    "question": question,
-                    "vector_context": [],
-                    "vector_hits": [],
-                    "graph_context": [],
-                    "answer": "",
-                }
+            embeddings = get_embeddings(
+                settings.embedding_model,
+                settings.embedding_api_key,
+                settings.embedding_base_url,
             )
+            vector_store = get_vector_store(
+                settings.chroma_persist_dir,
+                settings.embedding_model,
+                settings.embedding_api_key,
+                settings.embedding_base_url,
+            )
+
+            report("encode", "running", model=settings.embedding_model)
+            started = perf_counter()
+            query_embedding = embeddings.embed_query(question)
+            report(
+                "encode",
+                "completed",
+                model=settings.embedding_model,
+                dimensions=len(query_embedding),
+                duration_ms=round((perf_counter() - started) * 1000),
+                vector_preview=[round(value, 6) for value in query_embedding[:8]],
+            )
+
+            report("vector_search", "running", top_k=settings.retrieval_top_k)
+            started = perf_counter()
+            matches = vector_store.similarity_search_by_vector_with_relevance_scores(
+                query_embedding,
+                k=settings.retrieval_top_k,
+            )
+            hits = build_vector_hits(matches)
+            report(
+                "vector_search",
+                "completed",
+                top_k=settings.retrieval_top_k,
+                matches=len(hits),
+                duration_ms=round((perf_counter() - started) * 1000),
+                vector_hits=hits,
+            )
+            vector_context = format_vector_hits(hits)
+
+            from chains.answer_chain import generate_answer
+
+            report("answer", "running", model=settings.llm_model)
+            started = perf_counter()
+            answer = generate_answer(
+                question=question,
+                vector_context=vector_context,
+                model_name=settings.llm_model,
+                openai_api_key=settings.openai_api_key,
+                openai_base_url=settings.openai_base_url,
+            )
+            report(
+                "answer",
+                "completed",
+                model=settings.llm_model,
+                duration_ms=round((perf_counter() - started) * 1000),
+            )
+
+            return {
+                "question": question,
+                "vector_context": vector_context,
+                "vector_hits": hits,
+                "answer": answer,
+            }

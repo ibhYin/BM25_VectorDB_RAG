@@ -18,9 +18,6 @@ ANSWER_PROMPT = ChatPromptTemplate.from_messages(
 Source Chunks：
 {vector_context}
 
-Graph Facts：
-{graph_context}
-
 请给出中文答案。引用格式优先使用 chunk_id，例如：[source: policy_2024_001#chunk_003]。
 """.strip(),
         ),

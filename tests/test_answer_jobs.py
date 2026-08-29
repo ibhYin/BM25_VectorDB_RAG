@@ -48,14 +48,12 @@ def test_answer_job_exposes_stage_progress_and_vector_hits(
                 "vector_hits": hits,
             },
         )
-        progress("graph_search", "degraded", {"message": "已降级"})
         progress("answer", "running", {"model": "llm"})
         progress("answer", "completed", {"model": "llm", "duration_ms": 8})
         finished.set()
         return {
             "answer": "答案",
             "vector_hits": hits,
-            "graph_context": [],
         }
 
     monkeypatch.setattr("app.service.answer_question", fake_answer)
@@ -71,4 +69,3 @@ def test_answer_job_exposes_stage_progress_and_vector_hits(
     assert result["stages"]["encode"]["detail"]["dimensions"] == 2
     assert result["stages"]["vector_search"]["detail"]["matches"] == 1
     assert "vector_hits" not in result["stages"]["vector_search"]["detail"]
-    assert result["stages"]["graph_search"]["status"] == "degraded"

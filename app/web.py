@@ -72,9 +72,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
     def _dispatch_post(self) -> None:
         parsed = urlparse(self.path)
 
-        if parsed.path == "/api/ingest":
-            self._handle_ingest()
-        elif parsed.path == "/api/ask":
+        if parsed.path == "/api/ask":
             self._handle_ask()
         elif parsed.path == "/api/documents/upload":
             self._handle_document_upload()
@@ -97,33 +95,6 @@ class WebRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         return
 
-    def _handle_ingest(self) -> None:
-        from app.service import ingest_knowledge_base
-
-        payload = self._read_json()
-        settings = get_settings()
-        data_dir_value = payload.get("data_dir") or settings.data_dir
-        if not isinstance(data_dir_value, (str, Path)):
-            raise RequestError(HTTPStatus.BAD_REQUEST, "data_dir must be a path")
-        data_dir = Path(data_dir_value)
-        build_kg = self._read_bool(payload, "build_kg")
-        rebuild = self._read_bool(payload, "rebuild")
-
-        try:
-            result = ingest_knowledge_base(settings, data_dir, build_kg, rebuild)
-        except ValueError as exc:
-            raise RequestError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
-
-        self._send_json(
-            {
-                "documents": result.documents,
-                "chunks": result.chunks,
-                "build_kg": result.build_kg,
-                "rebuild": result.rebuild,
-                "data_dir": str(result.data_dir),
-            }
-        )
-
     def _handle_ask(self) -> None:
         from app.service import answer_question
 
@@ -143,7 +114,6 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 "question": question,
                 "answer": result["answer"],
                 "vector_context": result.get("vector_context", []),
-                "graph_context": result.get("graph_context", []),
                 "vector_hits": result.get("vector_hits", []),
             }
         )
