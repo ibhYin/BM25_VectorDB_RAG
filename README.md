@@ -10,6 +10,7 @@
 - 本地 Ollama Embedding 与远程 LLM 可独立配置。
 - 真实展示问题编码、向量搜索、答案生成的状态和耗时。
 - 展示 Top-K 的 Chroma 距离、来源和完整原始切片文本。
+- 页面下拉框可切换向量检索与 BM25 关键词检索，两者共用已入库切片和 Top-K。
 - Enter 发送，Shift+Enter 换行。
 - 多问答并发；索引写入与问答读取通过进程内读写锁隔离。
 
@@ -50,6 +51,10 @@ EMBEDDING_BASE_URL=http://127.0.0.1:11434/v1
 
 DATA_DIR=data/raw
 CHROMA_PERSIST_DIR=.chroma
+
+RETRIEVAL_METHOD=vector
+RETRIEVAL_TOP_K=20
+SIMILARITY_THRESHOLD=0.35
 ```
 
 切换 Embedding 模型后必须使用新的 Chroma 目录重新建库，不要混用不同模型的向量。
@@ -91,6 +96,12 @@ python -m app.main web
 - `POST /api/answer-jobs`：创建异步问答任务。
 - `GET /api/answer-jobs/:id`：查看编码、检索、生成进度和向量命中。
 - `POST /api/ask`：同步问答兼容接口。
+
+两个问答接口均接受 `retrieval_method`（`vector` 或 `bm25`）、`top_k`（1-100）及 `similarity_threshold`（0-1）；省略时使用 `.env` 默认值。网页设置只作用于后续请求，不修改 `.env`。
+
+BM25 使用 jieba 中文分词和 SQLite FTS5 内置评分，直接读取 Chroma 已入库切片，检索时不调用 Embedding 服务。仅返回包含查询词的结果，展示原始 BM25 分数（越高越相关，不是 0-1 相似度），不应用向量相似度阈值。答案生成仍使用 Chat 模型。Python 的 SQLite 需支持 FTS5。
+
+当前每次 BM25 查询都会从最新切片构建临时全文索引，避免文档更新后命中旧内容；大规模知识库应改为持久化全文索引。
 
 上传限制由 `MAX_UPLOAD_BYTES`、`MAX_UPLOAD_FILES`、`MAX_UPLOAD_JOBS` 控制。Web 默认只监听本机且没有身份认证；暴露到网络前必须增加 TLS、认证和限流。
 

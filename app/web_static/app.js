@@ -4,6 +4,7 @@ const state = {
   jobs: [],
   documents: [],
   polling: null,
+  retrievalInitialized: false,
 };
 
 const elements = {
@@ -27,6 +28,7 @@ const elements = {
   askForm: document.querySelector("#ask-form"),
   askButton: document.querySelector("#ask-button"),
   question: document.querySelector("#question"),
+  retrievalMethod: document.querySelector("#retrieval-method"),
   retrievalTopK: document.querySelector("#retrieval-top-k"),
   similarityThreshold: document.querySelector("#similarity-threshold"),
   similarityThresholdValue: document.querySelector("#similarity-threshold-value"),
@@ -62,12 +64,12 @@ async function refreshStatus() {
     elements.modelStatus.textContent = status.has_openai_api_key ? "LLM 已配置" : "LLM 未配置";
     elements.modelStatus.classList.toggle("ok", status.has_openai_api_key);
     elements.uploadLimit.textContent = `PDF / MD / TXT · 单次最多 ${status.max_upload_files} 个`;
-    if (status.retrieval_top_k) {
-      elements.retrievalTopK.value = status.retrieval_top_k;
-    }
-    if (typeof status.similarity_threshold === "number") {
-      elements.similarityThreshold.value = status.similarity_threshold;
-      elements.similarityThresholdValue.textContent = status.similarity_threshold.toFixed(2);
+    if (!state.retrievalInitialized) {
+      elements.retrievalMethod.value = status.retrieval_method || "vector";
+      elements.retrievalTopK.value = status.retrieval_top_k ?? 20;
+      elements.similarityThreshold.value = status.similarity_threshold ?? 0.35;
+      state.retrievalInitialized = true;
+      updateRetrievalControls();
     }
     elements.documentCount.textContent = String(state.documents.length);
     elements.chunkCount.textContent = String(chunkCount);
@@ -364,6 +366,7 @@ function showJobError(message) {
 
 async function ask(event) {
   event.preventDefault();
+  if (elements.askButton.disabled || !elements.askForm.reportValidity()) return;
   const question = elements.question.value.trim();
   if (!question) {
     elements.question.focus();
@@ -374,7 +377,8 @@ async function ask(event) {
   elements.question.value = "";
   elements.askButton.disabled = true;
   setRunStatusLoading(true, "正在处理问题...");
-  state.answerJob = null;
+  state.answerJob = { retrieval_method: elements.retrievalMethod.value };
+  state.vectorHits = [];
   renderProcess();
   renderContextLoading();
 
@@ -384,8 +388,11 @@ async function ask(event) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         question,
-        top_k: Number(elements.retrievalTopK.value) || undefined,
-        similarity_threshold: Number(elements.similarityThreshold.value) || undefined,
+        retrieval_method: elements.retrievalMethod.value,
+        top_k: Number(elements.retrievalTopK.value),
+        similarity_threshold: elements.similarityThreshold.disabled
+          ? undefined
+          : Number(elements.similarityThreshold.value),
       }),
     });
     state.answerJob = job;
@@ -397,6 +404,7 @@ async function ask(event) {
     setRunStatusLoading(false, "回答完成");
   } catch (error) {
     addChatMessage("error", error.message);
+    renderContext();
     setRunStatusLoading(false, "回答失败");
   } finally {
     elements.askButton.disabled = false;
@@ -408,8 +416,8 @@ async function waitForAnswer(jobId) {
   while (true) {
     const job = await requestJson(`/api/answer-jobs/${jobId}`);
     state.answerJob = job;
-    if (job.vector_hits && job.vector_hits.length) {
-      state.vectorHits = job.vector_hits;
+    if (job.stages?.vector_search?.status === "completed") {
+      state.vectorHits = job.vector_hits || [];
       renderContext();
     }
     renderProcess();
@@ -427,7 +435,8 @@ function updateRunStatusFromJob(job) {
   if (stages.answer && stages.answer.status === "running") {
     setRunStatusLoading(true, "正在生成答案...");
   } else if (stages.vector_search && stages.vector_search.status === "running") {
-    setRunStatusLoading(true, "正在搜索向量数据库...");
+    setRunStatusLoading(true, job.retrieval_method === "bm25"
+      ? "正在进行 BM25 关键词搜索..." : "正在搜索向量数据库...");
   } else if (stages.encode && stages.encode.status === "running") {
     setRunStatusLoading(true, "正在编码问题...");
   } else if (job.status === "queued") {
@@ -444,6 +453,7 @@ const processDefinitions = [
 function renderProcess() {
   elements.processList.replaceChildren();
   const stages = state.answerJob ? state.answerJob.stages || {} : {};
+  const method = state.answerJob?.retrieval_method || elements.retrievalMethod.value;
 
   for (const [key, label] of processDefinitions) {
     const stage = stages[key] || { status: "pending", detail: {} };
@@ -460,7 +470,7 @@ function renderProcess() {
 
     const body = document.createElement("div");
     const title = document.createElement("strong");
-    title.textContent = label;
+    title.textContent = key === "vector_search" && method === "bm25" ? "BM25 关键词搜索" : label;
     const detail = document.createElement("span");
     detail.textContent = stageDetail(key, stage);
     body.append(title, detail);
@@ -473,6 +483,7 @@ function stageSymbol(status) {
   if (status === "completed") return "✓";
   if (status === "degraded") return "!";
   if (status === "failed") return "×";
+  if (status === "skipped") return "-";
   return "·";
 }
 
@@ -482,6 +493,7 @@ function stageDetail(key, stage) {
   if (stage.status === "pending") return "等待执行";
   if (stage.status === "running") return "正在执行";
   if (stage.status === "failed") return "执行失败";
+  if (stage.status === "skipped") return "已跳过";
   if (key === "encode") {
     const preview = Array.isArray(detail.vector_preview)
       ? ` · 前 8 维 [${detail.vector_preview.join(", ")}]`
@@ -552,12 +564,17 @@ function createVectorHitCard(hit) {
   title.textContent = `${hit.rank}. ${hit.title || "未命名文档"}`;
   const distance = document.createElement("span");
   distance.className = "distance-value";
-  distance.title = "Chroma L2 距离（越小越近）· 相似度分数（越大越近）";
-  const similarity = hit.similarity !== undefined ? Number(hit.similarity) : null;
-  distance.textContent = [
-    `距离 ${Number(hit.distance).toFixed(4)}`,
-    similarity !== null ? `相似度 ${similarity.toFixed(2)}` : "",
-  ].filter(Boolean).join(" · ");
+  if (hit.retrieval_method === "bm25") {
+    distance.title = "BM25 关键词匹配分数，越高越相关，不是概率";
+    distance.textContent = `BM25 ${Number(hit.bm25_score).toPrecision(4)}`;
+  } else {
+    distance.title = "Chroma L2 距离（越小越近）· 相似度分数（越大越近）";
+    const similarity = hit.similarity !== undefined ? Number(hit.similarity) : null;
+    distance.textContent = [
+      `距离 ${Number(hit.distance).toFixed(4)}`,
+      similarity !== null ? `相似度 ${similarity.toFixed(2)}` : "",
+    ].filter(Boolean).join(" · ");
+  }
   header.append(title, distance);
 
   const metadata = document.createElement("div");
@@ -642,8 +659,17 @@ renderProcess();
 refreshDocuments();
 pollJobs();
 
-elements.similarityThreshold.addEventListener("input", () => {
-  elements.similarityThresholdValue.textContent = Number(
-    elements.similarityThreshold.value,
-  ).toFixed(2);
-});
+function updateRetrievalControls() {
+  const bm25 = elements.retrievalMethod.value === "bm25";
+  elements.similarityThreshold.disabled = bm25;
+  elements.similarityThresholdValue.textContent = bm25
+    ? "不适用" : Number(elements.similarityThreshold.value).toFixed(2);
+}
+
+for (const element of [elements.retrievalMethod, elements.retrievalTopK, elements.similarityThreshold]) {
+  element.addEventListener("input", () => {
+    state.retrievalInitialized = true;
+    updateRetrievalControls();
+    if (!state.answerJob) renderProcess();
+  });
+}

@@ -33,10 +33,14 @@ class AnswerJobStore:
         question: str,
         top_k: int | None = None,
         similarity_threshold: float | None = None,
+        retrieval_method: str | None = None,
     ) -> dict[str, Any]:
         question = question.strip()
         if not question:
             raise ValueError("Question is required")
+        method = self._settings.retrieval_method if retrieval_method is None else retrieval_method
+        if method not in ("vector", "bm25"):
+            raise ValueError("retrieval_method must be vector or bm25")
 
         with self._lock:
             job_id = uuid.uuid4().hex
@@ -50,6 +54,7 @@ class AnswerJobStore:
                 "vector_hits": [],
                 "top_k": top_k,
                 "similarity_threshold": similarity_threshold,
+                "retrieval_method": method,
                 "created_at": now,
                 "started_at": "",
                 "finished_at": "",
@@ -95,7 +100,7 @@ class AnswerJobStore:
                 stage_state["detail"] = detail
                 if status == "running" and not stage_state["started_at"]:
                     stage_state["started_at"] = utc_now()
-                if status in {"completed", "degraded", "failed"}:
+                if status in {"completed", "degraded", "failed", "skipped"}:
                     stage_state["finished_at"] = utc_now()
 
         try:
@@ -105,6 +110,7 @@ class AnswerJobStore:
                 progress=progress,
                 top_k=job.get("top_k"),
                 similarity_threshold=job.get("similarity_threshold"),
+                retrieval_method=job["retrieval_method"],
             )
         except Exception as exc:
             with self._lock:

@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -19,6 +20,7 @@ class Settings(BaseSettings):
     chunk_size: int = 800
     chunk_overlap: int = 120
     retrieval_top_k: int = 20
+    retrieval_method: Literal["vector", "bm25"] = "vector"
     similarity_threshold: float = 0.35
     max_concurrent_answers: int = 8
     max_request_bytes: int = 1_048_576

@@ -9,7 +9,7 @@ from typing import TypedDict
 from app.config import Settings, get_settings
 from rag.indexer import build_vector_index
 from rag.loaders import load_document_file
-from rag.retriever import build_vector_hits, format_vector_hits
+from rag.retriever import build_vector_hits, format_vector_hits, search_bm25
 from rag.splitter import split_documents
 from rag.vector_store import get_embeddings, get_vector_store, replace_documents
 
@@ -199,6 +199,7 @@ def list_indexed_documents(settings: Settings) -> list[dict[str, object]]:
 
 class AnswerResult(TypedDict):
     question: str
+    retrieval_method: str
     vector_context: list[str]
     vector_hits: list[dict[str, object]]
     answer: str
@@ -213,12 +214,16 @@ def answer_question(
     progress: ProgressCallback | None = None,
     top_k: int | None = None,
     similarity_threshold: float | None = None,
+    retrieval_method: str | None = None,
 ) -> AnswerResult:
     """Encode, retrieve and answer through the shared CLI/Web RAG pipeline."""
 
     question = question.strip()
     if not question:
         raise ValueError("Question is required")
+    method = settings.retrieval_method if retrieval_method is None else retrieval_method
+    if method not in ("vector", "bm25"):
+        raise ValueError("retrieval_method must be vector or bm25")
     effective_top_k = top_k if top_k is not None else settings.retrieval_top_k
     effective_threshold = (
         similarity_threshold
@@ -232,45 +237,52 @@ def answer_question(
 
     with answer_limiter:
         with knowledge_base_lock.read():
-            embeddings = get_embeddings(
-                settings.embedding_model,
-                settings.embedding_api_key,
-                settings.embedding_base_url,
-            )
-            vector_store = get_vector_store(
-                settings.chroma_persist_dir,
-                settings.embedding_model,
-                settings.embedding_api_key,
-                settings.embedding_base_url,
-            )
+            if method == "bm25":
+                report("encode", "skipped", retrieval_method=method)
+                report("vector_search", "running", top_k=effective_top_k, retrieval_method=method)
+                started = perf_counter()
+                hits = search_bm25(question, settings.chroma_persist_dir, effective_top_k)
+            else:
+                embeddings = get_embeddings(
+                    settings.embedding_model,
+                    settings.embedding_api_key,
+                    settings.embedding_base_url,
+                )
+                vector_store = get_vector_store(
+                    settings.chroma_persist_dir,
+                    settings.embedding_model,
+                    settings.embedding_api_key,
+                    settings.embedding_base_url,
+                )
 
-            report("encode", "running", model=settings.embedding_model)
-            started = perf_counter()
-            query_embedding = embeddings.embed_query(question)
-            report(
-                "encode",
-                "completed",
-                model=settings.embedding_model,
-                dimensions=len(query_embedding),
-                duration_ms=round((perf_counter() - started) * 1000),
-                vector_preview=[round(value, 6) for value in query_embedding[:8]],
-            )
+                report("encode", "running", model=settings.embedding_model)
+                started = perf_counter()
+                query_embedding = embeddings.embed_query(question)
+                report(
+                    "encode",
+                    "completed",
+                    model=settings.embedding_model,
+                    dimensions=len(query_embedding),
+                    duration_ms=round((perf_counter() - started) * 1000),
+                    vector_preview=[round(value, 6) for value in query_embedding[:8]],
+                )
 
-            report("vector_search", "running", top_k=effective_top_k)
-            started = perf_counter()
-            matches = vector_store.similarity_search_by_vector_with_relevance_scores(
-                query_embedding,
-                k=effective_top_k,
-            )
-            hits = build_vector_hits(matches)
-            hits = [hit for hit in hits if hit["similarity"] >= effective_threshold]
+                report("vector_search", "running", top_k=effective_top_k, retrieval_method=method)
+                started = perf_counter()
+                matches = vector_store.similarity_search_by_vector_with_relevance_scores(
+                    query_embedding,
+                    k=effective_top_k,
+                )
+                hits = build_vector_hits(matches)
+                hits = [hit for hit in hits if hit["similarity"] >= effective_threshold]
             report(
                 "vector_search",
                 "completed",
                 top_k=effective_top_k,
+                retrieval_method=method,
                 matches=len(hits),
                 duration_ms=round((perf_counter() - started) * 1000),
-                similarity_threshold=effective_threshold,
+                similarity_threshold=effective_threshold if method == "vector" else None,
                 vector_hits=hits,
             )
             vector_context = format_vector_hits(hits)
@@ -295,6 +307,7 @@ def answer_question(
 
             return {
                 "question": question,
+                "retrieval_method": method,
                 "vector_context": vector_context,
                 "vector_hits": hits,
                 "answer": answer,

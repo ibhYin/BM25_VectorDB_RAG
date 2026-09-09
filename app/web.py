@@ -108,16 +108,18 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             raise RequestError(HTTPStatus.BAD_REQUEST, "Question is required")
 
         settings = get_settings()
-        top_k, similarity_threshold = self._read_retrieval_params(payload)
+        top_k, similarity_threshold, retrieval_method = self._read_retrieval_params(payload)
         result = answer_question(
             question,
             settings,
             top_k=top_k,
             similarity_threshold=similarity_threshold,
+            retrieval_method=retrieval_method,
         )
         self._send_json(
             {
                 "question": question,
+                "retrieval_method": result["retrieval_method"],
                 "answer": result["answer"],
                 "vector_context": result.get("vector_context", []),
                 "vector_hits": result.get("vector_hits", []),
@@ -132,11 +134,12 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         if not isinstance(question_value, str):
             raise RequestError(HTTPStatus.BAD_REQUEST, "question must be a string")
         try:
-            top_k, similarity_threshold = self._read_retrieval_params(payload)
+            top_k, similarity_threshold, retrieval_method = self._read_retrieval_params(payload)
             job = get_answer_store().create(
                 question_value,
                 top_k=top_k,
                 similarity_threshold=similarity_threshold,
+                retrieval_method=retrieval_method,
             )
         except ValueError as exc:
             raise RequestError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
@@ -215,6 +218,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             "chunk_size": settings.chunk_size,
             "chunk_overlap": settings.chunk_overlap,
             "retrieval_top_k": settings.retrieval_top_k,
+            "retrieval_method": settings.retrieval_method,
             "similarity_threshold": settings.similarity_threshold,
             "max_upload_bytes": settings.max_upload_bytes,
             "max_upload_files": settings.max_upload_files,
@@ -259,7 +263,12 @@ class WebRequestHandler(BaseHTTPRequestHandler):
     @staticmethod
     def _read_retrieval_params(
         payload: dict[str, object],
-    ) -> tuple[int | None, float | None]:
+    ) -> tuple[int | None, float | None, str | None]:
+        retrieval_method = payload.get("retrieval_method")
+        if "retrieval_method" in payload and retrieval_method not in ("vector", "bm25"):
+            raise RequestError(
+                HTTPStatus.BAD_REQUEST, "retrieval_method must be vector or bm25"
+            )
         top_k = payload.get("top_k")
         if top_k is not None:
             if isinstance(top_k, bool) or not isinstance(top_k, int):
@@ -282,7 +291,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                     HTTPStatus.BAD_REQUEST,
                     "similarity_threshold must be between 0 and 1",
                 )
-        return top_k, similarity_threshold
+        return top_k, similarity_threshold, retrieval_method
 
     def _send_json(self, payload: dict[str, object], status: int = HTTPStatus.OK) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
