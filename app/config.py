@@ -18,7 +18,8 @@ class Settings(BaseSettings):
     ocr_max_pages: int | None = None
     chunk_size: int = 800
     chunk_overlap: int = 120
-    retrieval_top_k: int = 4
+    retrieval_top_k: int = 20
+    similarity_threshold: float = 0.35
     max_concurrent_answers: int = 8
     max_request_bytes: int = 1_048_576
     max_upload_bytes: int = 100 * 1024 * 1024
@@ -59,6 +60,8 @@ class Settings(BaseSettings):
             raise ValueError("CHUNK_OVERLAP must be between zero and CHUNK_SIZE")
         if self.retrieval_top_k <= 0:
             raise ValueError("RETRIEVAL_TOP_K must be greater than zero")
+        if not 0.0 <= self.similarity_threshold <= 1.0:
+            raise ValueError("SIMILARITY_THRESHOLD must be between 0 and 1")
         if self.max_concurrent_answers <= 0:
             raise ValueError("MAX_CONCURRENT_ANSWERS must be greater than zero")
         if self.ocr_max_pages is not None and self.ocr_max_pages <= 0:

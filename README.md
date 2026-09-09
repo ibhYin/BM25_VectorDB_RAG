@@ -35,10 +35,9 @@ tests/              不访问真实外部服务的测试
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
 ```
 
-在 `.env` 中配置 Chat 服务。Embedding 可以复用 Chat 服务，也可以独立指向本地 Ollama：
+创建 `.env` 文件并配置 Chat 服务。Embedding 可以复用 Chat 服务，也可以独立指向本地 Ollama：
 
 ```bash
 OPENAI_API_KEY=your-chat-key

@@ -108,7 +108,13 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             raise RequestError(HTTPStatus.BAD_REQUEST, "Question is required")
 
         settings = get_settings()
-        result = answer_question(question, settings)
+        top_k, similarity_threshold = self._read_retrieval_params(payload)
+        result = answer_question(
+            question,
+            settings,
+            top_k=top_k,
+            similarity_threshold=similarity_threshold,
+        )
         self._send_json(
             {
                 "question": question,
@@ -126,7 +132,12 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         if not isinstance(question_value, str):
             raise RequestError(HTTPStatus.BAD_REQUEST, "question must be a string")
         try:
-            job = get_answer_store().create(question_value)
+            top_k, similarity_threshold = self._read_retrieval_params(payload)
+            job = get_answer_store().create(
+                question_value,
+                top_k=top_k,
+                similarity_threshold=similarity_threshold,
+            )
         except ValueError as exc:
             raise RequestError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
         self._send_json(job, status=HTTPStatus.ACCEPTED)
@@ -204,6 +215,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             "chunk_size": settings.chunk_size,
             "chunk_overlap": settings.chunk_overlap,
             "retrieval_top_k": settings.retrieval_top_k,
+            "similarity_threshold": settings.similarity_threshold,
             "max_upload_bytes": settings.max_upload_bytes,
             "max_upload_files": settings.max_upload_files,
             "max_upload_jobs": settings.max_upload_jobs,
@@ -243,6 +255,34 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         if not isinstance(value, bool):
             raise RequestError(HTTPStatus.BAD_REQUEST, f"{key} must be a boolean")
         return value
+
+    @staticmethod
+    def _read_retrieval_params(
+        payload: dict[str, object],
+    ) -> tuple[int | None, float | None]:
+        top_k = payload.get("top_k")
+        if top_k is not None:
+            if isinstance(top_k, bool) or not isinstance(top_k, int):
+                raise RequestError(HTTPStatus.BAD_REQUEST, "top_k must be an integer")
+            if top_k <= 0 or top_k > 100:
+                raise RequestError(
+                    HTTPStatus.BAD_REQUEST, "top_k must be between 1 and 100"
+                )
+        similarity_threshold = payload.get("similarity_threshold")
+        if similarity_threshold is not None:
+            if isinstance(similarity_threshold, bool) or not isinstance(
+                similarity_threshold, (int, float)
+            ):
+                raise RequestError(
+                    HTTPStatus.BAD_REQUEST,
+                    "similarity_threshold must be a number",
+                )
+            if not 0.0 <= similarity_threshold <= 1.0:
+                raise RequestError(
+                    HTTPStatus.BAD_REQUEST,
+                    "similarity_threshold must be between 0 and 1",
+                )
+        return top_k, similarity_threshold
 
     def _send_json(self, payload: dict[str, object], status: int = HTTPStatus.OK) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")

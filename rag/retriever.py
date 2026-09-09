@@ -1,3 +1,5 @@
+import math
+
 from langchain_core.documents import Document
 
 
@@ -27,10 +29,13 @@ def build_vector_hits(
     hits: list[dict[str, object]] = []
     for rank, (document, distance) in enumerate(results, start=1):
         metadata = document.metadata
+        # Chroma L2 distance → similarity score in [0, 1]; 1 = identical.
+        similarity = max(0.0, min(1.0, 1.0 - float(distance) / math.sqrt(2)))
         hits.append(
             {
                 "rank": rank,
                 "distance": float(distance),
+                "similarity": similarity,
                 "text": document.page_content,
                 "chunk_id": str(metadata.get("chunk_id", "unknown")),
                 "doc_id": str(metadata.get("doc_id", "unknown")),

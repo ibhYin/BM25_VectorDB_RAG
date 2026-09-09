@@ -27,6 +27,9 @@ const elements = {
   askForm: document.querySelector("#ask-form"),
   askButton: document.querySelector("#ask-button"),
   question: document.querySelector("#question"),
+  retrievalTopK: document.querySelector("#retrieval-top-k"),
+  similarityThreshold: document.querySelector("#similarity-threshold"),
+  similarityThresholdValue: document.querySelector("#similarity-threshold-value"),
   contextList: document.querySelector("#context-list"),
   processList: document.querySelector("#process-list"),
 };
@@ -59,6 +62,13 @@ async function refreshStatus() {
     elements.modelStatus.textContent = status.has_openai_api_key ? "LLM 已配置" : "LLM 未配置";
     elements.modelStatus.classList.toggle("ok", status.has_openai_api_key);
     elements.uploadLimit.textContent = `PDF / MD / TXT · 单次最多 ${status.max_upload_files} 个`;
+    if (status.retrieval_top_k) {
+      elements.retrievalTopK.value = status.retrieval_top_k;
+    }
+    if (typeof status.similarity_threshold === "number") {
+      elements.similarityThreshold.value = status.similarity_threshold;
+      elements.similarityThresholdValue.textContent = status.similarity_threshold.toFixed(2);
+    }
     elements.documentCount.textContent = String(state.documents.length);
     elements.chunkCount.textContent = String(chunkCount);
   } catch (error) {
@@ -372,7 +382,11 @@ async function ask(event) {
     const job = await requestJson("/api/answer-jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({
+        question,
+        top_k: Number(elements.retrievalTopK.value) || undefined,
+        similarity_threshold: Number(elements.similarityThreshold.value) || undefined,
+      }),
     });
     state.answerJob = job;
     renderProcess();
@@ -538,8 +552,12 @@ function createVectorHitCard(hit) {
   title.textContent = `${hit.rank}. ${hit.title || "未命名文档"}`;
   const distance = document.createElement("span");
   distance.className = "distance-value";
-  distance.title = "Chroma 距离，数值越小表示越相近";
-  distance.textContent = `距离 ${Number(hit.distance).toFixed(4)}`;
+  distance.title = "Chroma L2 距离（越小越近）· 相似度分数（越大越近）";
+  const similarity = hit.similarity !== undefined ? Number(hit.similarity) : null;
+  distance.textContent = [
+    `距离 ${Number(hit.distance).toFixed(4)}`,
+    similarity !== null ? `相似度 ${similarity.toFixed(2)}` : "",
+  ].filter(Boolean).join(" · ");
   header.append(title, distance);
 
   const metadata = document.createElement("div");
@@ -623,3 +641,9 @@ renderContext();
 renderProcess();
 refreshDocuments();
 pollJobs();
+
+elements.similarityThreshold.addEventListener("input", () => {
+  elements.similarityThresholdValue.textContent = Number(
+    elements.similarityThreshold.value,
+  ).toFixed(2);
+});

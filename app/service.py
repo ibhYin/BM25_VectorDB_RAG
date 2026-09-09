@@ -211,12 +211,20 @@ def answer_question(
     question: str,
     settings: Settings,
     progress: ProgressCallback | None = None,
+    top_k: int | None = None,
+    similarity_threshold: float | None = None,
 ) -> AnswerResult:
     """Encode, retrieve and answer through the shared CLI/Web RAG pipeline."""
 
     question = question.strip()
     if not question:
         raise ValueError("Question is required")
+    effective_top_k = top_k if top_k is not None else settings.retrieval_top_k
+    effective_threshold = (
+        similarity_threshold
+        if similarity_threshold is not None
+        else settings.similarity_threshold
+    )
 
     def report(stage: str, status: str, **detail: object) -> None:
         if progress is not None:
@@ -248,19 +256,21 @@ def answer_question(
                 vector_preview=[round(value, 6) for value in query_embedding[:8]],
             )
 
-            report("vector_search", "running", top_k=settings.retrieval_top_k)
+            report("vector_search", "running", top_k=effective_top_k)
             started = perf_counter()
             matches = vector_store.similarity_search_by_vector_with_relevance_scores(
                 query_embedding,
-                k=settings.retrieval_top_k,
+                k=effective_top_k,
             )
             hits = build_vector_hits(matches)
+            hits = [hit for hit in hits if hit["similarity"] >= effective_threshold]
             report(
                 "vector_search",
                 "completed",
-                top_k=settings.retrieval_top_k,
+                top_k=effective_top_k,
                 matches=len(hits),
                 duration_ms=round((perf_counter() - started) * 1000),
+                similarity_threshold=effective_threshold,
                 vector_hits=hits,
             )
             vector_context = format_vector_hits(hits)

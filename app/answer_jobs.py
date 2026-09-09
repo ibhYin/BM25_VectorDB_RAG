@@ -28,7 +28,12 @@ class AnswerJobStore:
             thread_name_prefix="rag-answer",
         )
 
-    def create(self, question: str) -> dict[str, Any]:
+    def create(
+        self,
+        question: str,
+        top_k: int | None = None,
+        similarity_threshold: float | None = None,
+    ) -> dict[str, Any]:
         question = question.strip()
         if not question:
             raise ValueError("Question is required")
@@ -43,6 +48,8 @@ class AnswerJobStore:
                 "error": "",
                 "answer": "",
                 "vector_hits": [],
+                "top_k": top_k,
+                "similarity_threshold": similarity_threshold,
                 "created_at": now,
                 "started_at": "",
                 "finished_at": "",
@@ -96,6 +103,8 @@ class AnswerJobStore:
                 job["question"],
                 self._settings,
                 progress=progress,
+                top_k=job.get("top_k"),
+                similarity_threshold=job.get("similarity_threshold"),
             )
         except Exception as exc:
             with self._lock:

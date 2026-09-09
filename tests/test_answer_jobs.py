@@ -11,7 +11,7 @@ def test_answer_job_exposes_stage_progress_and_vector_hits(
 ) -> None:
     finished = Event()
 
-    def fake_answer(question, settings, progress):
+    def fake_answer(question, settings, progress, **kwargs):
         progress("encode", "running", {"model": "embedding"})
         progress(
             "encode",

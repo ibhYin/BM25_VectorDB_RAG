@@ -86,6 +86,18 @@
           </div>
         </div>
 
+        <div class="retrieval-settings" role="group" aria-label="检索参数">
+          <label class="retrieval-field">
+            <span class="retrieval-label">Top-K</span>
+            <input type="number" id="retrieval-top-k" min="1" max="100" value="20" />
+          </label>
+          <label class="retrieval-field">
+            <span class="retrieval-label">相似度阈值</span>
+            <input type="range" id="similarity-threshold" min="0" max="1" step="0.01" value="0.35" />
+            <output id="similarity-threshold-value">0.35</output>
+          </label>
+        </div>
+
         <form class="ask-form" id="ask-form">
           <label class="visually-hidden" for="question">问题</label>
           <textarea id="question" rows="2" placeholder="输入问题..."></textarea>
