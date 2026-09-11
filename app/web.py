@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+from app.access import UserContext, load_access_policy
 from app.config import get_settings
 from app.uploads import parse_multipart
 from rag.constants import SUPPORTED_SUFFIXES
@@ -60,6 +61,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/upload-jobs":
             from app.uploads import get_upload_store
 
+            self._require_admin()
             self._send_json({"jobs": get_upload_store().snapshot()})
         elif parsed.path.startswith("/api/answer-jobs/"):
             self._handle_answer_job(parsed.path.rsplit("/", 1)[-1])
@@ -99,6 +101,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         from app.service import answer_question
 
         payload = self._read_json()
+        settings = get_settings()
+        user = self._current_user(settings)
         question_value = payload.get("question", "")
         if not isinstance(question_value, str):
             raise RequestError(HTTPStatus.BAD_REQUEST, "question must be a string")
@@ -107,7 +111,6 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         if not question:
             raise RequestError(HTTPStatus.BAD_REQUEST, "Question is required")
 
-        settings = get_settings()
         top_k, similarity_threshold, retrieval_method, candidate_pool = (
             self._read_retrieval_params(payload)
         )
@@ -118,6 +121,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             similarity_threshold=similarity_threshold,
             retrieval_method=retrieval_method,
             candidate_pool=candidate_pool,
+            user=user,
         )
         self._send_json(
             {
@@ -133,6 +137,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         from app.answer_jobs import get_answer_store
 
         payload = self._read_json()
+        settings = get_settings()
+        user = self._current_user(settings)
         question_value = payload.get("question", "")
         if not isinstance(question_value, str):
             raise RequestError(HTTPStatus.BAD_REQUEST, "question must be a string")
@@ -146,6 +152,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 similarity_threshold=similarity_threshold,
                 retrieval_method=retrieval_method,
                 candidate_pool=candidate_pool,
+                user=user,
             )
         except ValueError as exc:
             raise RequestError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
@@ -154,25 +161,30 @@ class WebRequestHandler(BaseHTTPRequestHandler):
     def _handle_answer_job(self, job_id: str) -> None:
         from app.answer_jobs import get_answer_store
 
+        user = self._current_user(get_settings())
         try:
-            job = get_answer_store().get(job_id)
+            job = get_answer_store().get_for_user(job_id, user)
         except KeyError as exc:
             raise RequestError(HTTPStatus.NOT_FOUND, str(exc)) from exc
+        except PermissionError as exc:
+            raise RequestError(HTTPStatus.FORBIDDEN, str(exc)) from exc
         self._send_json(job)
 
     def _handle_documents(self) -> None:
         from app.service import list_indexed_documents
 
         settings = get_settings()
+        user = self._current_user(settings)
         if not (settings.chroma_persist_dir / "chroma.sqlite3").is_file():
             self._send_json({"documents": []})
             return
-        self._send_json({"documents": list_indexed_documents(settings)})
+        self._send_json({"documents": list_indexed_documents(settings, user)})
 
     def _handle_document_upload(self) -> None:
         from app.uploads import get_upload_store
 
         settings = get_settings()
+        self._require_admin()
         try:
             content_length = int(self.headers.get("Content-Length", "0"))
         except ValueError as exc:
@@ -259,6 +271,26 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         if not isinstance(payload, dict):
             raise RequestError(HTTPStatus.BAD_REQUEST, "JSON body must be an object")
         return payload
+
+    def _current_user(self, settings) -> UserContext | None:
+        policy = load_access_policy(settings.access_policy_file)
+        if policy is None:
+            return None
+        user_id = self.headers.get("X-User-ID", "").strip()
+        if not user_id:
+            raise RequestError(HTTPStatus.UNAUTHORIZED, "Authenticated user is required")
+        try:
+            return policy.user_context(user_id)
+        except PermissionError as exc:
+            raise RequestError(HTTPStatus.UNAUTHORIZED, str(exc)) from exc
+
+    def _require_admin(self) -> UserContext | None:
+        settings = get_settings()
+        policy = load_access_policy(settings.access_policy_file)
+        user = self._current_user(settings)
+        if policy is not None and (user is None or not policy.is_admin(user)):
+            raise RequestError(HTTPStatus.FORBIDDEN, "Administrator access is required")
+        return user
 
     @staticmethod
     def _read_bool(payload: dict[str, object], key: str) -> bool:

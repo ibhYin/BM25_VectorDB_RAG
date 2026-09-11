@@ -5,8 +5,14 @@ from pathlib import Path
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+from app.access import AccessPolicy, document_access_metadata
 
-def ensure_document_metadata(documents: list[Document]) -> list[Document]:
+
+def ensure_document_metadata(
+    documents: list[Document],
+    knowledge_base_id: str = "default",
+    access_policy: AccessPolicy | None = None,
+) -> list[Document]:
     """Attach stable document metadata required by indexing and retrieval."""
 
     for document in documents:
@@ -15,6 +21,7 @@ def ensure_document_metadata(documents: list[Document]) -> list[Document]:
         document.metadata.setdefault("title", build_title(source))
         document.metadata.setdefault("created_at", "")
         document.metadata.setdefault("source", source)
+        document_access_metadata(document.metadata, knowledge_base_id, access_policy)
 
     return documents
 
@@ -36,6 +43,8 @@ def split_documents(
     documents: list[Document],
     chunk_size: int = 800,
     chunk_overlap: int = 120,
+    knowledge_base_id: str = "default",
+    access_policy: AccessPolicy | None = None,
 ) -> list[Document]:
     """Split documents into chunks suitable for retrieval."""
 
@@ -57,7 +66,9 @@ def split_documents(
         ],
         add_start_index=True,
     )
-    chunks = splitter.split_documents(ensure_document_metadata(documents))
+    chunks = splitter.split_documents(
+        ensure_document_metadata(documents, knowledge_base_id, access_policy)
+    )
 
     chunk_counts_by_doc_id: dict[str, int] = {}
     for chunk in chunks:

@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 100 * 1024 * 1024
     max_upload_files: int = 10
     max_upload_jobs: int = 5
+    knowledge_base_id: str = "default"
+    access_policy_file: Path = Path("config/access_policy.json")
 
     data_dir: Path = Path("data/raw")
     chroma_persist_dir: Path = Path(".chroma")

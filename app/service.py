@@ -7,6 +7,7 @@ from threading import BoundedSemaphore, Condition
 from typing import TypedDict
 
 from app.config import Settings, get_settings
+from app.access import UserContext, load_access_policy
 from rag.indexer import build_vector_index
 from rag.loaders import load_document_file
 from rag.retriever import (
@@ -106,6 +107,8 @@ def ingest_knowledge_base(
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
             rebuild=rebuild,
+            knowledge_base_id=settings.knowledge_base_id,
+            access_policy_file=settings.access_policy_file,
         )
 
     return IngestResult(len(documents), len(chunks), rebuild, source_dir)
@@ -157,6 +160,8 @@ def ingest_files(settings: Settings, paths: list[Path]) -> FileIngestResult:
             documents,
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
+            knowledge_base_id=settings.knowledge_base_id,
+            access_policy=load_access_policy(settings.access_policy_file),
         )
         if not chunks:
             raise ValueError("Uploaded documents contained no indexable text")
@@ -167,12 +172,16 @@ def ingest_files(settings: Settings, paths: list[Path]) -> FileIngestResult:
             embedding_model=settings.embedding_model,
             embedding_api_key=settings.embedding_api_key,
             embedding_base_url=settings.embedding_base_url,
+            knowledge_base_id=settings.knowledge_base_id,
         )
 
     return FileIngestResult(len(paths), len(documents), len(chunks))
 
 
-def list_indexed_documents(settings: Settings) -> list[dict[str, object]]:
+def list_indexed_documents(
+    settings: Settings,
+    user: UserContext | None = None,
+) -> list[dict[str, object]]:
     """Aggregate indexed documents from Chroma metadata."""
 
     result = get_vector_store(
@@ -182,7 +191,12 @@ def list_indexed_documents(settings: Settings) -> list[dict[str, object]]:
         settings.embedding_base_url,
     ).get(include=["metadatas"])
     documents: dict[str, dict[str, object]] = {}
-    for metadata in result.get("metadatas", []):
+    access_policy = load_access_policy(settings.access_policy_file)
+    for raw_metadata in result.get("metadatas", []):
+        metadata = raw_metadata or {}
+        if access_policy is not None:
+            if user is None or not access_policy.can_access(metadata, user, settings.knowledge_base_id):
+                continue
         doc_id = str(metadata.get("doc_id", ""))
         if not doc_id:
             continue
@@ -222,6 +236,7 @@ def answer_question(
     similarity_threshold: float | None = None,
     retrieval_method: str | None = None,
     candidate_pool: int | None = None,
+    user: UserContext | None = None,
 ) -> AnswerResult:
     """Encode, retrieve and answer through the shared CLI/Web RAG pipeline."""
 
@@ -236,6 +251,14 @@ def answer_question(
         similarity_threshold
         if similarity_threshold is not None
         else settings.similarity_threshold
+    )
+    access_policy = load_access_policy(settings.access_policy_file)
+    if access_policy is not None and user is None:
+        raise PermissionError("Authenticated user context is required")
+    access_filter = (
+        access_policy.chroma_filter(settings.knowledge_base_id, user)
+        if access_policy is not None and user is not None
+        else None
     )
 
     def report(stage: str, status: str, **detail: object) -> None:
@@ -254,7 +277,14 @@ def answer_question(
                     retrieval_method=method,
                 )
                 started = perf_counter()
-                hits = search_bm25(question, settings.chroma_persist_dir, effective_top_k)
+                hits = search_bm25(
+                    question,
+                    settings.chroma_persist_dir,
+                    effective_top_k,
+                    settings.knowledge_base_id,
+                    user,
+                    access_policy,
+                )
             elif method == "hybrid":
                 effective_pool = max(
                     (
@@ -296,10 +326,14 @@ def answer_question(
                     pool=effective_pool,
                 )
                 started = perf_counter()
-                matches = vector_store.similarity_search_by_vector_with_relevance_scores(
-                    query_embedding,
-                    k=effective_pool,
-                )
+                if access_filter is None:
+                    matches = vector_store.similarity_search_by_vector_with_relevance_scores(
+                        query_embedding, k=effective_pool
+                    )
+                else:
+                    matches = vector_store.similarity_search_by_vector_with_relevance_scores(
+                        query_embedding, k=effective_pool, filter=access_filter
+                    )
                 vector_hits = build_vector_hits(matches)
                 bm25_scores = rerank_bm25_scores(
                     [match[0].page_content for match in matches],
@@ -334,10 +368,14 @@ def answer_question(
 
                 report("vector_search", "running", top_k=effective_top_k, retrieval_method=method)
                 started = perf_counter()
-                matches = vector_store.similarity_search_by_vector_with_relevance_scores(
-                    query_embedding,
-                    k=effective_top_k,
-                )
+                if access_filter is None:
+                    matches = vector_store.similarity_search_by_vector_with_relevance_scores(
+                        query_embedding, k=effective_top_k
+                    )
+                else:
+                    matches = vector_store.similarity_search_by_vector_with_relevance_scores(
+                        query_embedding, k=effective_top_k, filter=access_filter
+                    )
                 raw_hits = build_vector_hits(matches)
                 recall = len(raw_hits)
                 hits = [

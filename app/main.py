@@ -40,12 +40,18 @@ def ingest(
 
 
 @app.command()
-def ask(question: str) -> None:
+def ask(
+    question: str,
+    user_id: str | None = typer.Option(None, "--user-id"),
+) -> None:
     from app.service import answer_question
+    from app.access import load_access_policy
 
     settings = get_settings()
     try:
-        result = answer_question(question, settings)
+        policy = load_access_policy(settings.access_policy_file)
+        user = policy.user_context(user_id) if policy and user_id else None
+        result = answer_question(question, settings, user=user)
     except Exception as exc:
         console.print(f"[red]Question failed:[/red] {exc}")
         raise typer.Exit(code=1) from exc

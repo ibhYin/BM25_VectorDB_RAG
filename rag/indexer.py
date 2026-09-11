@@ -2,6 +2,7 @@ from pathlib import Path
 
 from langchain_core.documents import Document
 
+from app.access import load_access_policy
 from rag.loaders import load_documents
 from rag.splitter import split_documents
 from rag.vector_store import ingest_documents
@@ -20,6 +21,8 @@ def build_vector_index(
     chunk_size: int = 800,
     chunk_overlap: int = 120,
     rebuild: bool = False,
+    knowledge_base_id: str = "default",
+    access_policy_file: Path | None = None,
 ) -> tuple[list[Document], list[Document]]:
     """Load, split and index one directory through the shared vector pipeline."""
 
@@ -61,10 +64,13 @@ def build_vector_index(
         details = "; ".join(f"{source}: {error}" for source, error in ocr_errors.items())
         raise RuntimeError(f"OCR failed: {details}")
 
+    access_policy = load_access_policy(access_policy_file) if access_policy_file else None
     chunks = split_documents(
         documents,
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
+        knowledge_base_id=knowledge_base_id,
+        access_policy=access_policy,
     )
     if not chunks:
         raise ValueError(f"Documents contained no indexable text: {data_dir}")
@@ -76,5 +82,6 @@ def build_vector_index(
         embedding_api_key=embedding_api_key,
         embedding_base_url=embedding_base_url,
         rebuild=rebuild,
+        knowledge_base_id=knowledge_base_id,
     )
     return documents, chunks

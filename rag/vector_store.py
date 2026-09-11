@@ -64,6 +64,7 @@ def ingest_documents(
     embedding_api_key: str = "",
     embedding_base_url: str = "",
     rebuild: bool = False,
+    knowledge_base_id: str | None = None,
 ) -> Chroma:
     vector_store = get_vector_store(
         persist_dir,
@@ -75,7 +76,10 @@ def ingest_documents(
     document_ids = [build_vector_id(document) for document in documents]
     existing_ids: set[str] = set()
     if rebuild:
-        existing_ids = set(vector_store.get(include=[]).get("ids", []))
+        kwargs: dict[str, object] = {"include": []}
+        if knowledge_base_id:
+            kwargs["where"] = {"knowledge_base_id": knowledge_base_id}
+        existing_ids = set(vector_store.get(**kwargs).get("ids", []))
     if documents:
         vector_store.add_documents(documents, ids=document_ids)
     stale_ids = existing_ids.difference(document_ids)
@@ -92,6 +96,7 @@ def replace_documents(
     embedding_model: str,
     embedding_api_key: str = "",
     embedding_base_url: str = "",
+    knowledge_base_id: str | None = None,
 ) -> Chroma:
     """Upsert documents and remove stale chunks after the new vectors are stored."""
 
@@ -111,8 +116,13 @@ def replace_documents(
     )
     old_ids: set[str] = set()
     if doc_ids:
+        where: dict[str, object] = {"doc_id": {"$in": doc_ids}}
+        if knowledge_base_id:
+            where = {
+                "$and": [where, {"knowledge_base_id": knowledge_base_id}],
+            }
         existing = vector_store.get(
-            where={"doc_id": {"$in": doc_ids}},
+            where=where,
             include=[],
         )
         old_ids = set(existing.get("ids", []))

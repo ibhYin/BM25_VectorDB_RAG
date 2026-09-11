@@ -9,6 +9,8 @@ __pycache__/
 .DS_Store
 .web_upload_jobs.json
 output/
+.playwright-cli/
+config/access_policy.json
 
 # Local documents and reproducible generated data.
 data/raw/*

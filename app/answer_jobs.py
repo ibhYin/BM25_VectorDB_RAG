@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.config import Settings
+from app.access import UserContext
 
 
 STAGES = ("encode", "vector_search", "answer")
@@ -35,6 +36,7 @@ class AnswerJobStore:
         similarity_threshold: float | None = None,
         retrieval_method: str | None = None,
         candidate_pool: int | None = None,
+        user: UserContext | None = None,
     ) -> dict[str, Any]:
         question = question.strip()
         if not question:
@@ -57,6 +59,7 @@ class AnswerJobStore:
                 "similarity_threshold": similarity_threshold,
                 "retrieval_method": method,
                 "candidate_pool": candidate_pool,
+                "user": user,
                 "created_at": now,
                 "started_at": "",
                 "finished_at": "",
@@ -74,13 +77,19 @@ class AnswerJobStore:
             self._prune_locked()
 
         self._executor.submit(self._run, job_id)
-        return self.get(job_id)
+        return self.get_for_user(job_id, user)
 
     def get(self, job_id: str) -> dict[str, Any]:
+        return self.get_for_user(job_id)
+
+    def get_for_user(self, job_id: str, user: UserContext | None = None) -> dict[str, Any]:
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None:
                 raise KeyError("Answer job not found")
+            owner = job.get("user")
+            if owner is not None and (user is None or owner.user_id != user.user_id):
+                raise PermissionError("Answer job is not available")
             return self._snapshot(job)
 
     def _run(self, job_id: str) -> None:
@@ -114,6 +123,7 @@ class AnswerJobStore:
                 similarity_threshold=job.get("similarity_threshold"),
                 retrieval_method=job["retrieval_method"],
                 candidate_pool=job.get("candidate_pool"),
+                user=job.get("user"),
             )
         except Exception as exc:
             with self._lock:
@@ -139,6 +149,7 @@ class AnswerJobStore:
     @staticmethod
     def _snapshot(job: dict[str, Any]) -> dict[str, Any]:
         snapshot = dict(job)
+        snapshot.pop("user", None)
         snapshot["stages"] = {
             name: {
                 **state,

@@ -6,6 +6,8 @@ from pathlib import Path
 
 from langchain_core.documents import Document
 
+from app.access import AccessPolicy, UserContext
+
 
 def format_documents(documents: list[Document]) -> list[str]:
     formatted: list[str] = []
@@ -63,7 +65,12 @@ def build_vector_hits(
 
 
 def search_bm25(
-    question: str, persist_dir: Path, top_k: int,
+    question: str,
+    persist_dir: Path,
+    top_k: int,
+    knowledge_base_id: str = "default",
+    user: UserContext | None = None,
+    access_policy: AccessPolicy | None = None,
 ) -> list[dict[str, object]]:
     """Rank current Chroma chunk text using jieba and SQLite FTS5 BM25."""
 
@@ -83,6 +90,15 @@ def search_bm25(
         return []
     records = collection.get(include=["documents", "metadatas"])
     texts = records["documents"] or []
+    metadatas = records["metadatas"] or []
+    if access_policy is not None and user is not None:
+        allowed = [
+            index
+            for index, metadata in enumerate(metadatas)
+            if access_policy.can_access(metadata or {}, user, knowledge_base_id)
+        ]
+        texts = [texts[index] for index in allowed]
+        metadatas = [metadatas[index] for index in allowed]
     if not texts:
         return []
     scores = _bm25_scores(texts, question)
@@ -95,7 +111,7 @@ def search_bm25(
             (
                 Document(
                     page_content=texts[i],
-                    metadata=(records["metadatas"][i] or {}),
+                    metadata=(metadatas[i] or {}),
                 ),
                 scores[i],
             )

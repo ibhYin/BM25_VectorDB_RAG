@@ -13,6 +13,7 @@
 - 页面下拉框可切换向量检索与 BM25 关键词检索，两者共用已入库切片和 Top-K。
 - Enter 发送，Shift+Enter 换行。
 - 多问答并发；索引写入与问答读取通过进程内读写锁隔离。
+- 可选的知识库级和文档级访问控制；权限在向量/BM25 检索前过滤。
 
 ## 目录
 
@@ -30,11 +31,10 @@ tests/              不访问真实外部服务的测试
 
 ## 安装
 
-要求 Python 3.10+：
+要求 Python 3.10+。本机使用 Conda 环境 `langchain`：
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+conda activate langchain
 pip install -r requirements.txt
 ```
 
@@ -57,6 +57,14 @@ RETRIEVAL_TOP_K=20
 SIMILARITY_THRESHOLD=0.35
 CANDIDATE_POOL_SIZE=100
 ```
+
+启用权限隔离时，复制 `config/access_policy.example.json` 为
+`config/access_policy.json`，并设置 `KNOWLEDGE_BASE_ID` 和
+`ACCESS_POLICY_FILE`。策略中的用户通过 `groups` 关联到知识库和文档的访问组；
+文档权限使用索引生成的 `doc_id`。修改策略或新增知识库后，需要重新索引对应文件。
+当前一个运行实例通过 `KNOWLEDGE_BASE_ID` 选择一个知识库；多个知识库可以共用 Chroma
+集合，但生产环境还需要在认证层提供知识库选择/列表接口，并在服务层把选择值校验为该用户
+有权访问的知识库。
 
 切换 Embedding 模型后必须使用新的 Chroma 目录重新建库，不要混用不同模型的向量。
 
@@ -110,7 +118,11 @@ BM25 使用 jieba 中文分词和 SQLite FTS5 内置评分，直接读取 Chroma
 
 当前每次 BM25 查询都会从最新切片构建临时全文索引，避免文档更新后命中旧内容；大规模知识库应改为持久化全文索引。
 
-上传限制由 `MAX_UPLOAD_BYTES`、`MAX_UPLOAD_FILES`、`MAX_UPLOAD_JOBS` 控制。Web 默认只监听本机且没有身份认证；暴露到网络前必须增加 TLS、认证和限流。
+上传限制由 `MAX_UPLOAD_BYTES`、`MAX_UPLOAD_FILES`、`MAX_UPLOAD_JOBS` 控制。没有
+`ACCESS_POLICY_FILE` 时保持单用户开发模式；启用策略后，Web API 从上游认证层提供的
+`X-User-ID` 读取身份，问答、命中文档列表和异步任务都会做权限校验，上传只允许策略中的
+管理员。`X-User-ID` 不是认证机制，暴露到网络前必须由可信反向代理覆盖该请求头，并增加
+TLS、真实认证和限流。
 
 ## 切片
 
