@@ -9,6 +9,10 @@ const state = {
 
 const elements = {
   serviceSummary: document.querySelector("#service-summary"),
+  userSwitcher: document.querySelector("#user-switcher"),
+  userButton: document.querySelector("#user-button"),
+  userLabel: document.querySelector("#user-label"),
+  userMenu: document.querySelector("#user-menu"),
   vectorStatus: document.querySelector("#vector-status"),
   modelStatus: document.querySelector("#model-status"),
   refreshButton: document.querySelector("#refresh-button"),
@@ -36,6 +40,16 @@ const elements = {
   contextList: document.querySelector("#context-list"),
   processList: document.querySelector("#process-list"),
 };
+
+function getRetrievalMethod() {
+  const checked = document.querySelector('input[name="retrieval-method"]:checked');
+  return checked ? checked.value : "vector";
+}
+
+function setRetrievalMethod(value) {
+  const radio = document.querySelector(`input[name="retrieval-method"][value="${value}"]`);
+  if (radio) radio.checked = true;
+}
 
 async function requestJson(url, options = {}) {
   const response = await fetch(url, options);
@@ -66,7 +80,7 @@ async function refreshStatus() {
     elements.modelStatus.classList.toggle("ok", status.has_openai_api_key);
     elements.uploadLimit.textContent = `PDF / MD / TXT · 单次最多 ${status.max_upload_files} 个`;
     if (!state.retrievalInitialized) {
-      elements.retrievalMethod.value = status.retrieval_method || "vector";
+      setRetrievalMethod(status.retrieval_method || "vector");
       elements.retrievalTopK.value = status.retrieval_top_k ?? 20;
       elements.candidatePool.value = status.candidate_pool_size ?? 100;
       elements.similarityThreshold.value = status.similarity_threshold ?? 0.35;
@@ -379,7 +393,7 @@ async function ask(event) {
   elements.question.value = "";
   elements.askButton.disabled = true;
   setRunStatusLoading(true, "正在处理问题...");
-  state.answerJob = { retrieval_method: elements.retrievalMethod.value };
+  state.answerJob = { retrieval_method: getRetrievalMethod() };
   state.vectorHits = [];
   renderProcess();
   renderContextLoading();
@@ -390,7 +404,7 @@ async function ask(event) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         question,
-        retrieval_method: elements.retrievalMethod.value,
+        retrieval_method: getRetrievalMethod(),
         top_k: Number(elements.retrievalTopK.value),
         candidate_pool: elements.candidatePool.disabled
           ? undefined
@@ -462,7 +476,7 @@ const processDefinitions = [
 function renderProcess() {
   elements.processList.replaceChildren();
   const stages = state.answerJob ? state.answerJob.stages || {} : {};
-  const method = state.answerJob?.retrieval_method || elements.retrievalMethod.value;
+  const method = state.answerJob?.retrieval_method || getRetrievalMethod();
 
   for (const [key, label] of processDefinitions) {
     const stage = stages[key] || { status: "pending", detail: {} };
@@ -682,11 +696,12 @@ elements.question.addEventListener("keydown", (event) => {
 
 renderContext();
 renderProcess();
+loadIdentity();
 refreshDocuments();
 pollJobs();
 
 function updateRetrievalControls() {
-  const method = elements.retrievalMethod.value;
+  const method = getRetrievalMethod();
   const thresholdOff = method !== "vector";
   elements.similarityThreshold.disabled = thresholdOff;
   elements.similarityThresholdValue.textContent = thresholdOff
@@ -694,10 +709,82 @@ function updateRetrievalControls() {
   elements.candidatePool.disabled = method !== "hybrid";
 }
 
-for (const element of [elements.retrievalMethod, elements.retrievalTopK, elements.similarityThreshold]) {
+for (const element of [elements.retrievalTopK, elements.similarityThreshold]) {
   element.addEventListener("input", () => {
     state.retrievalInitialized = true;
     updateRetrievalControls();
     if (!state.answerJob) renderProcess();
   });
 }
+
+elements.retrievalMethod.addEventListener("change", () => {
+  state.retrievalInitialized = true;
+  updateRetrievalControls();
+  if (!state.answerJob) renderProcess();
+});
+
+const identityState = { user: null, users: [] };
+
+async function loadIdentity() {
+  try {
+    const payload = await requestJson("/api/me");
+    identityState.user = payload.user;
+    identityState.users = payload.users || [];
+  } catch (_) {
+    identityState.user = null;
+    identityState.users = [];
+  }
+  renderUserSwitcher();
+}
+
+function renderUserSwitcher() {
+  const { user, users } = identityState;
+  elements.userSwitcher.hidden = !user;
+  if (!user) return;
+  elements.userLabel.textContent = user;
+  elements.userMenu.replaceChildren();
+  const title = document.createElement("div");
+  title.className = "menu-title";
+  title.textContent = "切换身份（开发模式）";
+  elements.userMenu.append(title);
+  for (const item of users) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `menu-item${item.id === user ? " current" : ""}`;
+    button.setAttribute("role", "menuitem");
+    const name = document.createElement("span");
+    name.textContent = item.id === user ? `✓ ${item.id}` : item.id;
+    const groups = document.createElement("span");
+    groups.className = "groups";
+    groups.textContent = (item.groups || []).join(", ") || "无组";
+    button.append(name, groups);
+    button.addEventListener("click", () => {
+      elements.userMenu.hidden = true;
+      elements.userButton.setAttribute("aria-expanded", "false");
+      if (item.id !== user) {
+        location.href = `/login?user=${encodeURIComponent(item.id)}`;
+      }
+    });
+    elements.userMenu.append(button);
+  }
+}
+
+elements.userButton.addEventListener("click", () => {
+  const open = elements.userMenu.hidden;
+  elements.userMenu.hidden = !open;
+  elements.userButton.setAttribute("aria-expanded", String(open));
+});
+
+document.addEventListener("click", (event) => {
+  if (!elements.userSwitcher.hidden && !elements.userSwitcher.contains(event.target)) {
+    elements.userMenu.hidden = true;
+    elements.userButton.setAttribute("aria-expanded", "false");
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !elements.userMenu.hidden) {
+    elements.userMenu.hidden = true;
+    elements.userButton.setAttribute("aria-expanded", "false");
+  }
+});

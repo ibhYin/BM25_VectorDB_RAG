@@ -4,128 +4,144 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>知识库工作台</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
     <header class="app-header">
       <div class="brand">
-        <div class="brand-mark" aria-hidden="true">R</div>
-        <div>
+        <span class="brand-mark" aria-hidden="true">R</span>
+        <div class="brand-text">
           <h1>知识库工作台</h1>
-          <p id="service-summary">正在连接服务...</p>
+          <p id="service-summary">正在连接服务…</p>
         </div>
       </div>
-      <div class="header-status">
-        <span class="status-pill loading" id="vector-status"><span class="loading-spinner" aria-hidden="true"></span><span>加载中</span></span>
-        <span class="status-pill loading" id="model-status"><span class="loading-spinner" aria-hidden="true"></span><span>加载中</span></span>
-        <button class="icon-button" id="refresh-button" type="button" title="刷新状态" aria-label="刷新状态">↻</button>
+      <div class="header-actions">
+        <span id="vector-status" class="chip loading"><span class="loading-spinner" aria-hidden="true"></span><span>加载中</span></span>
+        <span id="model-status" class="chip loading"><span class="loading-spinner" aria-hidden="true"></span><span>加载中</span></span>
+        <div id="user-switcher" class="user-switcher" hidden>
+          <button id="user-button" class="user-button" type="button" aria-haspopup="menu" aria-expanded="false">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/></svg>
+            <span id="user-label">…</span>
+            <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+          </button>
+          <div id="user-menu" class="user-menu" role="menu" hidden></div>
+        </div>
+        <button id="refresh-button" class="icon-button" type="button" title="刷新状态" aria-label="刷新状态">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+        </button>
       </div>
     </header>
 
     <main class="workspace">
-      <aside class="knowledge-panel" aria-label="知识库管理">
-        <section class="summary-grid" aria-label="索引统计">
-          <article class="summary-item">
-            <span>入库文档</span>
+      <aside class="rail rail-library" aria-label="知识库管理">
+        <div class="stats-row" aria-label="索引统计">
+          <div class="stat">
+            <span class="stat-label">入库文档</span>
             <strong id="document-count"><span class="loading-spinner" role="status" aria-label="加载中"></span></strong>
-          </article>
-          <article class="summary-item">
-            <span>向量切片</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">向量切片</span>
             <strong id="chunk-count"><span class="loading-spinner" role="status" aria-label="加载中"></span></strong>
-          </article>
-        </section>
+          </div>
+        </div>
 
-        <section class="upload-panel" aria-label="文档上传">
-          <div class="panel-title">
+        <section class="rail-section">
+          <div class="section-head">
             <h2>添加文档</h2>
-            <span id="upload-limit">PDF / Markdown / TXT</span>
+            <span class="section-hint" id="upload-limit">PDF / MD / TXT</span>
           </div>
           <div class="drop-zone" id="drop-zone" role="button" tabindex="0" aria-describedby="drop-zone-description">
-            <span class="drop-mark" aria-hidden="true">↑</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
             <strong>拖拽文件到这里</strong>
             <span id="drop-zone-description">或选择文件后自动上传并入向量库</span>
           </div>
           <input id="file-input" class="visually-hidden" type="file" multiple accept=".pdf,.md,.txt" />
-          <button class="secondary-button" id="choose-files-button" type="button">选择文件</button>
+          <button id="choose-files-button" class="ghost-button" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
+            选择文件
+          </button>
         </section>
 
-        <section class="jobs-panel" aria-label="上传任务">
-          <div class="panel-title">
+        <section class="rail-section">
+          <div class="section-head">
             <h2>处理任务</h2>
-            <span id="queue-summary">空闲</span>
+            <span class="section-hint" id="queue-summary">空闲</span>
           </div>
-          <div class="job-list" id="job-list" aria-live="polite" aria-busy="true">
+          <div class="item-list" id="job-list" aria-live="polite" aria-busy="true">
             <div class="loading-state"><span class="loading-spinner" aria-hidden="true"></span><span>加载中</span></div>
           </div>
         </section>
 
-        <section class="library-panel" aria-label="已入库文档">
-          <div class="panel-title">
+        <section class="rail-section">
+          <div class="section-head">
             <h2>已入库文档</h2>
-            <button class="text-button" id="reload-documents-button" type="button">刷新</button>
+            <button id="reload-documents-button" class="text-button" type="button">刷新</button>
           </div>
-          <div class="document-list" id="document-list" aria-live="polite" aria-busy="true">
+          <div class="item-list" id="document-list" aria-live="polite" aria-busy="true">
             <div class="loading-state"><span class="loading-spinner" aria-hidden="true"></span><span>加载中</span></div>
           </div>
         </section>
       </aside>
 
-      <section class="chat-panel" aria-label="知识库问答">
-        <div class="chat-header">
-          <div>
+      <section class="chat" aria-label="知识库问答">
+        <div class="chat-head">
+          <div class="chat-head-text">
             <h2>问答</h2>
             <p id="run-status" role="status" aria-live="polite">就绪</p>
           </div>
-          <button class="icon-button" id="clear-chat-button" type="button" title="清空对话" aria-label="清空对话">⌫</button>
+          <button id="clear-chat-button" class="icon-button" type="button" title="清空对话" aria-label="清空对话">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          </button>
         </div>
 
         <div class="chat-stream" id="chat-stream" aria-live="polite">
           <div class="empty-chat">
+            <span class="empty-mark" aria-hidden="true">RAG</span>
             <strong>等待提问</strong>
-            <span>答案将引用知识库中的 chunk_id。</span>
+            <span>答案将引用知识库中的 chunk_id</span>
           </div>
         </div>
 
-        <div class="retrieval-settings" role="group" aria-label="检索参数">
-          <label class="retrieval-field">
-            <span class="retrieval-label" id="retrieval-method-label">检索方式</span>
-            <select id="retrieval-method" form="ask-form" aria-labelledby="retrieval-method-label">
-              <option value="vector">向量检索</option>
-              <option value="bm25">BM25 关键词检索</option>
-              <option value="hybrid">混合检索</option>
-            </select>
+        <div class="settings-bar" role="group" aria-label="检索参数">
+          <div class="segmented" id="retrieval-method" role="radiogroup" aria-label="检索方式">
+            <label><input type="radio" name="retrieval-method" value="vector" form="ask-form" checked /><span>向量</span></label>
+            <label><input type="radio" name="retrieval-method" value="bm25" form="ask-form" /><span>BM25</span></label>
+            <label><input type="radio" name="retrieval-method" value="hybrid" form="ask-form" /><span>混合</span></label>
+          </div>
+          <label class="mini-field">
+            <span>Top-K</span>
+            <input id="retrieval-top-k" type="number" form="ask-form" min="1" max="100" step="1" value="20" required />
           </label>
-          <label class="retrieval-field">
-            <span class="retrieval-label">Top-K</span>
-            <input type="number" id="retrieval-top-k" form="ask-form" min="1" max="100" step="1" value="20" required />
+          <label class="mini-field">
+            <span>候选池</span>
+            <input id="candidate-pool" type="number" form="ask-form" min="20" max="500" step="1" value="100" required />
           </label>
-          <label class="retrieval-field">
-            <span class="retrieval-label" id="candidate-pool-label">候选池</span>
-            <input type="number" id="candidate-pool" form="ask-form" aria-labelledby="candidate-pool-label" min="20" max="500" step="1" value="100" required />
-          </label>
-          <label class="retrieval-field">
-            <span class="retrieval-label" id="threshold-label">相似度阈值</span>
-            <input type="range" id="similarity-threshold" form="ask-form" aria-labelledby="threshold-label" min="0" max="1" step="0.01" value="0.35" />
+          <label class="mini-field threshold-field">
+            <span>阈值</span>
+            <input id="similarity-threshold" type="range" form="ask-form" min="0" max="1" step="0.01" value="0.35" />
             <output id="similarity-threshold-value" for="similarity-threshold">0.35</output>
           </label>
         </div>
 
-        <form class="ask-form" id="ask-form">
+        <form id="ask-form" class="ask-form">
           <label class="visually-hidden" for="question">问题</label>
-          <textarea id="question" rows="2" placeholder="输入问题..."></textarea>
-          <button class="send-button" id="ask-button" type="submit" title="发送" aria-label="发送">↑</button>
+          <textarea id="question" rows="2" placeholder="输入问题，Enter 发送 · Shift+Enter 换行"></textarea>
+          <button id="ask-button" class="send-button" type="submit" title="发送" aria-label="发送">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+          </button>
         </form>
       </section>
 
-      <aside class="context-panel" aria-label="检索上下文">
-        <div class="panel-title">
-          <h2>问答过程</h2>
-        </div>
-        <div class="process-list" id="process-list" aria-live="polite"></div>
-        <div class="panel-title context-title">
-          <h2>匹配内容</h2>
-        </div>
-        <div class="context-list" id="context-list" aria-live="polite"></div>
+      <aside class="rail rail-context" aria-label="检索过程与上下文">
+        <section class="rail-section">
+          <div class="section-head"><h2>问答过程</h2></div>
+          <div class="process-list" id="process-list" aria-live="polite"></div>
+        </section>
+        <section class="rail-section grow">
+          <div class="section-head"><h2>匹配内容</h2></div>
+          <div class="context-list" id="context-list" aria-live="polite"></div>
+        </section>
       </aside>
     </main>
 
