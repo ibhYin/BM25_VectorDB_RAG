@@ -11,6 +11,8 @@
 - 网页内直接配置 LLM / Embedding 的请求地址、API Key 与模型名，保存后立即生效，无需修改 `.env`。
 - 模型配置按端点分为「本地」和「云端」两组：本地组读取本机 Ollama 的模型目录并显示体积，云端组读取 OpenAI 兼容的 `/models`；两组列表互不混用。
 - 真实展示问题编码、向量搜索、答案生成的状态和耗时。
+- 答案按 Markdown 渲染成标题、列表、加粗和行内代码，而不是一整段纯文本。
+- 回答里的 `[source: doc_id#chunk_id]` 渲染成可点击标签，点击直接跳转到原文对应切片并高亮。
 - 展示 Top-K 的 Chroma 距离、来源和完整原始切片文本。
 - 页面下拉框可切换向量检索与 BM25 关键词检索，两者共用已入库切片和 Top-K。
 - Enter 发送，Shift+Enter 换行。
@@ -29,7 +31,9 @@ scripts/            macOS 双击启动/停止脚本
 tests/              不访问真实外部服务的测试
 ```
 
-主入口是 `app/main.py`，公共业务逻辑集中在 `app/service.py`。
+主入口是 `app/main.py`，公共业务逻辑集中在 `app/service.py`。模型接入配置在
+`app/config.py`（运行时覆盖 + 持久化）和 `app/model_catalog.py`（模型发现）；
+索引建库用的 Embedding 模型记录在 `rag/index_manifest.py`。
 
 ## 安装
 
@@ -84,6 +88,11 @@ CANDIDATE_POOL_SIZE=100
 不一致（例如直接改了 `.env` 而没重新入库），页面顶部会出现常驻红色告警，直到重新入库。
 升级到本版本之前建立的索引没有这份记录，需要在下一次入库后才会生效。
 
+Chat 端点指向 `opencode.ai` 时，程序会自动附加该网关要求的 `x-opencode-session` 头
+（进程内稳定，用于路由和 prompt 缓存）并发送自定义 `User-Agent`；其他 OpenAI 兼容端点
+不会收到这两个头。部分网关会拒绝通用 HTTP 库的 User-Agent，因此模型列表请求复用同一个
+`User-Agent`。
+
 启用权限隔离时，复制 `config/access_policy.example.json` 为
 `config/access_policy.json`，并设置 `KNOWLEDGE_BASE_ID` 和
 `ACCESS_POLICY_FILE`。策略中的用户通过 `groups` 关联到知识库和文档的访问组；
@@ -122,15 +131,41 @@ python -m app.main web
 
 访问 <http://127.0.0.1:8000>。macOS 可以双击 `scripts/start_web.command` 启动并用 Google Chrome 打开，双击 `scripts/stop_web.command` 停止。
 
+## 回答与引用
+
+回答用轻量 Markdown 解析后渲染成真实 DOM（标题、有序/无序列表、加粗、行内代码、分隔线），
+全部通过 `createElement` + `textContent` 构建，不使用 `innerHTML`，避免模型输出注入。
+
+回答中的 `[source: doc_id#chunk_id]` 会被解析成可点击标签：显示为「文档标题 ¶切片号」，
+悬停显示完整的 `doc_id · chunk_id`。点击后打开该文档并跳转到对应切片，目标切片会高亮并
+滚动到视口中央。若引用只写到 `doc_id` 而不带 `#chunk_id`，则只打开文档开头。
+
+跳转依赖 `GET /api/documents/:doc_id` 的 `focus` 参数：后端按 `chunk_id` 查出它在文档中的
+真实位置，再把该页向前偏移 2 个切片后返回，所以前端不需要假设「切片号等于位置」。
+
 ## Web API
 
-- `GET /api/status`：运行配置和索引状态。
+- `GET /api/status`：运行配置、索引状态，以及建库模型和是否与当前配置不一致。
+- `GET /api/config`：当前模型接入配置（API Key 不回显，只给 `••••` 加尾 4 位）和索引建库
+  模型。仅管理员。
+- `POST /api/config`：更新 LLM / Embedding 的请求地址、API Key 与模型名，写入
+  `config/runtime_config.json`。**省略**的字段保持不变；API Key 和模型名留空也保持不变；
+  Embedding 的地址留空表示复用 LLM 的地址，LLM 的地址留空表示回退到 SDK 默认端点。
+  仅管理员。
+- `POST /api/models`：按 `target`（`llm` / `embedding`）列出该端点可用模型，返回
+  `{scope, models, error}`；`scope` 为 `local` 时模型带磁盘体积。仅管理员。
 - `GET /api/documents`：已入库文档及切片数。
-- `GET /api/upload-jobs`：上传索引任务。
-- `POST /api/documents/upload`：上传 `files`，支持 PDF、Markdown、TXT。
+- `GET /api/documents/:doc_id`：文档切片，支持 `offset`、`limit` 和 `focus`（定位到某个
+  `chunk_id`）。
+- `DELETE /api/documents/:doc_id`：删除该文档的全部切片，不影响源文件。仅管理员。
+- `GET /api/upload-jobs`：上传索引任务。仅管理员。
+- `POST /api/documents/upload`：上传 `files`，支持 PDF、Markdown、TXT。仅管理员。
 - `POST /api/answer-jobs`：创建异步问答任务。
 - `GET /api/answer-jobs/:id`：查看编码、检索、生成进度和向量命中。
 - `POST /api/ask`：同步问答兼容接口。
+
+开发用的 `scripts/dev_proxy.py` 另外提供 `GET /api/me`、`GET /login?user=ID` 和
+`GET /logout`，用于在浏览器里切换身份并注入 `X-User-ID`。
 
 三个检索方式：
 
@@ -166,15 +201,20 @@ TLS、真实认证和限流。
 pytest -q
 ```
 
-测试覆盖 PDF/OCR 分流、切片元数据、向量 ID、安全重建、独立 Embedding 端点、并发问答、上传边界、原始命中证据和 Web 请求安全。
+测试覆盖 PDF/OCR 分流、切片元数据、向量 ID、安全重建、独立 Embedding 端点、并发问答、
+上传边界、原始命中证据、Web 请求安全、运行时配置读写、模型目录（本地体积 / 云端列表）、
+索引 manifest、切片定位，以及网关请求头。测试不访问真实外部服务。
 
 ## 运行数据
 
 以下内容不会提交到 Git：
 
 - `.env`
-- `.chroma*/`
+- `config/runtime_config.json`（网页里保存的模型配置，**明文含 API Key**）
+- `config/access_policy.json`
+- `.chroma*/`（含索引目录内的 `index_manifest.json`）
 - `data/raw/` 中的真实文档
 - `.web_upload_jobs.json`
 - `output/`
+- `.playwright-cli/`
 - 虚拟环境和 Python 缓存
