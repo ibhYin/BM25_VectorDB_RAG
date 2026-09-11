@@ -5,7 +5,7 @@ from langchain_core.documents import Document
 
 from app.access import AccessPolicy
 from app.config import Settings
-from app.service import answer_question, list_indexed_documents
+from app.service import answer_question, get_indexed_document, list_indexed_documents
 from rag.retriever import search_bm25
 from rag.splitter import split_documents
 
@@ -149,3 +149,35 @@ def test_document_listing_filters_unauthorized_metadata(tmp_path: Path, monkeypa
     )
 
     assert [doc["doc_id"] for doc in list_indexed_documents(settings, policy().user_context("alice"))] == ["ok"]
+
+
+def test_document_detail_hides_unauthorized_chunks(tmp_path: Path, monkeypatch) -> None:
+    class Store:
+        def get(self, where, include):
+            return {
+                "documents": ["财务机密"],
+                "metadatas": [
+                    {
+                        "doc_id": "secret",
+                        "chunk_id": "secret#chunk_001",
+                        "knowledge_base_id": "engineering",
+                        "knowledge_base_access_group": "engineering",
+                        "document_access_group": "finance",
+                    }
+                ],
+            }
+
+    policy_path = tmp_path / "access.json"
+    policy_path.write_text(
+        '{"users": {"alice": {"groups": ["engineering"]}}}', encoding="utf-8"
+    )
+    monkeypatch.setattr("app.service.get_vector_store", lambda *args, **kwargs: Store())
+    settings = Settings(
+        _env_file=None,
+        access_policy_file=policy_path,
+        knowledge_base_id="engineering",
+        chroma_persist_dir=tmp_path,
+    )
+
+    with pytest.raises(KeyError):
+        get_indexed_document(settings, "secret", policy().user_context("alice"))

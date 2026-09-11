@@ -2,16 +2,18 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from app.access import UserContext, load_access_policy
 from app.config import get_settings
 from app.uploads import parse_multipart
 from rag.constants import SUPPORTED_SUFFIXES
+from rag.index_manifest import read_index_embedding_model
 
 
 STATIC_DIR = Path(__file__).resolve().parent / "web_static"
@@ -49,6 +51,9 @@ class WebRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         self._run_request(self._dispatch_post)
 
+    def do_DELETE(self) -> None:
+        self._run_request(self._dispatch_delete)
+
     def _dispatch_get(self) -> None:
         parsed = urlparse(self.path)
 
@@ -56,8 +61,14 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._send_static_file(STATIC_DIR / "index.html", "text/html; charset=utf-8")
         elif parsed.path == "/api/status":
             self._send_json(self._status_payload())
+        elif parsed.path == "/api/config":
+            self._handle_get_config()
         elif parsed.path == "/api/documents":
             self._handle_documents()
+        elif parsed.path.startswith("/api/documents/"):
+            self._handle_document_detail(
+                parsed.path.removeprefix("/api/documents/"), parsed.query
+            )
         elif parsed.path == "/api/upload-jobs":
             from app.uploads import get_upload_store
 
@@ -76,10 +87,22 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/ask":
             self._handle_ask()
+        elif parsed.path == "/api/config":
+            self._handle_update_config()
+        elif parsed.path == "/api/models":
+            self._handle_list_models()
         elif parsed.path == "/api/documents/upload":
             self._handle_document_upload()
         elif parsed.path == "/api/answer-jobs":
             self._handle_create_answer_job()
+        else:
+            raise RequestError(HTTPStatus.NOT_FOUND, "Not found")
+
+    def _dispatch_delete(self) -> None:
+        parsed = urlparse(self.path)
+
+        if parsed.path.startswith("/api/documents/"):
+            self._handle_document_delete(parsed.path.removeprefix("/api/documents/"))
         else:
             raise RequestError(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -132,6 +155,53 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 "vector_hits": result.get("vector_hits", []),
             }
         )
+
+    def _handle_get_config(self) -> None:
+        from app.config import runtime_config_view
+
+        settings = get_settings()
+        self._require_admin()
+        self._send_json({**runtime_config_view(), **self._index_model_info(settings)})
+
+    def _handle_update_config(self) -> None:
+        from app.config import runtime_config_view, update_runtime_config
+
+        self._require_admin()
+        settings = get_settings()
+        updates = self._read_config_updates(self._read_json())
+        try:
+            update_runtime_config(updates)
+        except ValueError as exc:
+            raise RequestError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+        self._send_json({**runtime_config_view(), **self._index_model_info(settings)})
+
+    def _handle_list_models(self) -> None:
+        from app.config import endpoint_credentials
+        from app.model_catalog import list_models
+
+        self._require_admin()
+        payload = self._read_json()
+        target = payload.get("target")
+        if target not in ("llm", "embedding"):
+            raise RequestError(
+                HTTPStatus.BAD_REQUEST, "target must be llm or embedding"
+            )
+
+        stored_base_url, stored_api_key = endpoint_credentials(target)
+        raw_base_url = payload.get("base_url")
+        base_url = (
+            stored_base_url
+            if raw_base_url is None
+            else self._clean_base_url(raw_base_url, "base_url")
+        )
+        raw_api_key = payload.get("api_key")
+        # An empty key means "use the saved one"; the UI never echoes secrets.
+        api_key = (
+            raw_api_key.strip()
+            if isinstance(raw_api_key, str) and raw_api_key.strip()
+            else stored_api_key
+        )
+        self._send_json({"target": target, **list_models(base_url, api_key)})
 
     def _handle_create_answer_job(self) -> None:
         from app.answer_jobs import get_answer_store
@@ -214,6 +284,86 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
         self._send_json(job, status=HTTPStatus.ACCEPTED)
 
+    def _handle_document_delete(self, raw_doc_id: str) -> None:
+        from app.service import delete_indexed_documents
+
+        self._require_admin()
+        doc_id = unquote(raw_doc_id).strip()
+        if not doc_id:
+            raise RequestError(HTTPStatus.BAD_REQUEST, "doc_id is required")
+        deleted_chunks = delete_indexed_documents(get_settings(), [doc_id])
+        if not deleted_chunks:
+            raise RequestError(HTTPStatus.NOT_FOUND, "Document not found")
+        self._send_json({"doc_id": doc_id, "deleted_chunks": deleted_chunks})
+
+    def _handle_document_detail(self, raw_doc_id: str, query: str) -> None:
+        from app.service import get_indexed_document
+
+        settings = get_settings()
+        user = self._current_user(settings)
+        doc_id = unquote(raw_doc_id).strip()
+        if not doc_id:
+            raise RequestError(HTTPStatus.BAD_REQUEST, "doc_id is required")
+
+        params = parse_qs(query)
+        offset = self._read_query_int(params, "offset", default=0, minimum=0)
+        limit = self._read_query_int(
+            params, "limit", default=50, minimum=1, maximum=200
+        )
+        focus_chunk_id = (params.get("focus") or [""])[0].strip()[:200]
+        try:
+            document = get_indexed_document(
+                settings,
+                doc_id,
+                user,
+                offset,
+                limit,
+                focus_chunk_id or None,
+            )
+        except KeyError as exc:
+            raise RequestError(HTTPStatus.NOT_FOUND, "Document not found") from exc
+        except PermissionError as exc:
+            raise RequestError(HTTPStatus.UNAUTHORIZED, str(exc)) from exc
+        self._send_json(document)
+
+    @staticmethod
+    def _read_query_int(
+        params: dict[str, list[str]],
+        key: str,
+        *,
+        default: int,
+        minimum: int,
+        maximum: int | None = None,
+    ) -> int:
+        values = params.get(key)
+        if not values or values[0] == "":
+            return default
+        try:
+            value = int(values[0])
+        except ValueError as exc:
+            raise RequestError(
+                HTTPStatus.BAD_REQUEST, f"{key} must be an integer"
+            ) from exc
+        if value < minimum or (maximum is not None and value > maximum):
+            bounds = (
+                f"{minimum} and {maximum}" if maximum is not None else f"{minimum}+"
+            )
+            raise RequestError(
+                HTTPStatus.BAD_REQUEST, f"{key} must be between {bounds}"
+            )
+        return value
+
+    @staticmethod
+    def _index_model_info(settings) -> dict[str, object]:
+        """Which embedding model built the stored vectors, and whether it still matches."""
+
+        index_model = read_index_embedding_model(settings.chroma_persist_dir)
+        return {
+            "index_embedding_model": index_model,
+            "embedding_model_mismatch": bool(index_model)
+            and index_model != settings.embedding_model,
+        }
+
     def _status_payload(self) -> dict[str, object]:
         settings = get_settings()
         supported_files = []
@@ -245,6 +395,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             "openai_base_url": settings.openai_base_url,
             "supported_files": supported_files,
             "chroma_exists": (settings.chroma_persist_dir / "chroma.sqlite3").is_file(),
+            **self._index_model_info(settings),
         }
 
     def _read_json(self) -> dict[str, object]:
@@ -289,7 +440,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         policy = load_access_policy(settings.access_policy_file)
         user = self._current_user(settings)
         if policy is not None and (user is None or not policy.is_admin(user)):
-            raise RequestError(HTTPStatus.FORBIDDEN, "Administrator access is required")
+            raise RequestError(HTTPStatus.FORBIDDEN, "需要管理员权限")
         return user
 
     @staticmethod
@@ -298,6 +449,58 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         if not isinstance(value, bool):
             raise RequestError(HTTPStatus.BAD_REQUEST, f"{key} must be a boolean")
         return value
+
+    MAX_MODEL_NAME_LENGTH = 128
+    MODEL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$")
+
+    @staticmethod
+    def _clean_base_url(value: object, field: str) -> str:
+        if not isinstance(value, str):
+            raise RequestError(HTTPStatus.BAD_REQUEST, f"{field} must be a string")
+        value = value.strip()
+        if value and not value.lower().startswith(("http://", "https://")):
+            raise RequestError(
+                HTTPStatus.BAD_REQUEST,
+                f"{field} must start with http:// or https://",
+            )
+        return value
+
+    @classmethod
+    def _clean_model_name(cls, value: object, field: str) -> str:
+        if not isinstance(value, str):
+            raise RequestError(HTTPStatus.BAD_REQUEST, f"{field} must be a string")
+        value = value.strip()
+        if not value:
+            return ""
+        if len(value) > cls.MAX_MODEL_NAME_LENGTH or not cls.MODEL_NAME_PATTERN.match(value):
+            raise RequestError(
+                HTTPStatus.BAD_REQUEST,
+                f"{field} 只能包含字母、数字和 . _ : / @ + -",
+            )
+        return value
+
+    @classmethod
+    def _read_config_updates(cls, payload: dict[str, object]) -> dict[str, str]:
+        updates: dict[str, str] = {}
+        for field in ("openai_base_url", "embedding_base_url"):
+            if field in payload:
+                updates[field] = cls._clean_base_url(payload[field], field)
+        for field in ("openai_api_key", "embedding_api_key"):
+            if field not in payload:
+                continue
+            value = payload[field]
+            if not isinstance(value, str):
+                raise RequestError(HTTPStatus.BAD_REQUEST, f"{field} must be a string")
+            value = value.strip()
+            # An empty key means "keep the existing one": the UI never echoes secrets.
+            if value:
+                updates[field] = value
+        for field in ("llm_model", "embedding_model"):
+            if field in payload:
+                value = cls._clean_model_name(payload[field], field)
+                if value:
+                    updates[field] = value
+        return updates
 
     @staticmethod
     def _read_retrieval_params(

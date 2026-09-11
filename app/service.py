@@ -9,6 +9,7 @@ from typing import TypedDict
 from app.config import Settings, get_settings
 from app.access import UserContext, load_access_policy
 from rag.indexer import build_vector_index
+from rag.index_manifest import write_index_manifest
 from rag.loaders import load_document_file
 from rag.retriever import (
     build_vector_hits,
@@ -18,7 +19,12 @@ from rag.retriever import (
     search_bm25,
 )
 from rag.splitter import split_documents
-from rag.vector_store import get_embeddings, get_vector_store, replace_documents
+from rag.vector_store import (
+    delete_documents,
+    get_embeddings,
+    get_vector_store,
+    replace_documents,
+)
 
 
 class KnowledgeBaseLock:
@@ -174,8 +180,121 @@ def ingest_files(settings: Settings, paths: list[Path]) -> FileIngestResult:
             embedding_base_url=settings.embedding_base_url,
             knowledge_base_id=settings.knowledge_base_id,
         )
+        write_index_manifest(settings.chroma_persist_dir, settings.embedding_model)
 
     return FileIngestResult(len(paths), len(documents), len(chunks))
+
+
+def delete_indexed_documents(settings: Settings, doc_ids: list[str]) -> int:
+    """Delete every chunk of the given documents from the configured knowledge base."""
+
+    if not any(doc_id.strip() for doc_id in doc_ids):
+        raise ValueError("At least one doc_id is required")
+
+    with knowledge_base_lock.write():
+        return delete_documents(
+            doc_ids,
+            persist_dir=settings.chroma_persist_dir,
+            embedding_model=settings.embedding_model,
+            embedding_api_key=settings.embedding_api_key,
+            embedding_base_url=settings.embedding_base_url,
+            knowledge_base_id=settings.knowledge_base_id,
+        )
+
+
+def _chunk_order(metadata: dict[str, object]) -> int:
+    """Chunk ids are "<doc_id>#chunk_007", assigned in load order."""
+
+    chunk_id = str(metadata.get("chunk_id", ""))
+    suffix = chunk_id.rsplit("_", 1)[-1] if "_" in chunk_id else ""
+    return int(suffix) if suffix.isdigit() else 0
+
+
+def get_indexed_document(
+    settings: Settings,
+    doc_id: str,
+    user: UserContext | None = None,
+    offset: int = 0,
+    limit: int = 50,
+    focus_chunk_id: str | None = None,
+) -> dict[str, object]:
+    """Return one indexed document's chunks in index order, paginated.
+
+    ``focus_chunk_id`` recentres the page on a cited chunk so the UI can jump
+    straight to it from a citation.
+    """
+
+    doc_id = doc_id.strip()
+    if not doc_id:
+        raise ValueError("doc_id is required")
+    access_policy = load_access_policy(settings.access_policy_file)
+    if access_policy is not None and user is None:
+        raise PermissionError("Authenticated user context is required")
+
+    with knowledge_base_lock.read():
+        result = get_vector_store(
+            settings.chroma_persist_dir,
+            settings.embedding_model,
+            settings.embedding_api_key,
+            settings.embedding_base_url,
+        ).get(
+            where={
+                "$and": [
+                    {"doc_id": doc_id},
+                    {"knowledge_base_id": settings.knowledge_base_id},
+                ]
+            },
+            include=["documents", "metadatas"],
+        )
+
+    entries: list[tuple[dict[str, object], str]] = []
+    documents = result.get("documents", []) or []
+    metadatas = result.get("metadatas", []) or []
+    for text, raw_metadata in zip(documents, metadatas):
+        metadata = raw_metadata or {}
+        if access_policy is not None and not access_policy.can_access(
+            metadata, user, settings.knowledge_base_id
+        ):
+            continue
+        entries.append((metadata, text or ""))
+    if not entries:
+        raise KeyError("Document not found")
+
+    entries.sort(key=lambda entry: _chunk_order(entry[0]))
+    if focus_chunk_id:
+        position = next(
+            (
+                index
+                for index, (chunk_metadata, _) in enumerate(entries)
+                if str(chunk_metadata.get("chunk_id", "")) == focus_chunk_id
+            ),
+            None,
+        )
+        if position is not None:
+            # Land a couple of chunks early so the target is not the very first card.
+            offset = max(0, position - 2)
+    page = entries[offset : offset + limit]
+    metadata = entries[0][0]
+    return {
+        "doc_id": doc_id,
+        "title": str(metadata.get("title") or doc_id),
+        "source": str(metadata.get("source") or ""),
+        "chunk_count": len(entries),
+        "offset": offset,
+        "limit": limit,
+        "chunks": [
+            {
+                "chunk_id": str(chunk_metadata.get("chunk_id", "")),
+                "text": text,
+                "page": chunk_metadata.get("page"),
+                "page_label": str(chunk_metadata.get("page_label", "")),
+                "section_path": str(chunk_metadata.get("section_path", "")),
+                "start_char": int(chunk_metadata.get("start_char", 0)),
+                "end_char": int(chunk_metadata.get("end_char", 0)),
+            }
+            for chunk_metadata, text in page
+        ],
+    }
 
 
 def list_indexed_documents(

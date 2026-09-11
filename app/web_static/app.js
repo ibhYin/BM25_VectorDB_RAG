@@ -16,9 +16,33 @@ const elements = {
   vectorStatus: document.querySelector("#vector-status"),
   modelStatus: document.querySelector("#model-status"),
   refreshButton: document.querySelector("#refresh-button"),
+  configButton: document.querySelector("#config-button"),
+  configDialog: document.querySelector("#config-dialog"),
+  configForm: document.querySelector("#config-form"),
+  configClose: document.querySelector("#config-close"),
+  configCancel: document.querySelector("#config-cancel"),
+  configSave: document.querySelector("#config-save"),
+  configStatus: document.querySelector("#config-status"),
+  configLlmModel: document.querySelector("#config-llm-model"),
+  configEmbeddingModel: document.querySelector("#config-embedding-model"),
+  configLlmModelCustom: document.querySelector("#config-llm-model-custom"),
+  configEmbeddingModelCustom: document.querySelector("#config-embedding-model-custom"),
+  configEmbeddingWarning: document.querySelector("#config-embedding-warning"),
+  configIndexModel: document.querySelector("#config-index-model"),
+  indexWarning: document.querySelector("#index-warning"),
+  configLlmScope: document.querySelector("#config-llm-scope"),
+  configEmbeddingScope: document.querySelector("#config-embedding-scope"),
+  configLlmModelsHint: document.querySelector("#config-llm-models-hint"),
+  configEmbeddingModelsHint: document.querySelector("#config-embedding-models-hint"),
+  configRefreshModels: document.querySelector("#config-refresh-models"),
+  configOpenaiBaseUrl: document.querySelector("#config-openai-base-url"),
+  configOpenaiApiKey: document.querySelector("#config-openai-api-key"),
+  configEmbeddingBaseUrl: document.querySelector("#config-embedding-base-url"),
+  configEmbeddingApiKey: document.querySelector("#config-embedding-api-key"),
   documentCount: document.querySelector("#document-count"),
   chunkCount: document.querySelector("#chunk-count"),
   uploadLimit: document.querySelector("#upload-limit"),
+  uploadPermission: document.querySelector("#upload-permission"),
   dropZone: document.querySelector("#drop-zone"),
   fileInput: document.querySelector("#file-input"),
   chooseFilesButton: document.querySelector("#choose-files-button"),
@@ -29,6 +53,20 @@ const elements = {
   runStatus: document.querySelector("#run-status"),
   clearChatButton: document.querySelector("#clear-chat-button"),
   chatStream: document.querySelector("#chat-stream"),
+  chatView: document.querySelector("#chat-view"),
+  documentView: document.querySelector("#document-view"),
+  docBackButton: document.querySelector("#doc-back-button"),
+  docTitle: document.querySelector("#doc-title"),
+  docMeta: document.querySelector("#doc-meta"),
+  docBody: document.querySelector("#doc-body"),
+  docProgress: document.querySelector("#doc-progress"),
+  docLoadMore: document.querySelector("#doc-load-more"),
+  docViewMode: document.querySelector("#doc-view-mode"),
+  workspace: document.querySelector(".workspace"),
+  railLibrary: document.querySelector(".rail-library"),
+  railContext: document.querySelector(".rail-context"),
+  resizerLeft: document.querySelector("#resizer-left"),
+  resizerRight: document.querySelector("#resizer-right"),
   askForm: document.querySelector("#ask-form"),
   askButton: document.querySelector("#ask-button"),
   question: document.querySelector("#question"),
@@ -39,7 +77,20 @@ const elements = {
   similarityThresholdValue: document.querySelector("#similarity-threshold-value"),
   contextList: document.querySelector("#context-list"),
   processList: document.querySelector("#process-list"),
+  toast: document.querySelector("#toast"),
 };
+
+let toastTimer = null;
+
+function showToast(message, variant = "ok") {
+  elements.toast.textContent = message;
+  elements.toast.className = `toast ${variant}`;
+  elements.toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    elements.toast.hidden = true;
+  }, 2800);
+}
 
 function getRetrievalMethod() {
   const checked = document.querySelector('input[name="retrieval-method"]:checked');
@@ -49,6 +100,18 @@ function getRetrievalMethod() {
 function setRetrievalMethod(value) {
   const radio = document.querySelector(`input[name="retrieval-method"][value="${value}"]`);
   if (radio) radio.checked = true;
+}
+
+function canUpload() {
+  return !identityState.user || identityState.isAdmin;
+}
+
+function renderUploadPermission() {
+  const allowed = canUpload();
+  elements.dropZone.setAttribute("aria-disabled", String(!allowed));
+  elements.dropZone.classList.toggle("disabled", !allowed);
+  elements.chooseFilesButton.disabled = !allowed;
+  elements.uploadPermission.hidden = allowed;
 }
 
 async function requestJson(url, options = {}) {
@@ -89,16 +152,32 @@ async function refreshStatus() {
     }
     elements.documentCount.textContent = String(state.documents.length);
     elements.chunkCount.textContent = String(chunkCount);
+    renderIndexWarning(status);
   } catch (error) {
     elements.serviceSummary.textContent = "服务连接失败";
     elements.vectorStatus.textContent = "服务不可用";
     elements.modelStatus.textContent = "服务不可用";
     elements.documentCount.textContent = "--";
     elements.chunkCount.textContent = "--";
+    elements.indexWarning.hidden = true;
   } finally {
     setStatusLoading(false);
     elements.refreshButton.disabled = false;
   }
+}
+
+// A changed embedding model means stored vectors no longer match the config, so
+// the warning stays visible at the top of the page until the corpus is reindexed.
+function renderIndexWarning(status) {
+  const element = elements.indexWarning;
+  if (!status.embedding_model_mismatch || !status.index_embedding_model) {
+    element.hidden = true;
+    return;
+  }
+  element.textContent =
+    `向量模型已变更：索引由 ${status.index_embedding_model} 建立，` +
+    `当前配置为 ${status.embedding_model}。检索结果可能失效，请重新入库文档。`;
+  element.hidden = false;
 }
 
 async function refreshDocuments() {
@@ -161,8 +240,12 @@ function renderDocuments() {
     const item = document.createElement("article");
     item.className = "document-item";
 
-    const title = document.createElement("strong");
+    const title = document.createElement("button");
+    title.type = "button";
+    title.className = "document-open";
+    title.title = "查看文档内容";
     title.textContent = indexedDocument.title || "未命名文档";
+    title.addEventListener("click", () => openDocument(indexedDocument));
 
     const source = document.createElement("span");
     source.className = "document-source";
@@ -172,8 +255,40 @@ function renderDocuments() {
     chunks.className = "chunk-count";
     chunks.textContent = `${indexedDocument.chunk_count} 片`;
 
-    item.append(title, source, chunks);
+    if (identityState.isAdmin) {
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "row-action";
+      remove.title = "从向量库删除";
+      remove.setAttribute("aria-label", `删除 ${title.textContent}`);
+      remove.innerHTML =
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+      remove.addEventListener("click", () => deleteDocument(indexedDocument));
+      item.append(title, source, chunks, remove);
+    } else {
+      item.append(title, source, chunks);
+    }
     elements.documentList.append(item);
+  }
+}
+
+async function deleteDocument(indexedDocument) {
+  const title = indexedDocument.title || "未命名文档";
+  const confirmed = confirm(
+    `从向量库删除「${title}」的全部 ${indexedDocument.chunk_count} 个切片？\n\n` +
+      `源文件不受影响；若之后重新索引 data/raw，该文档会再次入库。`,
+  );
+  if (!confirmed) return;
+
+  try {
+    const result = await requestJson(
+      `/api/documents/${encodeURIComponent(indexedDocument.doc_id)}`,
+      { method: "DELETE" },
+    );
+    showToast(`已删除 ${result.deleted_chunks} 个切片`);
+    await refreshDocuments();
+  } catch (error) {
+    showToast(error.message, "error");
   }
 }
 
@@ -187,6 +302,10 @@ function renderLibraryError(message) {
 }
 
 function uploadFiles(fileList) {
+  if (!canUpload()) {
+    showToast("仅管理员可上传文档", "error");
+    return;
+  }
   const files = Array.from(fileList || []);
   if (!files.length) return;
 
@@ -556,6 +675,129 @@ function renderContextLoading() {
   elements.contextList.append(loading);
 }
 
+// A citation may or may not carry a chunk id; bold and inline code ride along in
+// the same pass so the whole answer can be rendered without touching innerHTML.
+const INLINE_PATTERN =
+  /\[source:\s*([^\]#\s]+)(?:#(chunk_\d+))?\]|\*\*([^*]+)\*\*|`([^`]+)`/g;
+const DOC_LABEL_LIMIT = 12;
+
+function shortDocLabel(docId) {
+  const indexedDocument = state.documents.find((item) => item.doc_id === docId);
+  const name = (indexedDocument && indexedDocument.title) || docId;
+  return name.length > DOC_LABEL_LIMIT ? `${name.slice(0, DOC_LABEL_LIMIT)}…` : name;
+}
+
+function createCitationChip(docId, chunkId) {
+  const chip = document.createElement("button");
+  chip.type = "button";
+  chip.className = "citation";
+  const label = shortDocLabel(docId);
+  chip.textContent = chunkId ? `${label} ¶${chunkId.replace(/^chunk_/, "")}` : label;
+  chip.title = chunkId
+    ? `在原文中查看 ${docId} · ${chunkId}`
+    : `打开文档 ${docId}`;
+  chip.addEventListener("click", () => jumpToChunk(docId, chunkId));
+  return chip;
+}
+
+function renderInline(text) {
+  const fragment = document.createDocumentFragment();
+  let cursor = 0;
+  INLINE_PATTERN.lastIndex = 0;
+  let match;
+  while ((match = INLINE_PATTERN.exec(text)) !== null) {
+    if (match.index > cursor) {
+      fragment.append(document.createTextNode(text.slice(cursor, match.index)));
+    }
+    if (match[1]) {
+      fragment.append(createCitationChip(match[1], match[2] || ""));
+    } else if (match[3] !== undefined) {
+      const strong = document.createElement("strong");
+      strong.textContent = match[3];
+      fragment.append(strong);
+    } else {
+      const code = document.createElement("code");
+      code.textContent = match[4];
+      fragment.append(code);
+    }
+    cursor = match.index + match[0].length;
+  }
+  if (cursor < text.length) {
+    fragment.append(document.createTextNode(text.slice(cursor)));
+  }
+  return fragment;
+}
+
+// The model answers in light markdown; render just the subset it actually emits
+// (headings, lists, bold, inline code, citations) as real DOM nodes.
+function renderAnswer(text) {
+  const fragment = document.createDocumentFragment();
+  let paragraph = [];
+  let list = null;
+  let listTag = "";
+
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    const block = document.createElement("p");
+    block.append(renderInline(paragraph.join(" ")));
+    fragment.append(block);
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (!list) return;
+    fragment.append(list);
+    list = null;
+    listTag = "";
+  };
+
+  for (const rawLine of String(text || "").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+    if (/^[-*_]{3,}$/.test(line)) {
+      flushParagraph();
+      flushList();
+      fragment.append(document.createElement("hr"));
+      continue;
+    }
+
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (heading) {
+      flushParagraph();
+      flushList();
+      const node = document.createElement(heading[1].length <= 2 ? "h3" : "h4");
+      node.append(renderInline(heading[2]));
+      fragment.append(node);
+      continue;
+    }
+
+    const bullet = /^[-*+]\s+(.*)$/.exec(line);
+    const numbered = bullet ? null : /^\d+[.)]\s+(.*)$/.exec(line);
+    if (bullet || numbered) {
+      flushParagraph();
+      const tag = bullet ? "ul" : "ol";
+      if (listTag !== tag) {
+        flushList();
+        list = document.createElement(tag);
+        listTag = tag;
+      }
+      const item = document.createElement("li");
+      item.append(renderInline((bullet || numbered)[1]));
+      list.append(item);
+      continue;
+    }
+
+    flushList();
+    paragraph.push(line);
+  }
+  flushParagraph();
+  flushList();
+  return fragment;
+}
+
 function addChatMessage(type, text) {
   const empty = elements.chatStream.querySelector(".empty-chat");
   if (empty) {
@@ -564,7 +806,11 @@ function addChatMessage(type, text) {
 
   const message = document.createElement("article");
   message.className = `chat-message ${type}`;
-  message.textContent = text;
+  if (type === "answer") {
+    message.append(renderAnswer(text));
+  } else {
+    message.textContent = text;
+  }
   elements.chatStream.append(message);
   elements.chatStream.scrollTop = elements.chatStream.scrollHeight;
 }
@@ -656,12 +902,20 @@ elements.refreshButton.addEventListener("click", async () => {
   await Promise.all([refreshStatus(), refreshDocuments()]);
 });
 elements.reloadDocumentsButton.addEventListener("click", refreshDocuments);
-elements.chooseFilesButton.addEventListener("click", () => elements.fileInput.click());
-elements.dropZone.addEventListener("click", () => elements.fileInput.click());
+function openFilePicker() {
+  if (!canUpload()) {
+    showToast("仅管理员可上传文档", "error");
+    return;
+  }
+  elements.fileInput.click();
+}
+
+elements.chooseFilesButton.addEventListener("click", openFilePicker);
+elements.dropZone.addEventListener("click", openFilePicker);
 elements.dropZone.addEventListener("keydown", (event) => {
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
-    elements.fileInput.click();
+    openFilePicker();
   }
 });
 elements.fileInput.addEventListener("change", () => {
@@ -672,7 +926,9 @@ elements.fileInput.addEventListener("change", () => {
 for (const eventName of ["dragenter", "dragover"]) {
   elements.dropZone.addEventListener(eventName, (event) => {
     event.preventDefault();
-    elements.dropZone.classList.add("dragging");
+    if (canUpload()) {
+      elements.dropZone.classList.add("dragging");
+    }
   });
 }
 for (const eventName of ["dragleave", "drop"]) {
@@ -693,12 +949,6 @@ elements.question.addEventListener("keydown", (event) => {
     elements.askForm.requestSubmit();
   }
 });
-
-renderContext();
-renderProcess();
-loadIdentity();
-refreshDocuments();
-pollJobs();
 
 function updateRetrievalControls() {
   const method = getRetrievalMethod();
@@ -723,18 +973,25 @@ elements.retrievalMethod.addEventListener("change", () => {
   if (!state.answerJob) renderProcess();
 });
 
-const identityState = { user: null, users: [] };
+const identityState = { user: null, users: [], isAdmin: false };
 
 async function loadIdentity() {
   try {
     const payload = await requestJson("/api/me");
     identityState.user = payload.user;
     identityState.users = payload.users || [];
+    identityState.isAdmin = Boolean(payload.is_admin);
   } catch (_) {
     identityState.user = null;
     identityState.users = [];
+    identityState.isAdmin = false;
   }
   renderUserSwitcher();
+  renderConfigButton();
+  renderUploadPermission();
+  if (state.documents.length) {
+    renderDocuments();
+  }
 }
 
 function renderUserSwitcher() {
@@ -788,3 +1045,672 @@ document.addEventListener("keydown", (event) => {
     elements.userButton.setAttribute("aria-expanded", "false");
   }
 });
+
+const configState = { loaded: null, models: { llm: "", embedding: "" } };
+
+function canConfigure() {
+  return !identityState.user || identityState.isAdmin;
+}
+
+function renderConfigButton() {
+  elements.configButton.hidden = !canConfigure();
+}
+
+function setConfigStatus(message, variant = "") {
+  elements.configStatus.textContent = message;
+  elements.configStatus.className = `config-status${variant ? ` ${variant}` : ""}`;
+}
+
+async function openConfig() {
+  if (!canConfigure()) return;
+  elements.configForm.reset();
+  configState.models = { llm: "", embedding: "" };
+  setConfigStatus("正在读取当前配置...");
+  elements.configSave.disabled = true;
+  elements.configDialog.showModal();
+  try {
+    const config = await requestJson("/api/config");
+    configState.loaded = config;
+    elements.configOpenaiBaseUrl.value = config.openai_base_url || "";
+    elements.configEmbeddingBaseUrl.value = config.embedding_base_url || "";
+    configState.models = {
+      llm: config.llm_model || "",
+      embedding: config.embedding_model || "",
+    };
+    elements.configOpenaiApiKey.placeholder = config.openai_api_key_set
+      ? `已配置 ${config.openai_api_key_hint} · 留空保持不变`
+      : "留空则保持不变";
+    elements.configEmbeddingApiKey.placeholder = config.embedding_api_key_set
+      ? `已配置 ${config.embedding_api_key_hint} · 留空保持不变`
+      : "留空则保持不变";
+    setConfigStatus("");
+  } catch (error) {
+    setConfigStatus(error.message, "error");
+  } finally {
+    elements.configSave.disabled = false;
+  }
+  renderModelSelect("llm", []);
+  renderModelSelect("embedding", []);
+  renderScope("llm");
+  renderScope("embedding");
+  renderEmbeddingStatuses();
+  await Promise.all([loadModels("llm"), loadModels("embedding")]);
+}
+
+// Mirrors app/model_catalog.is_local_endpoint: loopback is "this machine's own
+// model server" (Ollama), anything else is treated as a remote gateway.
+function isLocalEndpoint(baseUrl) {
+  let host = "";
+  try {
+    host = new URL(baseUrl).hostname.toLowerCase();
+  } catch (_) {
+    return false;
+  }
+  if (!host) return false;
+  return (
+    ["localhost", "127.0.0.1", "::1", "0.0.0.0"].includes(host) ||
+    host.endsWith(".local") ||
+    /^127\./.test(host)
+  );
+}
+
+function configTarget(target) {
+  const llm = target === "llm";
+  return {
+    baseUrl: llm ? elements.configOpenaiBaseUrl : elements.configEmbeddingBaseUrl,
+    apiKey: llm ? elements.configOpenaiApiKey : elements.configEmbeddingApiKey,
+    select: llm ? elements.configLlmModel : elements.configEmbeddingModel,
+    custom: llm ? elements.configLlmModelCustom : elements.configEmbeddingModelCustom,
+    scope: llm ? elements.configLlmScope : elements.configEmbeddingScope,
+    hint: llm ? elements.configLlmModelsHint : elements.configEmbeddingModelsHint,
+  };
+}
+
+function renderScope(target) {
+  const { baseUrl, scope } = configTarget(target);
+  const value = baseUrl.value.trim();
+  if (!value) {
+    scope.textContent = "未配置地址";
+    scope.className = "scope-badge empty";
+    return;
+  }
+  const local = isLocalEndpoint(value);
+  scope.textContent = local ? "本地" : "云端";
+  scope.className = `scope-badge ${local ? "local" : "cloud"}`;
+}
+
+const CUSTOM_MODEL = "__custom__";
+
+// A <select> keeps every option visible; a datalist would filter them down to
+// whatever the input already contains, hiding the other candidates.
+function renderModelSelect(target, models) {
+  const { select } = configTarget(target);
+  const desired = configState.models[target] || "";
+  select.replaceChildren();
+
+  const listed = new Set();
+  for (const model of models) {
+    if (!model.id || listed.has(model.id)) continue;
+    listed.add(model.id);
+    // Ollama reports on-disk sizes; the option label is what the user reads.
+    select.append(
+      new Option(model.size_label ? `${model.id} · ${model.size_label}` : model.id, model.id),
+    );
+  }
+  if (desired && !listed.has(desired)) {
+    select.append(new Option(`${desired}（当前）`, desired));
+  }
+  select.append(new Option("自定义…", CUSTOM_MODEL));
+
+  if (listed.size > 0) {
+    select.value = desired || CUSTOM_MODEL;
+    syncCustomModel(target, "");
+  } else {
+    // No catalogue to pick from: hand over a free-text field with the current
+    // model prefilled rather than a one-item list.
+    select.value = CUSTOM_MODEL;
+    syncCustomModel(target, desired);
+  }
+  if (select.value !== CUSTOM_MODEL) {
+    select.dataset.previous = select.value;
+  }
+}
+
+function syncCustomModel(target, prefill = "") {
+  const { select, custom } = configTarget(target);
+  const isCustom = select.value === CUSTOM_MODEL;
+  custom.hidden = !isCustom;
+  if (isCustom) {
+    custom.value = prefill || custom.value || configState.models[target] || "";
+  }
+}
+
+function modelValue(target) {
+  const { select, custom } = configTarget(target);
+  return (select.value === CUSTOM_MODEL ? custom.value : select.value).trim();
+}
+
+function renderEmbeddingStatuses() {
+  const loaded = configState.loaded || {};
+  const saved = loaded.embedding_model || "";
+  elements.configEmbeddingWarning.classList.toggle(
+    "warning",
+    Boolean(saved) && modelValue("embedding") !== saved,
+  );
+
+  // The index records the model that actually produced the stored vectors.
+  const indexModel = loaded.index_embedding_model || "";
+  const element = elements.configIndexModel;
+  element.className = "config-hint";
+  if (!indexModel) {
+    element.textContent = "尚未记录建库所用的向量模型。";
+    return;
+  }
+  element.textContent = `当前索引由 ${indexModel} 建立。`;
+  if (indexModel !== modelValue("embedding")) {
+    element.classList.add("warning");
+  }
+}
+
+async function loadModels(target) {
+  if (!canConfigure()) return;
+  const { baseUrl, apiKey, hint } = configTarget(target);
+  const value = baseUrl.value.trim();
+  hint.className = "config-model-hint";
+  if (!value) {
+    hint.textContent = "填写请求地址后可读取模型列表";
+    renderModelSelect(target, []);
+    renderEmbeddingStatuses();
+    return;
+  }
+
+  hint.textContent = "正在读取模型列表...";
+  try {
+    const payload = await requestJson("/api/models", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        target,
+        base_url: value,
+        api_key: apiKey.value.trim(),
+      }),
+    });
+    const models = payload.models || [];
+    renderModelSelect(target, models);
+    if (payload.error) {
+      hint.textContent = `${payload.error}；可在「自定义…」里手动输入模型名`;
+      hint.classList.add("error");
+    } else {
+      const scopeText = payload.scope === "local" ? "本地" : "云端";
+      hint.textContent = models.length
+        ? `${scopeText}模型 ${models.length} 个`
+        : "该端点未提供模型列表，可在「自定义…」里手动输入";
+    }
+    renderScope(target);
+  } catch (error) {
+    renderModelSelect(target, []);
+    hint.textContent = `${error.message}；可在「自定义…」里手动输入模型名`;
+    hint.classList.add("error");
+  }
+  renderEmbeddingStatuses();
+}
+
+// Only send fields the user actually changed; secrets are never echoed back,
+// so a blank key field always means "keep the existing key".
+function collectConfigChanges() {
+  const loaded = configState.loaded || {};
+  const changes = {};
+  const baseUrl = elements.configOpenaiBaseUrl.value.trim();
+  if (baseUrl !== (loaded.openai_base_url || "")) {
+    changes.openai_base_url = baseUrl;
+  }
+  const embeddingBaseUrl = elements.configEmbeddingBaseUrl.value.trim();
+  if (embeddingBaseUrl !== (loaded.embedding_base_url || "")) {
+    changes.embedding_base_url = embeddingBaseUrl;
+  }
+  const llmModel = modelValue("llm");
+  if (llmModel !== (loaded.llm_model || "")) {
+    changes.llm_model = llmModel;
+  }
+  const embeddingModel = modelValue("embedding");
+  if (embeddingModel !== (loaded.embedding_model || "")) {
+    changes.embedding_model = embeddingModel;
+  }
+  const openaiKey = elements.configOpenaiApiKey.value.trim();
+  if (openaiKey) changes.openai_api_key = openaiKey;
+  const embeddingKey = elements.configEmbeddingApiKey.value.trim();
+  if (embeddingKey) changes.embedding_api_key = embeddingKey;
+  return changes;
+}
+
+async function submitConfig(event) {
+  event.preventDefault();
+  if (!canConfigure()) return;
+  const changes = collectConfigChanges();
+  if (!Object.keys(changes).length) {
+    setConfigStatus("没有需要保存的更改");
+    return;
+  }
+
+  // Changing the embedding model invalidates every stored vector, and
+  // re-embedding the whole corpus is expensive: require an acknowledgement.
+  const embeddingChanged = "embedding_model" in changes;
+  if (embeddingChanged) {
+    const previous = (configState.loaded || {}).embedding_model || "未设置";
+    const confirmed = confirm(
+      `向量模型将从「${previous}」改为「${changes.embedding_model}」。\n\n` +
+        "不同模型的向量互不兼容，已入库的切片必须用新模型全部重新入库，" +
+        "否则检索结果会失效。\n\n确定要更换吗？",
+    );
+    if (!confirmed) {
+      setConfigStatus("已取消更换向量模型");
+      return;
+    }
+  }
+
+  elements.configSave.disabled = true;
+  setConfigStatus("正在保存...");
+  try {
+    const config = await requestJson("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(changes),
+    });
+    configState.loaded = config;
+    configState.models = {
+      llm: config.llm_model || "",
+      embedding: config.embedding_model || "",
+    };
+    elements.configOpenaiApiKey.value = "";
+    elements.configEmbeddingApiKey.value = "";
+    elements.configDialog.close();
+    showToast(embeddingChanged ? "已更换向量模型，请重新入库文档" : "模型配置已保存");
+    await refreshStatus();
+  } catch (error) {
+    setConfigStatus(error.message, "error");
+  } finally {
+    elements.configSave.disabled = false;
+  }
+}
+
+elements.configButton.addEventListener("click", openConfig);
+elements.configForm.addEventListener("submit", submitConfig);
+elements.configClose.addEventListener("click", () => elements.configDialog.close());
+elements.configCancel.addEventListener("click", () => elements.configDialog.close());
+elements.configRefreshModels.addEventListener("click", () => {
+  loadModels("llm");
+  loadModels("embedding");
+});
+for (const target of ["llm", "embedding"]) {
+  const { baseUrl, select, custom } = configTarget(target);
+  // Live badge on typing; the model list only refetches once the address settles.
+  baseUrl.addEventListener("input", () => renderScope(target));
+  baseUrl.addEventListener("change", () => loadModels(target));
+  select.addEventListener("change", () => {
+    const isCustom = select.value === CUSTOM_MODEL;
+    custom.hidden = !isCustom;
+    if (isCustom) {
+      custom.value = select.dataset.previous || configState.models[target] || "";
+      custom.focus();
+    } else {
+      select.dataset.previous = select.value;
+    }
+    renderEmbeddingStatuses();
+  });
+  custom.addEventListener("input", renderEmbeddingStatuses);
+}
+
+const docState = {
+  docId: "",
+  chunks: [],
+  nextOffset: 0,
+  total: 0,
+  limit: 50,
+  loading: false,
+  done: false,
+  focusChunkId: "",
+  focusApplied: false,
+};
+
+function currentDocMode() {
+  const checked = document.querySelector('input[name="doc-view-mode"]:checked');
+  return checked ? checked.value : "cards";
+}
+
+function setDocViewMode(value) {
+  const radio = document.querySelector(`input[name="doc-view-mode"][value="${value}"]`);
+  if (radio) radio.checked = true;
+}
+
+// Opens the source document and, when a citation was clicked, lands on its chunk.
+async function jumpToChunk(docId, chunkSuffix) {
+  // Citations read "[source: <doc_id>#chunk_003]"; the indexed chunk_id is the
+  // whole thing, prefix included.
+  const chunkId =
+    chunkSuffix && !chunkSuffix.includes("#")
+      ? `${docId}#${chunkSuffix}`
+      : chunkSuffix;
+
+  let indexedDocument = state.documents.find((item) => item.doc_id === docId);
+  if (!indexedDocument) {
+    try {
+      const payload = await requestJson(
+        `/api/documents/${encodeURIComponent(docId)}?offset=0&limit=1`,
+      );
+      indexedDocument = {
+        doc_id: docId,
+        title: payload.title,
+        source: payload.source,
+        chunk_count: payload.chunk_count,
+      };
+    } catch (_) {
+      showToast("引用的文档已不在知识库中", "error");
+      return;
+    }
+  }
+  await openDocument(indexedDocument, chunkId);
+}
+
+async function openDocument(indexedDocument, focusChunkId = "") {
+  docState.docId = indexedDocument.doc_id;
+  docState.chunks = [];
+  docState.nextOffset = 0;
+  docState.total = Number(indexedDocument.chunk_count) || 0;
+  docState.loading = false;
+  docState.done = false;
+  docState.focusChunkId = focusChunkId;
+  docState.focusApplied = false;
+
+  // Only the card list can highlight a single chunk.
+  if (focusChunkId) setDocViewMode("cards");
+
+  elements.docTitle.textContent = indexedDocument.title || "未命名文档";
+  elements.docMeta.textContent = [
+    indexedDocument.source || "",
+    `${docState.total} 个切片`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  elements.docBody.replaceChildren();
+  elements.docProgress.textContent = `已显示 0 / ${docState.total}`;
+  elements.docLoadMore.hidden = true;
+  elements.chatView.hidden = true;
+  elements.documentView.hidden = false;
+
+  await loadDocumentPage();
+}
+
+function closeDocument() {
+  elements.documentView.hidden = true;
+  elements.chatView.hidden = false;
+  docState.docId = "";
+  docState.chunks = [];
+  docState.focusChunkId = "";
+}
+
+async function loadDocumentPage() {
+  if (docState.loading || docState.done || !docState.docId) return;
+  docState.loading = true;
+  elements.docLoadMore.disabled = true;
+
+  // Only the first page recentres on the cited chunk; later pages continue on.
+  const isFirstPage = docState.nextOffset === 0;
+  const focus =
+    isFirstPage && docState.focusChunkId
+      ? `&focus=${encodeURIComponent(docState.focusChunkId)}`
+      : "";
+  try {
+    const payload = await requestJson(
+      `/api/documents/${encodeURIComponent(docState.docId)}` +
+        `?offset=${docState.nextOffset}&limit=${docState.limit}${focus}`,
+    );
+    const incoming = payload.chunks || [];
+    const start = Number.isFinite(Number(payload.offset))
+      ? Number(payload.offset)
+      : docState.nextOffset;
+    docState.total = Number(payload.chunk_count) || docState.total;
+    docState.nextOffset = start + incoming.length;
+    docState.chunks.push(...incoming);
+    if (
+      isFirstPage &&
+      docState.focusChunkId &&
+      !incoming.some((chunk) => chunk.chunk_id === docState.focusChunkId)
+    ) {
+      showToast("未找到该切片，可能已重新入库", "error");
+    }
+    if (!incoming.length || docState.nextOffset >= docState.total) {
+      docState.done = true;
+    }
+    renderDocumentView();
+  } catch (error) {
+    elements.docBody.replaceChildren();
+    const failed = document.createElement("div");
+    failed.className = "empty-list error";
+    failed.textContent = error.message;
+    elements.docBody.append(failed);
+    docState.done = true;
+    docState.loading = false;
+    elements.docLoadMore.disabled = false;
+    return;
+  }
+  docState.loading = false;
+  elements.docLoadMore.disabled = false;
+}
+
+function renderDocumentView() {
+  elements.docBody.replaceChildren();
+  if (currentDocMode() === "merged") {
+    renderMergedChunks();
+  } else {
+    renderChunkCards();
+  }
+  elements.docProgress.textContent =
+    `已显示 ${docState.chunks.length} / ${docState.total}`;
+  elements.docLoadMore.hidden = docState.done || docState.nextOffset >= docState.total;
+  highlightFocusedChunk();
+}
+
+function highlightFocusedChunk() {
+  if (!docState.focusChunkId) return;
+  const target = elements.docBody.querySelector(
+    `[data-chunk-id="${CSS.escape(docState.focusChunkId)}"]`,
+  );
+  if (!target) return;
+  target.classList.add("doc-chunk-focus");
+  if (!docState.focusApplied) {
+    docState.focusApplied = true;
+    target.scrollIntoView({ block: "center" });
+  }
+}
+
+function chunkMetaText(chunk) {
+  const parts = [];
+  if (chunk.page_label) {
+    parts.push(`第 ${chunk.page_label} 页`);
+  } else if (chunk.page !== null && chunk.page !== undefined) {
+    parts.push(`第 ${Number(chunk.page) + 1} 页`);
+  }
+  if (chunk.section_path) {
+    parts.push(chunk.section_path);
+  }
+  return parts.join(" · ");
+}
+
+function renderChunkCards() {
+  for (const chunk of docState.chunks) {
+    const card = document.createElement("article");
+    card.className = "doc-chunk";
+    card.dataset.chunkId = chunk.chunk_id;
+
+    const head = document.createElement("div");
+    head.className = "doc-chunk-head";
+    const identifier = document.createElement("code");
+    identifier.textContent = chunk.chunk_id;
+    const meta = document.createElement("span");
+    meta.textContent = chunkMetaText(chunk);
+    head.append(identifier, meta);
+
+    const text = document.createElement("div");
+    text.className = "doc-chunk-text";
+    text.textContent = chunk.text || "";
+
+    card.append(head, text);
+    elements.docBody.append(card);
+  }
+}
+
+function buildMergedSections() {
+  const sections = [];
+  let current = null;
+  for (const chunk of docState.chunks) {
+    const key =
+      chunk.page === null || chunk.page === undefined
+        ? "document"
+        : `page-${chunk.page}`;
+    if (!current || current.key !== key) {
+      current = { key, page: chunk.page, label: chunk.page_label, text: "", end: null };
+      sections.push(current);
+    }
+
+    let text = chunk.text || "";
+    const start = Number(chunk.start_char || 0);
+    if (current.end !== null && start < current.end) {
+      const overlap = current.end - start;
+      text = overlap < text.length ? text.slice(overlap) : "";
+    } else if (current.text && text && !current.text.endsWith("\n\n")) {
+      text = `\n\n${text}`;
+    }
+    current.text += text;
+    current.end = Number(chunk.end_char || start + (chunk.text || "").length);
+  }
+  return sections;
+}
+
+function renderMergedChunks() {
+  for (const section of buildMergedSections()) {
+    if (section.page !== null && section.page !== undefined) {
+      const marker = document.createElement("div");
+      marker.className = "doc-page-marker";
+      marker.textContent = `第 ${section.label || Number(section.page) + 1} 页`;
+      elements.docBody.append(marker);
+    }
+    const block = document.createElement("div");
+    block.className = "doc-merged-text";
+    block.textContent = section.text;
+    elements.docBody.append(block);
+  }
+}
+
+elements.docBackButton.addEventListener("click", closeDocument);
+elements.docLoadMore.addEventListener("click", loadDocumentPage);
+elements.docViewMode.addEventListener("change", renderDocumentView);
+elements.docBody.addEventListener("scroll", () => {
+  if (docState.done || docState.loading) return;
+  const { scrollTop, clientHeight, scrollHeight } = elements.docBody;
+  if (scrollTop + clientHeight >= scrollHeight - 240) {
+    loadDocumentPage();
+  }
+});
+
+const RAIL_STORAGE_KEY = "rag-rail-widths";
+const RAIL_LIMITS = {
+  left: { min: 220, max: 520, default: 300, cssVar: "--rail-left" },
+  right: { min: 260, max: 620, default: 348, cssVar: "--rail-right" },
+};
+
+function setRailWidth(side, width) {
+  const limits = RAIL_LIMITS[side];
+  const clamped = Math.round(Math.min(limits.max, Math.max(limits.min, width)));
+  elements.workspace.style.setProperty(limits.cssVar, `${clamped}px`);
+  return clamped;
+}
+
+function currentRailWidth(side) {
+  const rail = side === "left" ? elements.railLibrary : elements.railContext;
+  return rail.getBoundingClientRect().width || RAIL_LIMITS[side].default;
+}
+
+function saveRailWidths() {
+  try {
+    localStorage.setItem(
+      RAIL_STORAGE_KEY,
+      JSON.stringify({
+        left: Math.round(currentRailWidth("left")),
+        right: Math.round(currentRailWidth("right")),
+      }),
+    );
+  } catch (_) {
+    /* localStorage unavailable (private mode); width stays session-only */
+  }
+}
+
+function restoreRailWidths() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(RAIL_STORAGE_KEY) || "{}");
+    for (const side of ["left", "right"]) {
+      if (Number.isFinite(saved[side])) {
+        setRailWidth(side, saved[side]);
+      }
+    }
+  } catch (_) {
+    /* ignore malformed storage */
+  }
+}
+
+function enableRailResize(handle, side) {
+  const limits = RAIL_LIMITS[side];
+  const direction = side === "left" ? 1 : -1;
+  let startX = 0;
+  let startWidth = 0;
+  let dragging = false;
+
+  handle.addEventListener("pointerdown", (event) => {
+    dragging = true;
+    startX = event.clientX;
+    startWidth = currentRailWidth(side);
+    handle.classList.add("dragging");
+    handle.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+
+  handle.addEventListener("pointermove", (event) => {
+    if (!dragging) return;
+    setRailWidth(side, startWidth + (event.clientX - startX) * direction);
+  });
+
+  const stop = (event) => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove("dragging");
+    if (handle.hasPointerCapture(event.pointerId)) {
+      handle.releasePointerCapture(event.pointerId);
+    }
+    saveRailWidths();
+  };
+  handle.addEventListener("pointerup", stop);
+  handle.addEventListener("pointercancel", stop);
+
+  handle.addEventListener("dblclick", () => {
+    setRailWidth(side, limits.default);
+    saveRailWidths();
+  });
+
+  handle.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const step = (event.shiftKey ? 40 : 12) * direction;
+    const delta = event.key === "ArrowRight" ? step : -step;
+    setRailWidth(side, currentRailWidth(side) + delta);
+    saveRailWidths();
+  });
+}
+
+restoreRailWidths();
+enableRailResize(elements.resizerLeft, "left");
+enableRailResize(elements.resizerRight, "right");
+
+renderContext();
+renderProcess();
+refreshDocuments();
+pollJobs();
+loadIdentity();

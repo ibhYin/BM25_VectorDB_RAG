@@ -134,3 +134,32 @@ def replace_documents(
         vector_store.delete(ids=sorted(stale_ids))
 
     return vector_store
+
+
+def delete_documents(
+    doc_ids: list[str],
+    persist_dir: Path,
+    embedding_model: str,
+    embedding_api_key: str = "",
+    embedding_base_url: str = "",
+    knowledge_base_id: str | None = None,
+) -> int:
+    """Remove every chunk of the given documents, scoped to one knowledge base."""
+
+    unique_ids = sorted({doc_id for doc_id in doc_ids if doc_id})
+    if not unique_ids:
+        return 0
+    vector_store = get_vector_store(
+        persist_dir,
+        embedding_model,
+        embedding_api_key,
+        embedding_base_url,
+    )
+    where: dict[str, object] = {"doc_id": {"$in": unique_ids}}
+    if knowledge_base_id:
+        where = {"$and": [where, {"knowledge_base_id": knowledge_base_id}]}
+    existing = vector_store.get(where=where, include=[])
+    stale_ids = sorted(existing.get("ids", []))
+    if stale_ids:
+        vector_store.delete(ids=stale_ids)
+    return len(stale_ids)

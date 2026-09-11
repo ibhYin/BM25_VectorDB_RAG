@@ -26,16 +26,24 @@ COOKIE_NAME = "rag_user"
 SKIP_HEADERS = {"connection", "keep-alive", "transfer-encoding", "content-encoding"}
 
 
-def load_users() -> dict[str, list[str]]:
+def load_policy() -> dict:
     try:
         payload = json.loads(POLICY_FILE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def load_users() -> dict[str, list[str]]:
     return {
         str(user_id): [str(group) for group in value.get("groups", [])]
-        for user_id, value in payload.get("users", {}).items()
+        for user_id, value in load_policy().get("users", {}).items()
         if isinstance(value, dict)
     }
+
+
+def is_admin(user_id: str) -> bool:
+    return user_id in (load_policy().get("admins") or [])
 
 
 def identity(user_id: str) -> str:
@@ -58,6 +66,7 @@ class DevProxy(BaseHTTPRequestHandler):
         payload = {
             "user": self._cookie_user() or None,
             "default_user": DEFAULT_USER if DEFAULT_USER in users else None,
+            "is_admin": is_admin(self._cookie_user()),
             "users": [
                 {"id": user_id, "groups": groups}
                 for user_id, groups in sorted(users.items())
@@ -99,6 +108,9 @@ class DevProxy(BaseHTTPRequestHandler):
         self._forward(self._cookie_user())
 
     def do_POST(self) -> None:
+        self._forward(self._cookie_user())
+
+    def do_DELETE(self) -> None:
         self._forward(self._cookie_user())
 
     def _forward(self, user_id: str) -> None:

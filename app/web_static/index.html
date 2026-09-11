@@ -27,11 +27,16 @@
           </button>
           <div id="user-menu" class="user-menu" role="menu" hidden></div>
         </div>
+        <button id="config-button" class="icon-button" type="button" title="模型接入配置" aria-label="模型接入配置" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/></svg>
+        </button>
         <button id="refresh-button" class="icon-button" type="button" title="刷新状态" aria-label="刷新状态">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
         </button>
       </div>
     </header>
+
+    <div id="index-warning" class="index-warning" role="alert" hidden></div>
 
     <main class="workspace">
       <aside class="rail rail-library" aria-label="知识库管理">
@@ -61,6 +66,9 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
             选择文件
           </button>
+          <p class="permission-note" id="upload-permission" hidden>
+            当前身份无上传权限（仅管理员可上传文档）
+          </p>
         </section>
 
         <section class="rail-section">
@@ -84,7 +92,10 @@
         </section>
       </aside>
 
+      <div class="resizer resizer-left" id="resizer-left" role="separator" aria-orientation="vertical" aria-label="调整知识库栏宽度" tabindex="0"></div>
+
       <section class="chat" aria-label="知识库问答">
+        <div class="chat-view" id="chat-view">
         <div class="chat-head">
           <div class="chat-head-text">
             <h2>问答</h2>
@@ -131,7 +142,31 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
           </button>
         </form>
+        </div>
+
+        <section class="document-view" id="document-view" aria-label="文档查看" hidden>
+          <div class="doc-head">
+            <button id="doc-back-button" class="icon-button" type="button" title="返回问答" aria-label="返回问答">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
+            </button>
+            <div class="doc-head-text">
+              <h2 id="doc-title">文档</h2>
+              <p id="doc-meta"></p>
+            </div>
+            <div class="segmented" id="doc-view-mode" role="radiogroup" aria-label="查看方式">
+              <label><input type="radio" name="doc-view-mode" value="cards" checked /><span>切片</span></label>
+              <label><input type="radio" name="doc-view-mode" value="merged" /><span>连续阅读</span></label>
+            </div>
+          </div>
+          <div class="doc-body" id="doc-body" aria-live="polite"></div>
+          <div class="doc-foot">
+            <span id="doc-progress">已显示 0 / 0</span>
+            <button id="doc-load-more" class="ghost-button" type="button" hidden>加载更多</button>
+          </div>
+        </section>
       </section>
+
+      <div class="resizer resizer-right" id="resizer-right" role="separator" aria-orientation="vertical" aria-label="调整检索栏宽度" tabindex="0"></div>
 
       <aside class="rail rail-context" aria-label="检索过程与上下文">
         <section class="rail-section">
@@ -145,6 +180,72 @@
       </aside>
     </main>
 
+    <dialog id="config-dialog" class="config-dialog" aria-labelledby="config-title">
+      <form id="config-form" class="config-form">
+        <header class="config-head">
+          <h2 id="config-title">模型接入配置</h2>
+          <button id="config-close" class="icon-button" type="button" title="关闭" aria-label="关闭">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+          </button>
+        </header>
+        <p class="config-note">保存在服务器本地，立即对问答与文档入库生效。留空表示沿用默认值。</p>
+
+        <fieldset class="config-group" aria-label="对话模型 LLM">
+          <div class="config-group-head">
+            <span class="config-group-title">对话模型（LLM）</span>
+            <span class="scope-badge" id="config-llm-scope">—</span>
+          </div>
+          <label class="config-field">
+            <span>请求地址</span>
+            <input id="config-openai-base-url" type="url" inputmode="url" placeholder="https://example.com/v1" autocomplete="off" spellcheck="false" />
+          </label>
+          <label class="config-field">
+            <span>API Key</span>
+            <input id="config-openai-api-key" type="password" placeholder="留空则保持不变" autocomplete="new-password" spellcheck="false" />
+          </label>
+          <div class="config-field">
+            <span>模型</span>
+            <select id="config-llm-model" class="config-select" aria-label="对话模型"></select>
+            <input id="config-llm-model-custom" class="config-custom-model" type="text" placeholder="输入模型名" autocomplete="off" spellcheck="false" hidden />
+          </div>
+          <p class="config-model-hint" id="config-llm-models-hint"></p>
+        </fieldset>
+
+        <fieldset class="config-group" aria-label="向量模型 Embedding">
+          <div class="config-group-head">
+            <span class="config-group-title">向量模型（Embedding）</span>
+            <span class="scope-badge" id="config-embedding-scope">—</span>
+          </div>
+          <label class="config-field">
+            <span>请求地址</span>
+            <input id="config-embedding-base-url" type="url" inputmode="url" placeholder="留空则复用对话模型地址" autocomplete="off" spellcheck="false" />
+          </label>
+          <label class="config-field">
+            <span>API Key</span>
+            <input id="config-embedding-api-key" type="password" placeholder="留空则复用对话模型 Key" autocomplete="new-password" spellcheck="false" />
+          </label>
+          <div class="config-field">
+            <span>模型</span>
+            <select id="config-embedding-model" class="config-select" aria-label="向量模型"></select>
+            <input id="config-embedding-model-custom" class="config-custom-model" type="text" placeholder="输入模型名" autocomplete="off" spellcheck="false" hidden />
+          </div>
+          <p class="config-model-hint" id="config-embedding-models-hint"></p>
+          <p class="config-hint" id="config-index-model"></p>
+          <p class="config-hint" id="config-embedding-warning">更换向量模型后，需要重新入库全部文档。</p>
+        </fieldset>
+
+        <footer class="config-foot">
+          <span id="config-status" role="status" aria-live="polite"></span>
+          <div class="config-actions">
+            <button id="config-refresh-models" class="ghost-button" type="button">刷新模型列表</button>
+            <button id="config-cancel" class="ghost-button" type="button">取消</button>
+            <button id="config-save" class="primary-button" type="submit">保存</button>
+          </div>
+        </footer>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
     <script src="/static/app.js"></script>
   </body>
 </html>

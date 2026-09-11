@@ -5,10 +5,10 @@ from threading import Barrier
 from langchain_core.documents import Document
 
 from app.config import Settings
-from app.service import answer_question, ingest_knowledge_base
+from app.service import answer_question, get_indexed_document, ingest_knowledge_base
 from rag.retriever import build_vector_hits
 from rag.splitter import split_documents
-from rag.vector_store import build_vector_id, ingest_documents
+from rag.vector_store import build_vector_id, delete_documents, ingest_documents
 
 
 def test_split_documents_adds_stable_chunk_metadata() -> None:
@@ -232,3 +232,121 @@ def test_rebuild_deletes_stale_vectors_after_upsert(tmp_path: Path, monkeypatch)
         ("add", ["doc#chunk_001"]),
         ("delete", ["old-random-id"]),
     ]
+
+
+def test_delete_documents_scopes_by_knowledge_base(tmp_path: Path, monkeypatch) -> None:
+    calls = []
+
+    class FakeVectorStore:
+        def get(self, where, include):
+            calls.append(("get", where))
+            return {"ids": ["doc#chunk_002", "doc#chunk_001"]}
+
+        def delete(self, ids):
+            calls.append(("delete", ids))
+
+    monkeypatch.setattr(
+        "rag.vector_store.get_vector_store",
+        lambda *args, **kwargs: FakeVectorStore(),
+    )
+
+    deleted = delete_documents(
+        ["doc"], tmp_path, "embedding-model", knowledge_base_id="kb1"
+    )
+
+    assert deleted == 2
+    assert calls == [
+        ("get", {"$and": [{"doc_id": {"$in": ["doc"]}}, {"knowledge_base_id": "kb1"}]}),
+        ("delete", ["doc#chunk_001", "doc#chunk_002"]),
+    ]
+
+
+def test_get_indexed_document_orders_and_paginates(tmp_path: Path, monkeypatch) -> None:
+    class FakeVectorStore:
+        def get(self, where, include):
+            assert where["$and"][0] == {"doc_id": "doc"}
+            return {
+                "documents": ["second", "first", "third"],
+                "metadatas": [
+                    {"chunk_id": "doc#chunk_002", "start_char": 10, "end_char": 20},
+                    {"chunk_id": "doc#chunk_001", "start_char": 0, "end_char": 10},
+                    {"chunk_id": "doc#chunk_010", "start_char": 20, "end_char": 30},
+                ],
+            }
+
+    monkeypatch.setattr(
+        "app.service.get_vector_store",
+        lambda *args, **kwargs: FakeVectorStore(),
+    )
+    settings = Settings(_env_file=None, chroma_persist_dir=tmp_path)
+
+    first_page = get_indexed_document(settings, "doc", limit=2)
+
+    assert first_page["chunk_count"] == 3
+    assert [chunk["chunk_id"] for chunk in first_page["chunks"]] == [
+        "doc#chunk_001",
+        "doc#chunk_002",
+    ]
+    assert first_page["chunks"][0]["text"] == "first"
+    assert first_page["chunks"][0]["end_char"] == 10
+
+    second_page = get_indexed_document(settings, "doc", offset=2, limit=2)
+
+    assert [chunk["chunk_id"] for chunk in second_page["chunks"]] == ["doc#chunk_010"]
+
+
+def test_get_indexed_document_centres_on_a_focused_chunk(
+    tmp_path: Path, monkeypatch
+) -> None:
+    chunk_ids = [f"doc#chunk_{index:03d}" for index in range(1, 9)]
+    order = list(reversed(chunk_ids))
+
+    class FakeVectorStore:
+        def get(self, where, include):
+            return {
+                "documents": [f"text-{cid.rsplit('_', 1)[-1]}" for cid in order],
+                "metadatas": [
+                    {"chunk_id": cid, "start_char": 0, "end_char": 10} for cid in order
+                ],
+            }
+
+    monkeypatch.setattr(
+        "app.service.get_vector_store",
+        lambda *args, **kwargs: FakeVectorStore(),
+    )
+    settings = Settings(_env_file=None, chroma_persist_dir=tmp_path)
+
+    page = get_indexed_document(settings, "doc", limit=3, focus_chunk_id="doc#chunk_008")
+
+    assert page["offset"] == 5
+    assert [chunk["chunk_id"] for chunk in page["chunks"]] == [
+        "doc#chunk_006",
+        "doc#chunk_007",
+        "doc#chunk_008",
+    ]
+    assert page["chunks"][-1]["text"] == "text-008"
+
+
+def test_get_indexed_document_ignores_an_unknown_focus_chunk(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class FakeVectorStore:
+        def get(self, where, include):
+            return {
+                "documents": ["first", "second"],
+                "metadatas": [
+                    {"chunk_id": "doc#chunk_001", "start_char": 0, "end_char": 5},
+                    {"chunk_id": "doc#chunk_002", "start_char": 5, "end_char": 10},
+                ],
+            }
+
+    monkeypatch.setattr(
+        "app.service.get_vector_store",
+        lambda *args, **kwargs: FakeVectorStore(),
+    )
+    settings = Settings(_env_file=None, chroma_persist_dir=tmp_path)
+
+    page = get_indexed_document(settings, "doc", limit=1, focus_chunk_id="doc#chunk_999")
+
+    assert page["offset"] == 0
+    assert [chunk["chunk_id"] for chunk in page["chunks"]] == ["doc#chunk_001"]
