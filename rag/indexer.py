@@ -3,6 +3,7 @@ from pathlib import Path
 from langchain_core.documents import Document
 
 from app.access import load_access_policy
+from rag.index_manifest import write_index_manifest
 from rag.loaders import load_documents
 from rag.splitter import split_documents
 from rag.vector_store import ingest_documents
@@ -84,4 +85,5 @@ def build_vector_index(
         rebuild=rebuild,
         knowledge_base_id=knowledge_base_id,
     )
+    write_index_manifest(persist_dir, embedding_model)
     return documents, chunks

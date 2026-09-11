@@ -11,6 +11,7 @@ __pycache__/
 output/
 .playwright-cli/
 config/access_policy.json
+config/runtime_config.json
 
 # Local documents and reproducible generated data.
 data/raw/*
