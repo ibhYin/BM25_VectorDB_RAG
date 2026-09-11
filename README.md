@@ -52,9 +52,10 @@ EMBEDDING_BASE_URL=http://127.0.0.1:11434/v1
 DATA_DIR=data/raw
 CHROMA_PERSIST_DIR=.chroma
 
-RETRIEVAL_METHOD=vector
+RETRIEVAL_METHOD=hybrid
 RETRIEVAL_TOP_K=20
 SIMILARITY_THRESHOLD=0.35
+CANDIDATE_POOL_SIZE=100
 ```
 
 切换 Embedding 模型后必须使用新的 Chroma 目录重新建库，不要混用不同模型的向量。
@@ -97,7 +98,13 @@ python -m app.main web
 - `GET /api/answer-jobs/:id`：查看编码、检索、生成进度和向量命中。
 - `POST /api/ask`：同步问答兼容接口。
 
-两个问答接口均接受 `retrieval_method`（`vector` 或 `bm25`）、`top_k`（1-100）及 `similarity_threshold`（0-1）；省略时使用 `.env` 默认值。网页设置只作用于后续请求，不修改 `.env`。
+三个检索方式：
+
+- `vector`：Chroma 向量检索，直接取 Top-K，应用相似度阈值。
+- `bm25`：jieba + SQLite FTS5 BM25 全库关键词检索，仅返回包含查询词的结果，展示原始 BM25 分数，不应用阈值。
+- `hybrid`（默认）：向量先粗筛候选池（`candidate_pool`，20-500，默认 100，运行时不低于 Top-K），BM25 对候选重排，RRF（k=60）融合后取 Top-K。结果带相似度和 BM25 双来源分，阈值不参与过滤。
+
+两个问答接口均接受 `retrieval_method`（`vector` / `bm25` / `hybrid`）、`top_k`（1-100）、`candidate_pool`（20-500，仅混合模式）及 `similarity_threshold`（0-1，仅向量模式）；省略时使用 `.env` 默认值。网页设置只作用于后续请求，不修改 `.env`。
 
 BM25 使用 jieba 中文分词和 SQLite FTS5 内置评分，直接读取 Chroma 已入库切片，检索时不调用 Embedding 服务。仅返回包含查询词的结果，展示原始 BM25 分数（越高越相关，不是 0-1 相似度），不应用向量相似度阈值。答案生成仍使用 Chat 模型。Python 的 SQLite 需支持 FTS5。
 

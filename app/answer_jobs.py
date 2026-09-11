@@ -34,13 +34,14 @@ class AnswerJobStore:
         top_k: int | None = None,
         similarity_threshold: float | None = None,
         retrieval_method: str | None = None,
+        candidate_pool: int | None = None,
     ) -> dict[str, Any]:
         question = question.strip()
         if not question:
             raise ValueError("Question is required")
         method = self._settings.retrieval_method if retrieval_method is None else retrieval_method
-        if method not in ("vector", "bm25"):
-            raise ValueError("retrieval_method must be vector or bm25")
+        if method not in ("vector", "bm25", "hybrid"):
+            raise ValueError("retrieval_method must be vector, bm25 or hybrid")
 
         with self._lock:
             job_id = uuid.uuid4().hex
@@ -55,6 +56,7 @@ class AnswerJobStore:
                 "top_k": top_k,
                 "similarity_threshold": similarity_threshold,
                 "retrieval_method": method,
+                "candidate_pool": candidate_pool,
                 "created_at": now,
                 "started_at": "",
                 "finished_at": "",
@@ -111,6 +113,7 @@ class AnswerJobStore:
                 top_k=job.get("top_k"),
                 similarity_threshold=job.get("similarity_threshold"),
                 retrieval_method=job["retrieval_method"],
+                candidate_pool=job.get("candidate_pool"),
             )
         except Exception as exc:
             with self._lock:

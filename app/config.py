@@ -20,7 +20,8 @@ class Settings(BaseSettings):
     chunk_size: int = 800
     chunk_overlap: int = 120
     retrieval_top_k: int = 20
-    retrieval_method: Literal["vector", "bm25"] = "vector"
+    retrieval_method: Literal["vector", "bm25", "hybrid"] = "hybrid"
+    candidate_pool_size: int = 100
     similarity_threshold: float = 0.35
     max_concurrent_answers: int = 8
     max_request_bytes: int = 1_048_576
@@ -64,6 +65,8 @@ class Settings(BaseSettings):
             raise ValueError("RETRIEVAL_TOP_K must be greater than zero")
         if not 0.0 <= self.similarity_threshold <= 1.0:
             raise ValueError("SIMILARITY_THRESHOLD must be between 0 and 1")
+        if not 20 <= self.candidate_pool_size <= 500:
+            raise ValueError("CANDIDATE_POOL_SIZE must be between 20 and 500")
         if self.max_concurrent_answers <= 0:
             raise ValueError("MAX_CONCURRENT_ANSWERS must be greater than zero")
         if self.ocr_max_pages is not None and self.ocr_max_pages <= 0:

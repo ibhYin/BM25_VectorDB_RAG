@@ -9,7 +9,13 @@ from typing import TypedDict
 from app.config import Settings, get_settings
 from rag.indexer import build_vector_index
 from rag.loaders import load_document_file
-from rag.retriever import build_vector_hits, format_vector_hits, search_bm25
+from rag.retriever import (
+    build_vector_hits,
+    format_vector_hits,
+    rrf_fuse,
+    rerank_bm25_scores,
+    search_bm25,
+)
 from rag.splitter import split_documents
 from rag.vector_store import get_embeddings, get_vector_store, replace_documents
 
@@ -215,6 +221,7 @@ def answer_question(
     top_k: int | None = None,
     similarity_threshold: float | None = None,
     retrieval_method: str | None = None,
+    candidate_pool: int | None = None,
 ) -> AnswerResult:
     """Encode, retrieve and answer through the shared CLI/Web RAG pipeline."""
 
@@ -222,8 +229,8 @@ def answer_question(
     if not question:
         raise ValueError("Question is required")
     method = settings.retrieval_method if retrieval_method is None else retrieval_method
-    if method not in ("vector", "bm25"):
-        raise ValueError("retrieval_method must be vector or bm25")
+    if method not in ("vector", "bm25", "hybrid"):
+        raise ValueError("retrieval_method must be vector, bm25 or hybrid")
     effective_top_k = top_k if top_k is not None else settings.retrieval_top_k
     effective_threshold = (
         similarity_threshold
@@ -235,13 +242,71 @@ def answer_question(
         if progress is not None:
             progress(stage, status, detail)
 
+    recall = None
     with answer_limiter:
         with knowledge_base_lock.read():
             if method == "bm25":
                 report("encode", "skipped", retrieval_method=method)
-                report("vector_search", "running", top_k=effective_top_k, retrieval_method=method)
+                report(
+                    "vector_search",
+                    "running",
+                    top_k=effective_top_k,
+                    retrieval_method=method,
+                )
                 started = perf_counter()
                 hits = search_bm25(question, settings.chroma_persist_dir, effective_top_k)
+            elif method == "hybrid":
+                effective_pool = max(
+                    (
+                        candidate_pool
+                        if candidate_pool is not None
+                        else settings.candidate_pool_size
+                    ),
+                    effective_top_k,
+                )
+                embeddings = get_embeddings(
+                    settings.embedding_model,
+                    settings.embedding_api_key,
+                    settings.embedding_base_url,
+                )
+                vector_store = get_vector_store(
+                    settings.chroma_persist_dir,
+                    settings.embedding_model,
+                    settings.embedding_api_key,
+                    settings.embedding_base_url,
+                )
+
+                report("encode", "running", model=settings.embedding_model)
+                started = perf_counter()
+                query_embedding = embeddings.embed_query(question)
+                report(
+                    "encode",
+                    "completed",
+                    model=settings.embedding_model,
+                    dimensions=len(query_embedding),
+                    duration_ms=round((perf_counter() - started) * 1000),
+                    vector_preview=[round(value, 6) for value in query_embedding[:8]],
+                )
+
+                report(
+                    "vector_search",
+                    "running",
+                    top_k=effective_top_k,
+                    retrieval_method=method,
+                    pool=effective_pool,
+                )
+                started = perf_counter()
+                matches = vector_store.similarity_search_by_vector_with_relevance_scores(
+                    query_embedding,
+                    k=effective_pool,
+                )
+                vector_hits = build_vector_hits(matches)
+                bm25_scores = rerank_bm25_scores(
+                    [match[0].page_content for match in matches],
+                    question,
+                )
+                hits = rrf_fuse(vector_hits, bm25_scores)[:effective_top_k]
+                recall = len(matches)
             else:
                 embeddings = get_embeddings(
                     settings.embedding_model,
@@ -273,16 +338,22 @@ def answer_question(
                     query_embedding,
                     k=effective_top_k,
                 )
-                hits = build_vector_hits(matches)
-                hits = [hit for hit in hits if hit["similarity"] >= effective_threshold]
+                raw_hits = build_vector_hits(matches)
+                recall = len(raw_hits)
+                hits = [
+                    hit for hit in raw_hits
+                    if hit["similarity"] >= effective_threshold
+                ]
             report(
                 "vector_search",
                 "completed",
                 top_k=effective_top_k,
                 retrieval_method=method,
                 matches=len(hits),
+                recall=recall,
                 duration_ms=round((perf_counter() - started) * 1000),
                 similarity_threshold=effective_threshold if method == "vector" else None,
+                pool=effective_pool if method == "hybrid" else None,
                 vector_hits=hits,
             )
             vector_context = format_vector_hits(hits)

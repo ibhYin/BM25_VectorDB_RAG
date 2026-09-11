@@ -111,7 +111,7 @@ def test_bm25_http_sync_and_async_skip_embeddings(tmp_path, monkeypatch):
         detail = job["stages"]["vector_search"]["detail"]
         assert detail["retrieval_method"] == "bm25"
         assert detail["similarity_threshold"] is None
-        assert request("/api/status")["retrieval_method"] == "vector"
+        assert request("/api/status")["retrieval_method"] == "hybrid"
 
         settings.retrieval_method = "bm25"
         assert answer_question("BM25", settings)["vector_hits"] == sync["vector_hits"]
@@ -122,7 +122,7 @@ def test_bm25_http_sync_and_async_skip_embeddings(tmp_path, monkeypatch):
         store._executor.shutdown(wait=True)
 
 
-@pytest.mark.parametrize("method", [None, "", "hybrid", 1, False, [], {}])
+@pytest.mark.parametrize("method", [None, "", "semantic", 1, False, [], {}])
 def test_api_rejects_invalid_retrieval_method(method):
     with pytest.raises(RequestError) as error:
         WebRequestHandler._read_retrieval_params({"retrieval_method": method})
@@ -130,15 +130,15 @@ def test_api_rejects_invalid_retrieval_method(method):
 
 
 def test_retrieval_defaults_and_validation():
-    assert Settings(_env_file=None).retrieval_method == "vector"
+    assert Settings(_env_file=None).retrieval_method == "hybrid"
     with pytest.raises(ValueError):
-        Settings(_env_file=None, retrieval_method="hybrid")
+        Settings(_env_file=None, retrieval_method="semantic")
     with pytest.raises(ValueError, match="retrieval_method"):
-        answer_question("test", Settings(_env_file=None), retrieval_method="hybrid")
-    assert WebRequestHandler._read_retrieval_params({}) == (None, None, None)
+        answer_question("test", Settings(_env_file=None), retrieval_method="semantic")
+    assert WebRequestHandler._read_retrieval_params({}) == (None, None, None, None)
     assert WebRequestHandler._read_retrieval_params({
         "retrieval_method": "bm25", "top_k": 20, "similarity_threshold": 0,
-    }) == (20, 0, "bm25")
+    }) == (20, 0, "bm25", None)
 
 
 def test_vector_mode_retains_top_k_and_similarity_filter(monkeypatch):
@@ -156,10 +156,17 @@ def test_vector_mode_retains_top_k_and_similarity_filter(monkeypatch):
     monkeypatch.setattr("app.service.get_vector_store", lambda *args: Store())
     monkeypatch.setattr("chains.answer_chain.generate_answer", lambda **kwargs: "answer")
     settings = Settings(_env_file=None, retrieval_method="bm25")
+    stages = {}
     result = answer_question("test", settings, top_k=20, similarity_threshold=0.35,
-                             retrieval_method="vector")
+                             retrieval_method="vector",
+                             progress=lambda stage, status, detail: (
+                                 stages.update({stage: detail})
+                                 if status == "completed" else None
+                             ))
     assert result["retrieval_method"] == "vector"
     assert len(result["vector_hits"]) == 1
+    assert stages["vector_search"]["recall"] == 2
+    assert stages["vector_search"]["matches"] == 1
     assert result["vector_hits"][0]["distance"] == 0.1
     assert result["vector_hits"][0]["similarity"] >= 0.35
     assert "bm25_score" not in result["vector_hits"][0]

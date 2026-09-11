@@ -92,11 +92,16 @@
             <select id="retrieval-method" form="ask-form" aria-labelledby="retrieval-method-label">
               <option value="vector">向量检索</option>
               <option value="bm25">BM25 关键词检索</option>
+              <option value="hybrid">混合检索</option>
             </select>
           </label>
           <label class="retrieval-field">
             <span class="retrieval-label">Top-K</span>
             <input type="number" id="retrieval-top-k" form="ask-form" min="1" max="100" step="1" value="20" required />
+          </label>
+          <label class="retrieval-field">
+            <span class="retrieval-label" id="candidate-pool-label">候选池</span>
+            <input type="number" id="candidate-pool" form="ask-form" aria-labelledby="candidate-pool-label" min="20" max="500" step="1" value="100" required />
           </label>
           <label class="retrieval-field">
             <span class="retrieval-label" id="threshold-label">相似度阈值</span>

@@ -68,22 +68,13 @@ def search_bm25(
     """Rank current Chroma chunk text using jieba and SQLite FTS5 BM25."""
 
     import chromadb
-    import jieba
 
     from rag.vector_store import COLLECTION_NAME
 
     if top_k <= 0:
         raise ValueError("top_k must be greater than zero")
 
-    def tokenize(text: str) -> list[str]:
-        return [
-            term
-            for word in jieba.cut_for_search(text.casefold())
-            for term in re.findall(r"[^\W_]+", word)
-        ]
-
-    terms = list(dict.fromkeys(tokenize(question)))
-    if not terms or not (persist_dir / "chroma.sqlite3").is_file():
+    if not (persist_dir / "chroma.sqlite3").is_file():
         return []
     client = chromadb.PersistentClient(path=str(persist_dir))
     try:
@@ -94,22 +85,11 @@ def search_bm25(
     texts = records["documents"] or []
     if not texts:
         return []
-
-    # ponytail: rebuild from current chunks on each query, O(total text). This
-    # avoids stale caches after any writer; large corpora need a persisted FTS index.
-    with closing(sqlite3.connect(":memory:")) as index:
-        index.execute("CREATE VIRTUAL TABLE chunks USING fts5(text)")
-        index.executemany(
-            "INSERT INTO chunks(rowid, text) VALUES (?, ?)",
-            ((i, " ".join(tokenize(text or ""))) for i, text in enumerate(texts)),
-        )
-        matches = index.execute(
-            "SELECT rowid, bm25(chunks) FROM chunks "
-            "WHERE chunks MATCH ? ORDER BY bm25(chunks), rowid LIMIT ?",
-            (' OR '.join(f'"{term}"' for term in terms), top_k),
-        ).fetchall()
-
-    # FTS5 negates BM25 for ascending SQL ranking; expose higher-is-better scores.
+    scores = _bm25_scores(texts, question)
+    ranked = sorted(
+        (index for index, score in enumerate(scores) if score > 0),
+        key=lambda index: (-scores[index], index),
+    )[:top_k]
     return build_vector_hits(
         [
             (
@@ -117,12 +97,86 @@ def search_bm25(
                     page_content=texts[i],
                     metadata=(records["metadatas"][i] or {}),
                 ),
-                -score,
+                scores[i],
             )
-            for i, score in matches
+            for i in ranked
         ],
         retrieval_method="bm25",
     )
+
+
+def _tokenize(text: str) -> list[str]:
+    import jieba
+
+    return [
+        term
+        for word in jieba.cut_for_search(text.casefold())
+        for term in re.findall(r"[^\W_]+", word)
+    ]
+
+
+def _bm25_scores(texts: list[str], question: str) -> list[float]:
+    """Score every text with SQLite FTS5 BM25; zero means no query term matched."""
+
+    terms = list(dict.fromkeys(_tokenize(question)))
+    scores = [0.0] * len(texts)
+    if not terms or not texts:
+        return scores
+
+    # ponytail: rebuild from the given texts on each call, O(total text). This
+    # avoids stale caches after any writer; large corpora need a persisted FTS index.
+    with closing(sqlite3.connect(":memory:")) as index:
+        index.execute("CREATE VIRTUAL TABLE chunks USING fts5(text)")
+        index.executemany(
+            "INSERT INTO chunks(rowid, text) VALUES (?, ?)",
+            ((i, " ".join(_tokenize(text or ""))) for i, text in enumerate(texts)),
+        )
+        matches = index.execute(
+            "SELECT rowid, bm25(chunks) FROM chunks WHERE chunks MATCH ?",
+            (' OR '.join(f'"{term}"' for term in terms),),
+        ).fetchall()
+
+    # FTS5 negates BM25 for ascending SQL ranking; expose higher-is-better scores.
+    for rowid, score in matches:
+        scores[rowid] = -score
+    return scores
+
+
+def rerank_bm25_scores(texts: list[str], question: str) -> list[float]:
+    """BM25-score already-retrieved candidates; aligned with the input order."""
+
+    return _bm25_scores(texts, question)
+
+
+def rrf_fuse(
+    vector_hits: list[dict[str, object]],
+    bm25_scores: list[float],
+    k: int = 60,
+) -> list[dict[str, object]]:
+    """Reciprocal Rank Fusion of the vector order with candidate BM25 scores."""
+
+    if len(vector_hits) != len(bm25_scores):
+        raise ValueError("vector_hits and bm25_scores must have the same length")
+
+    bm25_order = sorted(
+        (index for index, score in enumerate(bm25_scores) if score > 0),
+        key=lambda index: (-bm25_scores[index], index),
+    )
+    bm25_rank = {index: rank + 1 for rank, index in enumerate(bm25_order)}
+
+    fused: list[tuple[float, int, dict[str, object]]] = []
+    for index, hit in enumerate(vector_hits):
+        score = 1.0 / (k + index + 1)
+        if index in bm25_rank:
+            score += 1.0 / (k + bm25_rank[index])
+        merged = dict(hit)
+        merged["retrieval_method"] = "hybrid"
+        merged["bm25_score"] = float(bm25_scores[index])
+        merged["rrf_score"] = score
+        fused.append((score, index, merged))
+
+    fused.sort(key=lambda item: (-item[0], item[1]))
+    return [hit for _, _, hit in fused]
 
 
 def format_vector_hits(hits: list[dict[str, object]]) -> list[str]:

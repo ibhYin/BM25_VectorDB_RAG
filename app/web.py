@@ -108,13 +108,16 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             raise RequestError(HTTPStatus.BAD_REQUEST, "Question is required")
 
         settings = get_settings()
-        top_k, similarity_threshold, retrieval_method = self._read_retrieval_params(payload)
+        top_k, similarity_threshold, retrieval_method, candidate_pool = (
+            self._read_retrieval_params(payload)
+        )
         result = answer_question(
             question,
             settings,
             top_k=top_k,
             similarity_threshold=similarity_threshold,
             retrieval_method=retrieval_method,
+            candidate_pool=candidate_pool,
         )
         self._send_json(
             {
@@ -134,12 +137,15 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         if not isinstance(question_value, str):
             raise RequestError(HTTPStatus.BAD_REQUEST, "question must be a string")
         try:
-            top_k, similarity_threshold, retrieval_method = self._read_retrieval_params(payload)
+            top_k, similarity_threshold, retrieval_method, candidate_pool = (
+                self._read_retrieval_params(payload)
+            )
             job = get_answer_store().create(
                 question_value,
                 top_k=top_k,
                 similarity_threshold=similarity_threshold,
                 retrieval_method=retrieval_method,
+                candidate_pool=candidate_pool,
             )
         except ValueError as exc:
             raise RequestError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
@@ -219,6 +225,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             "chunk_overlap": settings.chunk_overlap,
             "retrieval_top_k": settings.retrieval_top_k,
             "retrieval_method": settings.retrieval_method,
+            "candidate_pool_size": settings.candidate_pool_size,
             "similarity_threshold": settings.similarity_threshold,
             "max_upload_bytes": settings.max_upload_bytes,
             "max_upload_files": settings.max_upload_files,
@@ -265,10 +272,24 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         payload: dict[str, object],
     ) -> tuple[int | None, float | None, str | None]:
         retrieval_method = payload.get("retrieval_method")
-        if "retrieval_method" in payload and retrieval_method not in ("vector", "bm25"):
+        if "retrieval_method" in payload and retrieval_method not in (
+            "vector", "bm25", "hybrid",
+        ):
             raise RequestError(
-                HTTPStatus.BAD_REQUEST, "retrieval_method must be vector or bm25"
+                HTTPStatus.BAD_REQUEST,
+                "retrieval_method must be vector, bm25 or hybrid",
             )
+        candidate_pool = payload.get("candidate_pool")
+        if candidate_pool is not None:
+            if isinstance(candidate_pool, bool) or not isinstance(candidate_pool, int):
+                raise RequestError(
+                    HTTPStatus.BAD_REQUEST, "candidate_pool must be an integer"
+                )
+            if not 20 <= candidate_pool <= 500:
+                raise RequestError(
+                    HTTPStatus.BAD_REQUEST,
+                    "candidate_pool must be between 20 and 500",
+                )
         top_k = payload.get("top_k")
         if top_k is not None:
             if isinstance(top_k, bool) or not isinstance(top_k, int):
@@ -291,7 +312,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                     HTTPStatus.BAD_REQUEST,
                     "similarity_threshold must be between 0 and 1",
                 )
-        return top_k, similarity_threshold, retrieval_method
+        return top_k, similarity_threshold, retrieval_method, candidate_pool
 
     def _send_json(self, payload: dict[str, object], status: int = HTTPStatus.OK) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")

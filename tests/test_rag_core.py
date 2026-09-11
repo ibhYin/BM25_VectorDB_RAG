@@ -88,7 +88,10 @@ def test_answer_question_allows_concurrent_reads(monkeypatch) -> None:
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [
-            executor.submit(answer_question, f"问题 {index}", Settings())
+            executor.submit(
+                answer_question, f"问题 {index}", Settings(),
+                retrieval_method="vector",
+            )
             for index in range(2)
         ]
         answers = [future.result() for future in futures]
@@ -135,7 +138,7 @@ def test_answer_uses_dedicated_embedding_endpoint(monkeypatch) -> None:
         embedding_base_url="http://127.0.0.1:11434/v1",
     )
 
-    result = answer_question("测试问题", settings)
+    result = answer_question("测试问题", settings, retrieval_method="vector")
 
     assert result["answer"] == "answer"
     assert captured == {

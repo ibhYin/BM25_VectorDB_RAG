@@ -30,6 +30,7 @@ const elements = {
   question: document.querySelector("#question"),
   retrievalMethod: document.querySelector("#retrieval-method"),
   retrievalTopK: document.querySelector("#retrieval-top-k"),
+  candidatePool: document.querySelector("#candidate-pool"),
   similarityThreshold: document.querySelector("#similarity-threshold"),
   similarityThresholdValue: document.querySelector("#similarity-threshold-value"),
   contextList: document.querySelector("#context-list"),
@@ -67,6 +68,7 @@ async function refreshStatus() {
     if (!state.retrievalInitialized) {
       elements.retrievalMethod.value = status.retrieval_method || "vector";
       elements.retrievalTopK.value = status.retrieval_top_k ?? 20;
+      elements.candidatePool.value = status.candidate_pool_size ?? 100;
       elements.similarityThreshold.value = status.similarity_threshold ?? 0.35;
       state.retrievalInitialized = true;
       updateRetrievalControls();
@@ -390,6 +392,9 @@ async function ask(event) {
         question,
         retrieval_method: elements.retrievalMethod.value,
         top_k: Number(elements.retrievalTopK.value),
+        candidate_pool: elements.candidatePool.disabled
+          ? undefined
+          : Number(elements.candidatePool.value),
         similarity_threshold: elements.similarityThreshold.disabled
           ? undefined
           : Number(elements.similarityThreshold.value),
@@ -435,8 +440,12 @@ function updateRunStatusFromJob(job) {
   if (stages.answer && stages.answer.status === "running") {
     setRunStatusLoading(true, "正在生成答案...");
   } else if (stages.vector_search && stages.vector_search.status === "running") {
-    setRunStatusLoading(true, job.retrieval_method === "bm25"
-      ? "正在进行 BM25 关键词搜索..." : "正在搜索向量数据库...");
+    const messages = {
+      bm25: "正在进行 BM25 关键词搜索...",
+      hybrid: "正在进行混合检索...",
+      vector: "正在搜索向量数据库...",
+    };
+    setRunStatusLoading(true, messages[job.retrieval_method] || messages.vector);
   } else if (stages.encode && stages.encode.status === "running") {
     setRunStatusLoading(true, "正在编码问题...");
   } else if (job.status === "queued") {
@@ -470,7 +479,12 @@ function renderProcess() {
 
     const body = document.createElement("div");
     const title = document.createElement("strong");
-    title.textContent = key === "vector_search" && method === "bm25" ? "BM25 关键词搜索" : label;
+    const labels = {
+      bm25: "BM25 关键词搜索",
+      hybrid: "混合检索",
+    };
+    title.textContent = key === "vector_search" && method !== "vector"
+      ? labels[method] : label;
     const detail = document.createElement("span");
     detail.textContent = stageDetail(key, stage);
     body.append(title, detail);
@@ -501,7 +515,11 @@ function stageDetail(key, stage) {
     return `${detail.model || "Embedding"} · ${detail.dimensions || 0} 维${duration}${preview}`;
   }
   if (key === "vector_search") {
-    return `${detail.matches || 0} 个匹配 · Top ${detail.top_k || 0}${duration}`;
+    const pool = detail.pool ? ` · 池 ${detail.pool}` : "";
+    const recall = detail.recall != null
+      && detail.recall !== detail.matches && detail.recall !== detail.pool
+      ? ` · 召回 ${detail.recall}` : "";
+    return `${detail.matches || 0} 个结果 · Top ${detail.top_k || 0}${pool}${recall}${duration}`;
   }
   if (key === "answer") return `${detail.model || "LLM"}${duration}`;
   return "完成";
@@ -564,7 +582,15 @@ function createVectorHitCard(hit) {
   title.textContent = `${hit.rank}. ${hit.title || "未命名文档"}`;
   const distance = document.createElement("span");
   distance.className = "distance-value";
-  if (hit.retrieval_method === "bm25") {
+  if (hit.retrieval_method === "hybrid") {
+    distance.title = "混合检索：相似度为向量语义相关性，BM25 为关键词匹配分";
+    const similarity = Number(hit.similarity) || 0;
+    const bm25 = Number(hit.bm25_score) || 0;
+    distance.textContent = [
+      similarity > 0 ? `相似度 ${similarity.toFixed(2)}` : "",
+      bm25 > 0 ? `BM25 ${bm25.toPrecision(4)}` : "",
+    ].filter(Boolean).join(" · ") || "混合";
+  } else if (hit.retrieval_method === "bm25") {
     distance.title = "BM25 关键词匹配分数，越高越相关，不是概率";
     distance.textContent = `BM25 ${Number(hit.bm25_score).toPrecision(4)}`;
   } else {
@@ -660,10 +686,12 @@ refreshDocuments();
 pollJobs();
 
 function updateRetrievalControls() {
-  const bm25 = elements.retrievalMethod.value === "bm25";
-  elements.similarityThreshold.disabled = bm25;
-  elements.similarityThresholdValue.textContent = bm25
+  const method = elements.retrievalMethod.value;
+  const thresholdOff = method !== "vector";
+  elements.similarityThreshold.disabled = thresholdOff;
+  elements.similarityThresholdValue.textContent = thresholdOff
     ? "不适用" : Number(elements.similarityThreshold.value).toFixed(2);
+  elements.candidatePool.disabled = method !== "hybrid";
 }
 
 for (const element of [elements.retrievalMethod, elements.retrievalTopK, elements.similarityThreshold]) {
