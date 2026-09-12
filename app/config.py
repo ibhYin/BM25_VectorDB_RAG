@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     embedding_base_url: str = ""
     ocr_model: str = "gpt-4o-mini"
     ocr_max_pages: int | None = None
+    # MinerU online parsing; a token turns structurization on for real documents.
+    mineru_api_token: str = ""
+    mineru_model_version: Literal["pipeline", "vlm"] = "vlm"
     chunk_size: int = 800
     chunk_overlap: int = 120
     retrieval_top_k: int = 20
@@ -51,6 +54,7 @@ class Settings(BaseSettings):
         "embedding_api_key",
         "embedding_base_url",
         "ocr_model",
+        "mineru_api_token",
         mode="before",
     )
     @classmethod
@@ -95,6 +99,8 @@ RUNTIME_CONFIG_FIELDS = (
     "embedding_base_url",
     "embedding_api_key",
     "embedding_model",
+    "mineru_api_token",
+    "mineru_model_version",
 )
 # Empty means "keep what is already there": the UI never echoes secrets back,
 # and a blank model picker must not silently erase the configured model.
@@ -103,6 +109,8 @@ RUNTIME_CONFIG_KEEP_WHEN_EMPTY = (
     "embedding_api_key",
     "llm_model",
     "embedding_model",
+    "mineru_api_token",
+    "mineru_model_version",
 )
 
 
@@ -215,6 +223,9 @@ def runtime_config_view() -> dict[str, object]:
         "embedding_api_key_set": bool(settings.embedding_api_key),
         "embedding_api_key_hint": _mask_secret(settings.embedding_api_key),
         "embedding_model": settings.embedding_model,
+        "mineru_api_token_set": bool(settings.mineru_api_token),
+        "mineru_api_token_hint": _mask_secret(settings.mineru_api_token),
+        "mineru_model_version": settings.mineru_model_version,
         "runtime_config_file": str(runtime_config_path()),
     }
 

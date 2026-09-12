@@ -396,6 +396,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             "openai_base_url": settings.openai_base_url,
             "supported_files": supported_files,
             "chroma_exists": (settings.chroma_persist_dir / "chroma.sqlite3").is_file(),
+            "mineru_configured": bool(settings.mineru_api_token),
             **self._index_model_info(settings),
         }
 
@@ -501,6 +502,27 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 value = cls._clean_model_name(payload[field], field)
                 if value:
                     updates[field] = value
+        if "mineru_api_token" in payload:
+            value = payload["mineru_api_token"]
+            if not isinstance(value, str):
+                raise RequestError(
+                    HTTPStatus.BAD_REQUEST, "mineru_api_token must be a string"
+                )
+            value = value.strip()
+            if value:
+                updates["mineru_api_token"] = value
+        if payload.get("clear_mineru_api_token") is True:
+            # Secrets are never echoed back, so "blank" has to mean "keep";
+            # disabling MinerU needs an explicit flag.
+            updates["mineru_api_token"] = ""
+        if "mineru_model_version" in payload:
+            value = payload["mineru_model_version"]
+            if value not in ("pipeline", "vlm"):
+                raise RequestError(
+                    HTTPStatus.BAD_REQUEST,
+                    "mineru_model_version must be pipeline or vlm",
+                )
+            updates["mineru_model_version"] = str(value)
         return updates
 
     @staticmethod

@@ -39,6 +39,11 @@ const elements = {
   configOpenaiApiKey: document.querySelector("#config-openai-api-key"),
   configEmbeddingBaseUrl: document.querySelector("#config-embedding-base-url"),
   configEmbeddingApiKey: document.querySelector("#config-embedding-api-key"),
+  configMineruToken: document.querySelector("#config-mineru-token"),
+  configMineruClear: document.querySelector("#config-mineru-clear"),
+  configMineruModelVersion: document.querySelector("#config-mineru-model-version"),
+  configMineruScope: document.querySelector("#config-mineru-scope"),
+  structurizeLabel: document.querySelector("#structurize-label"),
   documentCount: document.querySelector("#document-count"),
   chunkCount: document.querySelector("#chunk-count"),
   uploadLimit: document.querySelector("#upload-limit"),
@@ -154,6 +159,7 @@ async function refreshStatus() {
     elements.documentCount.textContent = String(state.documents.length);
     elements.chunkCount.textContent = String(chunkCount);
     renderIndexWarning(status);
+    renderStructurizeLabel(Boolean(status.mineru_configured));
   } catch (error) {
     elements.serviceSummary.textContent = "服务连接失败";
     elements.vectorStatus.textContent = "服务不可用";
@@ -1050,7 +1056,11 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-const configState = { loaded: null, models: { llm: "", embedding: "" } };
+const configState = {
+  loaded: null,
+  models: { llm: "", embedding: "" },
+  clearMineruToken: false,
+};
 
 function canConfigure() {
   return !identityState.user || identityState.isAdmin;
@@ -1087,6 +1097,12 @@ async function openConfig() {
     elements.configEmbeddingApiKey.placeholder = config.embedding_api_key_set
       ? `已配置 ${config.embedding_api_key_hint} · 留空保持不变`
       : "留空则保持不变";
+    elements.configMineruModelVersion.value = config.mineru_model_version || "vlm";
+    elements.configMineruToken.placeholder = config.mineru_api_token_set
+      ? `已配置 ${config.mineru_api_token_hint} · 留空保持不变`
+      : "留空则保持不变";
+    configState.clearMineruToken = false;
+    renderMineruScope(Boolean(config.mineru_api_token_set));
     setConfigStatus("");
   } catch (error) {
     setConfigStatus(error.message, "error");
@@ -1216,6 +1232,19 @@ function renderEmbeddingStatuses() {
   }
 }
 
+function renderMineruScope(configured) {
+  elements.configMineruScope.textContent = configured ? "已启用" : "未配置";
+  elements.configMineruScope.className = `scope-badge ${configured ? "cloud" : "empty"}`;
+}
+
+// The upload checkbox means different things depending on whether MinerU is set
+// up: real layout analysis when it is, the weaker local parser when it is not.
+function renderStructurizeLabel(mineruConfigured) {
+  elements.structurizeLabel.textContent = mineruConfigured
+    ? "结构化提取（MinerU 在线解析）"
+    : "结构化提取（本地 markitdown，PDF 效果一般）";
+}
+
 async function loadModels(target) {
   if (!canConfigure()) return;
   const { baseUrl, apiKey, hint } = configTarget(target);
@@ -1284,6 +1313,13 @@ function collectConfigChanges() {
   if (openaiKey) changes.openai_api_key = openaiKey;
   const embeddingKey = elements.configEmbeddingApiKey.value.trim();
   if (embeddingKey) changes.embedding_api_key = embeddingKey;
+  const mineruToken = elements.configMineruToken.value.trim();
+  if (mineruToken) changes.mineru_api_token = mineruToken;
+  if (configState.clearMineruToken) changes.clear_mineru_api_token = true;
+  const mineruVersion = elements.configMineruModelVersion.value;
+  if (mineruVersion !== (loaded.mineru_model_version || "vlm")) {
+    changes.mineru_model_version = mineruVersion;
+  }
   return changes;
 }
 
@@ -1327,6 +1363,7 @@ async function submitConfig(event) {
     };
     elements.configOpenaiApiKey.value = "";
     elements.configEmbeddingApiKey.value = "";
+    elements.configMineruToken.value = "";
     elements.configDialog.close();
     showToast(embeddingChanged ? "已更换向量模型，请重新入库文档" : "模型配置已保存");
     await refreshStatus();
@@ -1344,6 +1381,18 @@ elements.configCancel.addEventListener("click", () => elements.configDialog.clos
 elements.configRefreshModels.addEventListener("click", () => {
   loadModels("llm");
   loadModels("embedding");
+});
+// Secrets are write-only, so clearing one needs an explicit, visible action.
+elements.configMineruClear.addEventListener("click", () => {
+  configState.clearMineruToken = true;
+  elements.configMineruToken.value = "";
+  elements.configMineruToken.placeholder = "保存后将清除 Token";
+  renderMineruScope(false);
+});
+elements.configMineruToken.addEventListener("input", () => {
+  if (!elements.configMineruToken.value.trim()) return;
+  configState.clearMineruToken = false;
+  renderMineruScope(true);
 });
 for (const target of ["llm", "embedding"]) {
   const { baseUrl, select, custom } = configTarget(target);

@@ -13,3 +13,4 @@ rich==15.0.0
 pytest==9.0.3
 PyMuPDF==1.27.2.3
 jieba==0.42.1
+markitdown[pdf]==0.1.7

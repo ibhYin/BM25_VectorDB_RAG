@@ -208,3 +208,25 @@ def test_index_model_info_is_quiet_when_models_match(tmp_path) -> None:
         "index_embedding_model": "bge-small-zh:q8_0",
         "embedding_model_mismatch": False,
     }
+
+
+def test_read_config_updates_accepts_mineru_token_and_version() -> None:
+    updates = WebRequestHandler._read_config_updates(
+        {"mineru_api_token": "  secret-token  ", "mineru_model_version": "pipeline"}
+    )
+
+    assert updates == {
+        "mineru_api_token": "secret-token",
+        "mineru_model_version": "pipeline",
+    }
+
+
+def test_read_config_updates_drops_blank_mineru_token() -> None:
+    assert WebRequestHandler._read_config_updates({"mineru_api_token": "   "}) == {}
+
+
+def test_read_config_updates_rejects_unknown_mineru_version() -> None:
+    with pytest.raises(RequestError) as error:
+        WebRequestHandler._read_config_updates({"mineru_model_version": "turbo"})
+
+    assert error.value.status == HTTPStatus.BAD_REQUEST

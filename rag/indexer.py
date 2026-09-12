@@ -25,6 +25,8 @@ def build_vector_index(
     knowledge_base_id: str = "default",
     access_policy_file: Path | None = None,
     structurize: bool = False,
+    mineru_token: str = "",
+    mineru_model_version: str = "vlm",
 ) -> tuple[list[Document], list[Document]]:
     """Load, split and index one directory through the shared vector pipeline.
 
@@ -46,6 +48,8 @@ def build_vector_index(
         ocr_model=ocr_model,
         ocr_max_pages=ocr_max_pages,
         structurize=structurize,
+        mineru_token=mineru_token,
+        mineru_model_version=mineru_model_version,
     )
     if not documents:
         raise ValueError(f"No supported documents found in: {data_dir}")

@@ -27,11 +27,14 @@ def load_documents(
     ocr_model: str = DEFAULT_OCR_MODEL,
     ocr_max_pages: int | None = None,
     structurize: bool = False,
+    mineru_token: str = "",
+    mineru_model_version: str = "vlm",
 ) -> list[Document]:
     """Load local text documents from the knowledge base directory.
 
-    When structurize is True, PDF and plain-text files are converted to Markdown
-    via markitdown before chunking, preserving headings, lists, and tables.
+    When structurize is True, files are converted to Markdown before chunking.
+    With a MinerU token that conversion uses the online layout analysis;
+    otherwise it falls back to the local markitdown converter.
     """
 
     documents: list[Document] = []
@@ -49,6 +52,8 @@ def load_documents(
                 ocr_model=ocr_model,
                 ocr_max_pages=ocr_max_pages,
                 structurize=structurize,
+                mineru_token=mineru_token,
+                mineru_model_version=mineru_model_version,
             )
         )
 
@@ -62,11 +67,13 @@ def load_document_file(
     ocr_model: str = DEFAULT_OCR_MODEL,
     ocr_max_pages: int | None = None,
     structurize: bool = False,
+    mineru_token: str = "",
+    mineru_model_version: str = "vlm",
 ) -> list[Document]:
     """Load one supported file through the same path as directory ingestion.
 
-    When structurize is True, uses markitdown to convert the file to structured
-    Markdown before splitting. Falls back to raw text extraction on failure.
+    When structurize is True, converts the file to structured Markdown before
+    splitting. Falls back to raw extraction when the converter yields nothing.
     """
 
     if not path.is_file():
@@ -77,7 +84,7 @@ def load_document_file(
     if structurize:
         from rag.structurizer import convert_to_markdown
 
-        markdown_text = convert_to_markdown(path)
+        markdown_text = convert_to_markdown(path, mineru_token, mineru_model_version)
         if markdown_text:
             # Structurization succeeded; return as a single document with .md metadata.
             return [
@@ -85,11 +92,11 @@ def load_document_file(
                     page_content=markdown_text,
                     metadata={
                         "source": str(path),
-                        "structurized": True,
+                        "structured_by": "mineru" if mineru_token else "markitdown",
                     },
                 )
             ]
-        # Conversion failed; fall through to raw extraction below.
+        # Conversion produced nothing; fall through to raw extraction below.
 
     if path.suffix.lower() in TEXT_SUFFIXES:
         from langchain_community.document_loaders import TextLoader

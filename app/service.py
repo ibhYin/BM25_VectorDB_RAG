@@ -121,6 +121,8 @@ def ingest_knowledge_base(
             knowledge_base_id=settings.knowledge_base_id,
             access_policy_file=settings.access_policy_file,
             structurize=structurize,
+            mineru_token=settings.mineru_api_token,
+            mineru_model_version=settings.mineru_model_version,
         )
 
     return IngestResult(len(documents), len(chunks), rebuild, source_dir)
@@ -149,6 +151,8 @@ def ingest_files(
                     ocr_model=settings.ocr_model,
                     ocr_max_pages=settings.ocr_max_pages,
                     structurize=structurize,
+                    mineru_token=settings.mineru_api_token,
+                    mineru_model_version=settings.mineru_model_version,
                 )
             )
 

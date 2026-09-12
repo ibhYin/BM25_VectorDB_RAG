@@ -6,8 +6,9 @@
 
 - 浏览器拖拽上传，后台增量索引，同名文档安全替换旧切片。
 - PDF 文本提取与扫描件 OCR 分流。
-- **可选的文档结构化提取**：上传或 CLI 入库时勾选「结构化提取」，通过 `markitdown` 将 PDF/TXT
-  转换为 Markdown 后再切片，保留标题、列表、表格结构，提升检索与回答质量。
+- **可选的文档结构化提取**：上传或 CLI 入库时勾选「结构化提取」，把文档转成 Markdown 后再切片，
+  保留标题、列表、表格结构。默认走 **MinerU 在线解析**（真实版面分析）；未配置 Token 时退回
+  本地 `markitdown`。
 - 稳定的 `doc_id`、`chunk_id`、页码和章节元数据。
 - 本地 Ollama Embedding 与远程 LLM 可独立配置。
 - 网页内直接配置 LLM / Embedding 的请求地址、API Key 与模型名，保存后立即生效，无需修改 `.env`。
@@ -44,7 +45,6 @@ tests/              不访问真实外部服务的测试
 ```bash
 conda activate langchain
 pip install -r requirements.txt
-pip install 'markitdown[pdf]'  # 可选：支持结构化提取（保留标题/列表/表格）
 ```
 
 创建 `.env` 文件并配置 Chat 服务。Embedding 可以复用 Chat 服务，也可以独立指向本地 Ollama：
@@ -65,6 +65,10 @@ RETRIEVAL_METHOD=hybrid
 RETRIEVAL_TOP_K=20
 SIMILARITY_THRESHOLD=0.35
 CANDIDATE_POOL_SIZE=100
+
+# 可选：配置后「结构化提取」走 MinerU 在线版面分析
+MINERU_API_TOKEN=
+MINERU_MODEL_VERSION=vlm
 ```
 
 也可以在网页右上角的「模型接入配置」里直接填写请求地址、API Key 和模型名。保存后写入
@@ -152,15 +156,52 @@ python -m app.main web
 跳转依赖 `GET /api/documents/:doc_id` 的 `focus` 参数：后端按 `chunk_id` 查出它在文档中的
 真实位置，再把该页向前偏移 2 个切片后返回，所以前端不需要假设「切片号等于位置」。
 
+## 文档结构化
+
+PDF 只携带视觉排版，不含「这是二级标题」这类语义信息，所以需要版面分析模型才能拿到真实
+结构。项目提供两个后端，按是否配置 MinerU Token 自动选择：
+
+| 后端 | 触发条件 | 适用场景 |
+|---|---|---|
+| **MinerU 在线** | 配置了 `MINERU_API_TOKEN` | PDF 等复杂版面，真正识别标题层级 |
+| 本地 `markitdown` | 未配置 Token | 文档本身已带结构（docx/pptx/xlsx/html） |
+
+> 实测提醒：`markitdown` 对**学术 PDF** 效果不如项目内置的 PyMuPDF 提取路径（会把标题页
+> 识别成表格、把英文单词粘连）。所以处理 PDF 时建议配置 MinerU Token，而不是依赖本地回退。
+
+### 配置 MinerU
+
+1. 到 <https://mineru.net/apiManage/docs> 注册并创建 API Token
+2. 在网页右上角「模型接入配置 → 文档解析（MinerU）」填入 Token（也可写进 `.env` 的
+   `MINERU_API_TOKEN`），保存后立即生效
+3. 上传文档时勾选「结构化提取」；或在 CLI 用 `python -m app.main ingest --structurize`
+
+解析精度可选 `vlm`（默认，精度最高）或 `pipeline`（更快，精度较低），对应
+`MINERU_MODEL_VERSION`。
+
+### 调用流程
+
+`rag/mineru_client.py` 走的是官方精准解析 API（异步三步）：
+
+1. `POST /api/v4/file-urls/batch` → 拿到 `batch_id` 和预签名上传地址
+2. `PUT <上传地址>` → 上传文件原始字节
+3. 轮询 `GET /api/v4/extract-results/batch/{batch_id}` → `state=done` 后取 `full_zip_url`
+4. 下载 zip，读取其中的 `full.md`
+
+限制：单文件 ≤ 200MB、≤ 200 页。轮询超时默认 1800 秒。MinerU 失败会**直接报错**而不是静默
+退回 markitdown —— 否则会用一个明显更差的解析结果污染索引。
+
+> ⚠️ 文档会上传到 mineru.net 第三方服务，涉密材料不要使用这条路径。
+
 ## Web API
 
 - `GET /api/status`：运行配置、索引状态，以及建库模型和是否与当前配置不一致。
 - `GET /api/config`：当前模型接入配置（API Key 不回显，只给 `••••` 加尾 4 位）和索引建库
   模型。仅管理员。
-- `POST /api/config`：更新 LLM / Embedding 的请求地址、API Key 与模型名，写入
-  `config/runtime_config.json`。**省略**的字段保持不变；API Key 和模型名留空也保持不变；
-  Embedding 的地址留空表示复用 LLM 的地址，LLM 的地址留空表示回退到 SDK 默认端点。
-  仅管理员。
+- `POST /api/config`：更新 LLM / Embedding 的请求地址、API Key 与模型名，以及 MinerU 的
+  `mineru_api_token` / `mineru_model_version`，写入 `config/runtime_config.json`。**省略**的
+  字段保持不变；API Key 和模型名留空也保持不变；Embedding 的地址留空表示复用 LLM 的地址，
+  LLM 的地址留空表示回退到 SDK 默认端点。仅管理员。
 - `POST /api/models`：按 `target`（`llm` / `embedding`）列出该端点可用模型，返回
   `{scope, models, error}`；`scope` 为 `local` 时模型带磁盘体积。仅管理员。
 - `GET /api/documents`：已入库文档及切片数。
@@ -212,7 +253,7 @@ pytest -q
 
 测试覆盖 PDF/OCR 分流、切片元数据、向量 ID、安全重建、独立 Embedding 端点、并发问答、
 上传边界、原始命中证据、Web 请求安全、运行时配置读写、模型目录（本地体积 / 云端列表）、
-索引 manifest、切片定位，以及网关请求头。测试不访问真实外部服务。
+索引 manifest、切片定位、网关请求头、文档结构化与 MinerU API 流程。测试不访问真实外部服务。
 
 ## 运行数据
 
