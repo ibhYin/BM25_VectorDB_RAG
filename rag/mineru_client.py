@@ -13,12 +13,11 @@ exceed, so this client targets the token-authenticated precise API.
 from __future__ import annotations
 
 import io
-import json
 import time
 import zipfile
 from pathlib import Path
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+
+import requests
 
 
 API_BASE = "https://mineru.net/api/v4"
@@ -26,9 +25,6 @@ REQUEST_TIMEOUT_SECONDS = 60.0
 POLL_INTERVAL_SECONDS = 5.0
 MAX_WAIT_SECONDS = 1800.0
 MARKDOWN_NAME = "full.md"
-# MinerU is not a coding-agent gateway, but generic HTTP-library user agents are
-# blocked by plenty of WAFs; identify the client the same way the rest of the app does.
-CLIENT_USER_AGENT = "rag-langchain-workspace/1.0"
 
 
 class MineruError(RuntimeError):
@@ -59,7 +55,18 @@ def _request_upload_url(
         "files": [{"name": path.name, "data_id": path.stem[:64]}],
         "model_version": model_version,
     }
-    body = _post_json(f"{API_BASE}/file-urls/batch", payload, token)
+    try:
+        response = requests.post(
+            f"{API_BASE}/file-urls/batch",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        body = response.json()
+    except requests.RequestException as exc:
+        raise MineruError(f"申请上传地址失败：{exc}") from exc
+
     if body.get("code") != 0:
         raise MineruError(f"申请上传地址失败：{body.get('msg') or body}")
 
@@ -72,29 +79,36 @@ def _request_upload_url(
 
 
 def _upload_file(upload_url: str, path: Path) -> None:
-    request = Request(
-        upload_url,
-        data=path.read_bytes(),
-        method="PUT",
-        headers={
-            "Content-Type": "application/octet-stream",
-            "User-Agent": CLIENT_USER_AGENT,
-        },
-    )
+    """Upload raw file bytes to the pre-signed URL.
+
+    OSS pre-signed URLs fail with urllib (403) but succeed with requests when
+    using minimal headers. The signature is sensitive to User-Agent and other
+    headers urllib adds by default.
+    """
     try:
-        with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-            if response.status >= 300:
-                raise MineruError(f"文件上传失败：HTTP {response.status}")
-    except HTTPError as exc:
-        raise MineruError(f"文件上传失败：HTTP {exc.code}") from exc
-    except URLError as exc:
-        raise MineruError("上传文件时无法连接 MinerU") from exc
+        with open(path, "rb") as f:
+            response = requests.put(
+                upload_url, data=f, headers={}, timeout=REQUEST_TIMEOUT_SECONDS
+            )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise MineruError(f"文件上传失败：{exc}") from exc
 
 
 def _wait_for_result(batch_id: str, token: str, max_wait_seconds: float) -> str:
     deadline = time.monotonic() + max_wait_seconds
     while True:
-        body = _get_json(f"{API_BASE}/extract-results/batch/{batch_id}", token)
+        try:
+            response = requests.get(
+                f"{API_BASE}/extract-results/batch/{batch_id}",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            body = response.json()
+        except requests.RequestException as exc:
+            raise MineruError(f"查询解析结果失败：{exc}") from exc
+
         if body.get("code") != 0:
             raise MineruError(f"查询解析结果失败：{body.get('msg') or body}")
 
@@ -117,13 +131,11 @@ def _wait_for_result(batch_id: str, token: str, max_wait_seconds: float) -> str:
 
 
 def _download_markdown(zip_url: str) -> str:
-    request = Request(
-        zip_url, method="GET", headers={"User-Agent": CLIENT_USER_AGENT}
-    )
     try:
-        with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-            payload = response.read()
-    except (HTTPError, URLError, OSError) as exc:
+        response = requests.get(zip_url, timeout=REQUEST_TIMEOUT_SECONDS)
+        response.raise_for_status()
+        payload = response.content
+    except requests.RequestException as exc:
         raise MineruError(f"下载解析结果失败：{exc}") from exc
 
     try:
@@ -143,49 +155,3 @@ def find_markdown_entry(names: list[str]) -> str | None:
         if name == MARKDOWN_NAME or name.endswith(f"/{MARKDOWN_NAME}"):
             return name
     return None
-
-
-def _post_json(url: str, payload: dict[str, object], token: str) -> dict[str, object]:
-    request = Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "Authorization": f"Bearer {token}",
-            "User-Agent": CLIENT_USER_AGENT,
-        },
-    )
-    return _read_json(request)
-
-
-def _get_json(url: str, token: str) -> dict[str, object]:
-    request = Request(
-        url,
-        method="GET",
-        headers={
-            "Accept": "application/json",
-            "Authorization": f"Bearer {token}",
-            "User-Agent": CLIENT_USER_AGENT,
-        },
-    )
-    return _read_json(request)
-
-
-def _read_json(request: Request) -> dict[str, object]:
-    try:
-        with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-            body = json.loads(response.read().decode("utf-8"))
-    except HTTPError as exc:
-        if exc.code in (401, 403):
-            raise MineruError(f"MinerU 拒绝了 Token（HTTP {exc.code}）") from exc
-        raise MineruError(f"MinerU 返回 HTTP {exc.code}") from exc
-    except URLError as exc:
-        raise MineruError("无法连接 MinerU 服务") from exc
-    except (OSError, json.JSONDecodeError) as exc:
-        raise MineruError(f"MinerU 响应无法解析：{exc}") from exc
-
-    if not isinstance(body, dict):
-        raise MineruError("MinerU 返回了非预期的响应格式")
-    return body
