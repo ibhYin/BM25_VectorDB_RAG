@@ -2,9 +2,12 @@
 
 import {
   createSpinner,
+  formatTime,
+  on,
   requestJson,
   router,
   shortDocLabel,
+  showToast,
   state,
 } from "../core.js";
 
@@ -22,9 +25,22 @@ const el = {
   similarityThresholdValue: document.querySelector("#similarity-threshold-value"),
   processList: document.querySelector("#process-list"),
   contextList: document.querySelector("#context-list"),
+  kbStatus: document.querySelector("#kb-status"),
+  newConversation: document.querySelector("#new-conversation"),
+  conversationList: document.querySelector("#conversation-list"),
 };
 
 let mounted = false;
+
+const convState = {
+  items: [],
+  currentId: "",
+  /**
+   * Bumped whenever the user switches conversation. The polling loop compares
+   * it each tick so a late answer cannot paint into a different conversation.
+   */
+  epoch: 0,
+};
 
 // --- retrieval controls ---------------------------------------------------
 
@@ -245,7 +261,8 @@ function createVectorHitCard(hit) {
 
   const text = document.createElement("div");
   text.className = "vector-hit-text";
-  text.textContent = hit.text || "";
+  // 服务端存的只是切片引用，回看历史对话时没有正文。
+  text.textContent = hit.text || "（历史记录只保留切片引用，正文请在知识库页查看）";
 
   card.append(header, metadata, source, text);
   return card;
@@ -262,6 +279,7 @@ function renderContextLoading() {
 // --- process rail ---------------------------------------------------------
 
 const processDefinitions = [
+  ["condense", "问题改写"],
   ["encode", "问题编码"],
   ["vector_search", "向量搜索"],
   ["answer", "生成答案"],
@@ -327,6 +345,12 @@ function stageDetail(key, stage) {
     return `${detail.matches || 0} 个结果 · Top ${detail.top_k || 0}${pool}${recall}${duration}`;
   }
   if (key === "answer") return `${detail.model || "LLM"}${duration}`;
+  if (key === "condense") {
+    // 有历史才走这一步，展示改写前后的对照。
+    return detail.standalone
+      ? `“${detail.original}” → “${detail.standalone}”${duration}`
+      : `已改写为独立问题${duration}`;
+  }
   return "完成";
 }
 
@@ -359,9 +383,16 @@ function updateRunStatusFromJob(job) {
 
 // --- asking ---------------------------------------------------------------
 
-async function waitForAnswer(jobId) {
+// Thrown when the user switched conversation while an answer was in flight.
+class StaleAnswer extends Error {}
+
+async function waitForAnswer(jobId, epoch) {
   while (true) {
+    if (convState.epoch !== epoch) throw new StaleAnswer();
     const job = await requestJson(`/api/answer-jobs/${jobId}`);
+    // Re-check after the await: the user may have switched mid-request.
+    if (convState.epoch !== epoch) throw new StaleAnswer();
+
     state.answerJob = job;
     if (job.stages?.vector_search?.status === "completed") {
       state.vectorHits = job.vector_hits || [];
@@ -395,12 +426,19 @@ async function ask(event) {
   renderProcess();
   renderContextLoading();
 
+  let epoch = convState.epoch;
   try {
+    // 首问时才真正建对话，避免点开页面就留下一堆空对话。
+    const conversationId = await ensureConversation();
+    epoch = convState.epoch;
+    renderConversations();
+
     const job = await requestJson("/api/answer-jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         question,
+        conversation_id: conversationId,
         retrieval_method: getRetrievalMethod(),
         top_k: Number(el.retrievalTopK.value),
         candidate_pool: el.candidatePool.disabled
@@ -413,12 +451,17 @@ async function ask(event) {
     });
     state.answerJob = job;
     renderProcess();
-    const result = await waitForAnswer(job.id);
+    const result = await waitForAnswer(job.id, epoch);
+    if (convState.epoch !== epoch) return;
+
     state.vectorHits = result.vector_hits || [];
     addChatMessage("answer", result.answer || "未生成答案");
     renderContext();
     setRunStatusLoading(false, "回答完成");
+    // 标题和轮数在服务端生成，回读一次列表。
+    loadConversations();
   } catch (error) {
+    if (error instanceof StaleAnswer) return;
     addChatMessage("error", error.message);
     renderContext();
     setRunStatusLoading(false, "回答失败");
@@ -429,6 +472,65 @@ async function ask(event) {
 }
 
 function clearChat() {
+  // 只清空当前对话的显示，不动服务端记录。
+  convState.epoch += 1;
+  resetChatStream();
+}
+
+// --- conversations --------------------------------------------------------
+
+async function loadConversations() {
+  try {
+    const payload = await requestJson("/api/conversations");
+    convState.items = payload.conversations || [];
+  } catch (_) {
+    convState.items = [];
+  }
+  renderConversations();
+}
+
+function renderConversations() {
+  el.conversationList.replaceChildren();
+  if (!convState.items.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-list";
+    empty.textContent = "暂无对话";
+    el.conversationList.append(empty);
+    return;
+  }
+
+  for (const conversation of convState.items) {
+    const item = document.createElement("article");
+    item.className = `conv-item${conversation.id === convState.currentId ? " current" : ""}`;
+
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "conv-open";
+    const title = document.createElement("strong");
+    title.textContent = conversation.title || "新对话";
+    const meta = document.createElement("span");
+    meta.textContent = `${formatTime(conversation.updated_at)} · ${conversation.turn_count} 轮`;
+    open.append(title, meta);
+    open.addEventListener("click", () => openConversation(conversation.id));
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "row-action";
+    remove.title = "删除对话";
+    remove.setAttribute("aria-label", `删除 ${conversation.title}`);
+    remove.innerHTML =
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>';
+    remove.addEventListener("click", (event) => {
+      event.stopPropagation();
+      deleteConversation(conversation.id);
+    });
+
+    item.append(open, remove);
+    el.conversationList.append(item);
+  }
+}
+
+function resetChatStream() {
   el.chatStream.replaceChildren();
   const empty = document.createElement("div");
   empty.className = "empty-chat";
@@ -442,11 +544,88 @@ function clearChat() {
   detail.textContent = "答案将引用知识库中的 chunk_id";
   empty.append(mark, title, detail);
   el.chatStream.append(empty);
+
   state.vectorHits = [];
   state.answerJob = null;
   renderProcess();
   renderContext();
   el.runStatus.textContent = "就绪";
+}
+
+function selectConversation(conversationId) {
+  convState.currentId = conversationId;
+  // Anything still polling for the previous conversation is now stale.
+  convState.epoch += 1;
+  renderConversations();
+}
+
+function newConversation() {
+  selectConversation("");
+  resetChatStream();
+  el.question.focus();
+}
+
+async function deleteConversation(conversationId) {
+  if (!confirm("删除这个对话及其全部记录？")) return;
+  try {
+    await requestJson(`/api/conversations/${encodeURIComponent(conversationId)}`, {
+      method: "DELETE",
+    });
+    if (convState.currentId === conversationId) newConversation();
+    await loadConversations();
+    showToast("已删除对话");
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function openConversation(conversationId) {
+  if (conversationId === convState.currentId) return;
+  selectConversation(conversationId);
+  resetChatStream();
+
+  try {
+    const conversation = await requestJson(
+      `/api/conversations/${encodeURIComponent(conversationId)}`,
+    );
+    const empty = el.chatStream.querySelector(".empty-chat");
+    if (empty) empty.remove();
+
+    for (const turn of conversation.turns || []) {
+      addChatMessage("question", turn.question);
+      addChatMessage("answer", turn.answer || "（未记录答案）");
+    }
+    const last = (conversation.turns || []).at(-1);
+    state.vectorHits = last?.hits || [];
+    renderContext();
+    el.chatStream.scrollTop = el.chatStream.scrollHeight;
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+}
+
+async function ensureConversation() {
+  if (convState.currentId) return convState.currentId;
+  const conversation = await requestJson("/api/conversations", { method: "POST" });
+  convState.currentId = conversation.id;
+  return conversation.id;
+}
+
+// --- knowledge base status ------------------------------------------------
+
+function renderKnowledgeBaseStatus() {
+  const documents = state.documents.length;
+  const chunks = state.documents.reduce(
+    (total, item) => total + Number(item.chunk_count || 0),
+    0,
+  );
+  if (!documents) {
+    el.kbStatus.className = "kb-status warn";
+    el.kbStatus.textContent = "知识库还没有文档，答案会缺少依据";
+    return;
+  }
+  el.kbStatus.className = "kb-status";
+  el.kbStatus.textContent = `知识库 ${documents} 个文档 · ${chunks} 个切片`;
 }
 
 // --- view contract --------------------------------------------------------
@@ -551,11 +730,19 @@ export default {
 
     el.askForm.addEventListener("submit", ask);
     el.clearChatButton.addEventListener("click", clearChat);
+    el.newConversation.addEventListener("click", newConversation);
     el.question.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
         el.askForm.requestSubmit();
       }
+    });
+
+    on("documents", renderKnowledgeBaseStatus);
+    on("identity", () => {
+      // Conversations are per-owner, so switching user means a different list.
+      newConversation();
+      loadConversations();
     });
 
     for (const element of [el.retrievalTopK, el.similarityThreshold]) {
@@ -573,7 +760,10 @@ export default {
   },
 
   show() {
+    renderKnowledgeBaseStatus();
+    loadConversations();
     el.chatStream.scrollTop = el.chatStream.scrollHeight;
+    el.question.focus();
   },
 
   // Retrieval defaults come from the server, but only until the user touches

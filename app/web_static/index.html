@@ -48,13 +48,21 @@
     <!-- ============================ 问答 ============================ -->
     <section class="page page-ask" id="page-ask" aria-label="知识库问答">
       <div class="ask-layout">
+        <aside class="conv-rail" aria-label="对话记录">
+          <button id="new-conversation" class="primary-button conv-new" type="button">新对话</button>
+          <div class="item-list conv-list" id="conversation-list" aria-live="polite">
+            <div class="loading-state"><span class="loading-spinner" aria-hidden="true"></span><span>加载中</span></div>
+          </div>
+        </aside>
+
         <div class="ask-main">
           <div class="ask-head">
             <div class="ask-head-text">
               <h2>问答</h2>
               <p id="run-status" role="status" aria-live="polite">就绪</p>
             </div>
-            <button id="clear-chat-button" class="icon-button" type="button" title="清空对话" aria-label="清空对话">
+            <span class="kb-status" id="kb-status"></span>
+            <button id="clear-chat-button" class="icon-button" type="button" title="清空当前对话" aria-label="清空当前对话">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
             </button>
           </div>

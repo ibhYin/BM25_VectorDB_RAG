@@ -488,8 +488,15 @@ def answer_question(
     retrieval_method: str | None = None,
     candidate_pool: int | None = None,
     user: UserContext | None = None,
+    history: list[dict] | None = None,
 ) -> AnswerResult:
-    """Encode, retrieve and answer through the shared CLI/Web RAG pipeline."""
+    """Encode, retrieve and answer through the shared CLI/Web RAG pipeline.
+
+    ``history`` is the prior turns of the conversation. When present the question
+    is first rewritten into a standalone query — a follow-up like「它的原理是什么」
+    retrieves nothing useful on its own — but the *original* question is what the
+    answer model sees, alongside the history.
+    """
 
     question = question.strip()
     if not question:
@@ -518,6 +525,31 @@ def answer_question(
 
     recall = None
     with answer_limiter:
+        # 改写要在并发闸之内（它就是用来限制并发 LLM 调用的），但在读锁之外——
+        # 占着读锁等一次慢的 LLM 调用会挡住等待中的写者。
+        retrieval_question = question
+        if history:
+            from chains.answer_chain import condense_question
+
+            report("condense", "running", model=settings.llm_model)
+            started = perf_counter()
+            retrieval_question = condense_question(
+                history,
+                question,
+                model_name=settings.llm_model,
+                openai_api_key=settings.openai_api_key,
+                openai_base_url=settings.openai_base_url,
+            )
+            report(
+                "condense",
+                "completed",
+                original=question,
+                standalone=retrieval_question,
+                duration_ms=round((perf_counter() - started) * 1000),
+            )
+        else:
+            report("condense", "skipped")
+
         with knowledge_base_lock.read():
             if method == "bm25":
                 report("encode", "skipped", retrieval_method=method)
@@ -529,7 +561,7 @@ def answer_question(
                 )
                 started = perf_counter()
                 hits = search_bm25(
-                    question,
+                    retrieval_question,
                     settings.chroma_persist_dir,
                     effective_top_k,
                     settings.knowledge_base_id,
@@ -559,7 +591,7 @@ def answer_question(
 
                 report("encode", "running", model=settings.embedding_model)
                 started = perf_counter()
-                query_embedding = embeddings.embed_query(question)
+                query_embedding = embeddings.embed_query(retrieval_question)
                 report(
                     "encode",
                     "completed",
@@ -588,7 +620,7 @@ def answer_question(
                 vector_hits = build_vector_hits(matches)
                 bm25_scores = rerank_bm25_scores(
                     [match[0].page_content for match in matches],
-                    question,
+                    retrieval_question,
                 )
                 hits = rrf_fuse(vector_hits, bm25_scores)[:effective_top_k]
                 recall = len(matches)
@@ -607,7 +639,7 @@ def answer_question(
 
                 report("encode", "running", model=settings.embedding_model)
                 started = perf_counter()
-                query_embedding = embeddings.embed_query(question)
+                query_embedding = embeddings.embed_query(retrieval_question)
                 report(
                     "encode",
                     "completed",
@@ -657,6 +689,7 @@ def answer_question(
                 model_name=settings.llm_model,
                 openai_api_key=settings.openai_api_key,
                 openai_base_url=settings.openai_base_url,
+                history=history,
             )
             report(
                 "answer",

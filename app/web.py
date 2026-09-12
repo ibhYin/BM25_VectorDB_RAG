@@ -21,9 +21,11 @@ logger = logging.getLogger(__name__)
 
 
 def _actor_name(user: UserContext | None) -> str:
-    """Identity to record in the audit trail when no policy is configured."""
+    """Identity recorded in the audit trail and as a conversation owner."""
 
-    return user.user_id if user is not None else "open-mode"
+    from app.conversations import owner_of
+
+    return owner_of(user)
 
 
 class RequestError(Exception):
@@ -73,6 +75,12 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._handle_audit_log(parsed.query)
         elif parsed.path == "/api/staging":
             self._handle_staging_list()
+        elif parsed.path == "/api/conversations":
+            self._handle_conversations()
+        elif parsed.path.startswith("/api/conversations/"):
+            self._handle_conversation_detail(
+                parsed.path.removeprefix("/api/conversations/")
+            )
         elif parsed.path == "/api/documents":
             self._handle_documents()
         elif parsed.path.startswith("/api/documents/"):
@@ -110,6 +118,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._handle_staging_decision(item_id, action)
         elif parsed.path == "/api/answer-jobs":
             self._handle_create_answer_job()
+        elif parsed.path == "/api/conversations":
+            self._handle_create_conversation()
         else:
             raise RequestError(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -118,6 +128,10 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
         if parsed.path.startswith("/api/documents/"):
             self._handle_document_delete(parsed.path.removeprefix("/api/documents/"))
+        elif parsed.path.startswith("/api/conversations/"):
+            self._handle_conversation_delete(
+                parsed.path.removeprefix("/api/conversations/")
+            )
         else:
             raise RequestError(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -220,6 +234,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_create_answer_job(self) -> None:
         from app.answer_jobs import get_answer_store
+        from app.conversations import get_conversation_store, owner_of
 
         payload = self._read_json()
         settings = get_settings()
@@ -227,6 +242,22 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         question_value = payload.get("question", "")
         if not isinstance(question_value, str):
             raise RequestError(HTTPStatus.BAD_REQUEST, "question must be a string")
+
+        conversation_id = payload.get("conversation_id")
+        if conversation_id is not None:
+            if not isinstance(conversation_id, str):
+                raise RequestError(
+                    HTTPStatus.BAD_REQUEST, "conversation_id must be a string"
+                )
+            conversation_id = conversation_id.strip() or None
+        # 不校验的话，A 能传 B 的 id，让 worker 把内容写进 B 的对话。
+        if conversation_id and not get_conversation_store().owns(
+            conversation_id, owner_of(user)
+        ):
+            raise RequestError(
+                HTTPStatus.FORBIDDEN, "对话不存在或不属于当前用户"
+            )
+
         try:
             top_k, similarity_threshold, retrieval_method, candidate_pool = (
                 self._read_retrieval_params(payload)
@@ -238,6 +269,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 retrieval_method=retrieval_method,
                 candidate_pool=candidate_pool,
                 user=user,
+                conversation_id=conversation_id,
             )
         except ValueError as exc:
             raise RequestError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
@@ -279,6 +311,50 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 "entries": read_entries(limit),
             }
         )
+
+    def _handle_conversations(self) -> None:
+        from app.conversations import get_conversation_store, owner_of
+
+        user = self._current_user(get_settings())
+        conversations = get_conversation_store().list_for(owner_of(user))
+        self._send_json({"conversations": conversations})
+
+    def _handle_create_conversation(self) -> None:
+        from app.conversations import get_conversation_store, owner_of
+
+        user = self._current_user(get_settings())
+        conversation = get_conversation_store().create(owner_of(user))
+        self._send_json(conversation, status=HTTPStatus.CREATED)
+
+    def _handle_conversation_detail(self, raw_id: str) -> None:
+        from app.conversations import get_conversation_store, owner_of
+
+        user = self._current_user(get_settings())
+        conversation_id = unquote(raw_id).strip()
+        if not conversation_id:
+            raise RequestError(HTTPStatus.BAD_REQUEST, "conversation_id is required")
+        try:
+            payload = get_conversation_store().get(conversation_id, owner_of(user))
+        except KeyError as exc:
+            raise RequestError(HTTPStatus.NOT_FOUND, "Conversation not found") from exc
+        except PermissionError as exc:
+            raise RequestError(HTTPStatus.FORBIDDEN, str(exc)) from exc
+        self._send_json(payload)
+
+    def _handle_conversation_delete(self, raw_id: str) -> None:
+        from app.conversations import get_conversation_store, owner_of
+
+        user = self._current_user(get_settings())
+        conversation_id = unquote(raw_id).strip()
+        if not conversation_id:
+            raise RequestError(HTTPStatus.BAD_REQUEST, "conversation_id is required")
+        try:
+            get_conversation_store().delete(conversation_id, owner_of(user))
+        except KeyError as exc:
+            raise RequestError(HTTPStatus.NOT_FOUND, "Conversation not found") from exc
+        except PermissionError as exc:
+            raise RequestError(HTTPStatus.FORBIDDEN, str(exc)) from exc
+        self._send_json({"id": conversation_id, "deleted": True})
 
     def _handle_staging_list(self) -> None:
         from app.staging import get_staging_store

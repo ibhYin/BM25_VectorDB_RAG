@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -10,7 +11,12 @@ from app.config import Settings
 from app.access import UserContext
 
 
-STAGES = ("encode", "vector_search", "answer")
+logger = logging.getLogger(__name__)
+
+
+# "condense" 排在最前：dict 顺序即前端渲染顺序。没有历史时后端会报 skipped，
+# 前端对 skipped 已有「已跳过 / -」的展示，不需要动态增删阶段。
+STAGES = ("condense", "encode", "vector_search", "answer")
 
 
 def utc_now() -> str:
@@ -37,6 +43,7 @@ class AnswerJobStore:
         retrieval_method: str | None = None,
         candidate_pool: int | None = None,
         user: UserContext | None = None,
+        conversation_id: str | None = None,
     ) -> dict[str, Any]:
         question = question.strip()
         if not question:
@@ -60,6 +67,7 @@ class AnswerJobStore:
                 "retrieval_method": method,
                 "candidate_pool": candidate_pool,
                 "user": user,
+                "conversation_id": conversation_id or "",
                 "created_at": now,
                 "started_at": "",
                 "finished_at": "",
@@ -93,12 +101,25 @@ class AnswerJobStore:
             return self._snapshot(job)
 
     def _run(self, job_id: str) -> None:
+        from app.conversations import get_conversation_store, owner_of
         from app.service import answer_question
 
         with self._lock:
             job = self._jobs[job_id]
             job["status"] = "running"
             job["started_at"] = utc_now()
+            question = job["question"]
+            owner = owner_of(job.get("user"))
+            conversation_id = job.get("conversation_id") or ""
+            retrieval_method = job["retrieval_method"]
+
+        # 读历史放在任务锁之外，避免和 500ms 一次的状态轮询相互串行；
+        # 对话已被删除时 history_for 返回空，按「无历史」处理。
+        history = (
+            get_conversation_store().history_for(conversation_id, owner)
+            if conversation_id
+            else []
+        )
 
         def progress(stage: str, status: str, detail: dict[str, object]) -> None:
             with self._lock:
@@ -116,14 +137,15 @@ class AnswerJobStore:
 
         try:
             result = answer_question(
-                job["question"],
+                question,
                 self._settings,
                 progress=progress,
                 top_k=job.get("top_k"),
                 similarity_threshold=job.get("similarity_threshold"),
-                retrieval_method=job["retrieval_method"],
+                retrieval_method=retrieval_method,
                 candidate_pool=job.get("candidate_pool"),
                 user=job.get("user"),
+                history=history,
             )
         except Exception as exc:
             with self._lock:
@@ -145,6 +167,21 @@ class AnswerJobStore:
                 vector_hits=result.get("vector_hits", []),
                 finished_at=utc_now(),
             )
+
+        # 写对话放在任务锁之外：append 会全量重写文件，占着锁会阻塞状态轮询。
+        # 失败只记日志——异常在这里抛出会被 executor 的 future 吞掉，那一轮就静默丢了。
+        if conversation_id:
+            try:
+                get_conversation_store().append_turn(
+                    conversation_id,
+                    owner,
+                    question,
+                    result.get("answer", ""),
+                    retrieval_method=retrieval_method,
+                    hits=result.get("vector_hits"),
+                )
+            except Exception:
+                logger.warning("Could not append turn to conversation", exc_info=True)
 
     @staticmethod
     def _snapshot(job: dict[str, Any]) -> dict[str, Any]:
