@@ -201,9 +201,40 @@ PDF 只携带视觉排版，不含「这是二级标题」这类语义信息，�
 不需要额外配置，在配置弹窗选「markitdown」引擎即可。适合处理 docx/pptx/xlsx/html 等
 自带结构的格式。对 PDF 效果较差，不如直接用内置的 PyMuPDF 路径。
 
+## 写入审计
+
+每一次对向量库的写入都会追加一条记录到 `data/vector_audit.jsonl`（JSONL，已 gitignore），
+覆盖三条写入路径：
+
+| 事件 | 触发方式 |
+|---|---|
+| `ingest.directory` | CLI `python -m app.main ingest` |
+| `ingest.files` | 网页上传 |
+| `delete.documents` | 网页删除文档 |
+
+每条记录包含**微秒精度的本地时间带时区偏移**（如 `2026-09-12T15:37:01.630276+08:00`，
+既可排序又无需换算）、操作者、知识库、来源文件、`doc_ids`、文档/切片数、以及当时的
+向量模型与结构化引擎：
+
+```json
+{"timestamp": "2026-09-12T15:37:01.630276+08:00", "event": "ingest.files",
+ "actor": "alice", "knowledge_base_id": "default",
+ "files": ["xxx.pdf"], "doc_ids": ["xxx_edcb415d"],
+ "documents": 1, "chunks": 61, "structurize": true,
+ "structurize_provider": "mineru", "embedding_model": "bge-small-zh:q8_0"}
+```
+
+日志是**只追加**的，从不清空重写；写入失败只会记一条 warning，不会让入库失败。读取时
+会跳过崩溃造成的半行（torn line）。
+
+操作者来自 Web 请求的 `X-User-ID`；CLI 入库记为 `cli`；未启用权限策略时记为 `open-mode`。
+
+日志文件路径可用 `VECTOR_AUDIT_LOG` 覆盖。
+
 ## Web API
 
 - `GET /api/status`：运行配置、索引状态，以及建库模型和是否与当前配置不一致。
+- `GET /api/audit`：向量库写入审计日志，`limit` 默认 100（1-1000），返回最新在前。仅管理员。
 - `GET /api/config`：当前模型接入配置（API Key 不回显，只给 `••••` 加尾 4 位）和索引建库
   模型。仅管理员。
 - `POST /api/config`：更新 LLM / Embedding 的请求地址、API Key 与模型名，以及 MinerU 的
@@ -262,8 +293,8 @@ pytest -q
 
 测试覆盖 PDF/OCR 分流、切片元数据、向量 ID、安全重建、独立 Embedding 端点、并发问答、
 上传边界、原始命中证据、Web 请求安全、运行时配置读写、模型目录（本地体积 / 云端列表）、
-索引 manifest、切片定位、网关请求头、文档结构化（markitdown / MinerU 显式选择）与 MinerU
-API 流程。测试不访问真实外部服务。
+索引 manifest、切片定位、网关请求头、文档结构化（markitdown / MinerU 显式选择）、MinerU
+API 流程与写入审计。测试不访问真实外部服务。
 
 ## 运行数据
 
@@ -275,6 +306,7 @@ API 流程。测试不访问真实外部服务。
 - `.chroma*/`（含索引目录内的 `index_manifest.json`）
 - `data/raw/` 中的真实文档
 - `.web_upload_jobs.json`
+- `data/vector_audit.jsonl`（向量库写入审计日志）
 - `output/`
 - `.playwright-cli/`
 - 虚拟环境和 Python 缓存

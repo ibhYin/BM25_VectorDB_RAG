@@ -158,3 +158,61 @@ def test_list_indexed_documents_aggregates_chunk_counts(
         {"doc_id": "a", "title": "A", "source": "a.md", "chunk_count": 2},
         {"doc_id": "b", "title": "B", "source": "b.md", "chunk_count": 1},
     ]
+
+
+def test_ingest_files_records_an_audit_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app import audit
+
+    monkeypatch.setattr(
+        "app.service.load_document_file",
+        lambda path, **kwargs: [
+            Document(page_content="page", metadata={"source": str(path)})
+        ],
+    )
+    monkeypatch.setattr(
+        "app.service.split_documents",
+        lambda docs, **kwargs: [
+            Document(
+                page_content="chunk",
+                metadata={"doc_id": "note", "chunk_id": "note#chunk_001"},
+            )
+        ],
+    )
+    monkeypatch.setattr("app.service.replace_documents", lambda **kwargs: None)
+    monkeypatch.setattr("app.service.write_index_manifest", lambda *a, **k: None)
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path,
+        chroma_persist_dir=tmp_path / "chroma",
+        embedding_model="bge-small-zh:q8_0",
+    )
+
+    ingest_files(settings, [tmp_path / "note.md"], False, "alice")
+
+    entries = audit.read_entries()
+    assert len(entries) == 1
+    assert entries[0]["event"] == "ingest.files"
+    assert entries[0]["actor"] == "alice"
+    assert entries[0]["doc_ids"] == ["note"]
+    assert entries[0]["chunks"] == 1
+
+
+def test_delete_records_an_audit_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app import audit
+    from app.service import delete_indexed_documents
+
+    monkeypatch.setattr("app.service.delete_documents", lambda *a, **k: 3)
+    settings = Settings(_env_file=None, chroma_persist_dir=tmp_path / "chroma")
+
+    deleted = delete_indexed_documents(settings, ["note"], "alice")
+
+    assert deleted == 3
+    entries = audit.read_entries()
+    assert entries[0]["event"] == "delete.documents"
+    assert entries[0]["actor"] == "alice"
+    assert entries[0]["doc_ids"] == ["note"]
+    assert entries[0]["deleted_chunks"] == 3

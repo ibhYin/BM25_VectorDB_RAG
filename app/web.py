@@ -20,6 +20,12 @@ STATIC_DIR = Path(__file__).resolve().parent / "web_static"
 logger = logging.getLogger(__name__)
 
 
+def _actor_name(user: UserContext | None) -> str:
+    """Identity to record in the audit trail when no policy is configured."""
+
+    return user.user_id if user is not None else "open-mode"
+
+
 class RequestError(Exception):
     def __init__(self, status: HTTPStatus, message: str) -> None:
         super().__init__(message)
@@ -63,6 +69,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._send_json(self._status_payload())
         elif parsed.path == "/api/config":
             self._handle_get_config()
+        elif parsed.path == "/api/audit":
+            self._handle_audit_log(parsed.query)
         elif parsed.path == "/api/documents":
             self._handle_documents()
         elif parsed.path.startswith("/api/documents/"):
@@ -250,11 +258,26 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             return
         self._send_json({"documents": list_indexed_documents(settings, user)})
 
+    def _handle_audit_log(self, query: str) -> None:
+        from app.audit import audit_log_path, read_entries
+
+        self._require_admin()
+        params = parse_qs(query)
+        limit = self._read_query_int(
+            params, "limit", default=100, minimum=1, maximum=1000
+        )
+        self._send_json(
+            {
+                "path": str(audit_log_path()),
+                "entries": read_entries(limit),
+            }
+        )
+
     def _handle_document_upload(self) -> None:
         from app.uploads import get_upload_store
 
         settings = get_settings()
-        self._require_admin()
+        user = self._require_admin()
         try:
             content_length = int(self.headers.get("Content-Length", "0"))
         except ValueError as exc:
@@ -277,7 +300,9 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 max_files=settings.max_upload_files,
             )
             structurize = fields.get("structurize") == "on"
-            job = get_upload_store().create_uploaded(files, settings.data_dir, structurize)
+            job = get_upload_store().create_uploaded(
+                files, settings.data_dir, structurize, _actor_name(user)
+            )
         except ValueError as exc:
             raise RequestError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
         except RuntimeError as exc:
@@ -288,11 +313,13 @@ class WebRequestHandler(BaseHTTPRequestHandler):
     def _handle_document_delete(self, raw_doc_id: str) -> None:
         from app.service import delete_indexed_documents
 
-        self._require_admin()
+        user = self._require_admin()
         doc_id = unquote(raw_doc_id).strip()
         if not doc_id:
             raise RequestError(HTTPStatus.BAD_REQUEST, "doc_id is required")
-        deleted_chunks = delete_indexed_documents(get_settings(), [doc_id])
+        deleted_chunks = delete_indexed_documents(
+            get_settings(), [doc_id], _actor_name(user)
+        )
         if not deleted_chunks:
             raise RequestError(HTTPStatus.NOT_FOUND, "Document not found")
         self._send_json({"doc_id": doc_id, "deleted_chunks": deleted_chunks})

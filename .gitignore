@@ -9,6 +9,8 @@ __pycache__/
 .DS_Store
 .web_upload_jobs.json
 output/
+# 向量库写入审计日志（运行时数据）
+data/vector_audit.jsonl
 .playwright-cli/
 config/access_policy.json
 config/runtime_config.json

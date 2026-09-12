@@ -8,6 +8,7 @@ from typing import TypedDict
 
 from app.config import Settings, get_settings
 from app.access import UserContext, load_access_policy
+from app import audit
 from rag.indexer import build_vector_index
 from rag.index_manifest import write_index_manifest
 from rag.loaders import load_document_file
@@ -96,6 +97,7 @@ def ingest_knowledge_base(
     data_dir: Path | None = None,
     rebuild: bool = False,
     structurize: bool = False,
+    actor: str = "cli",
 ) -> IngestResult:
     """Build the vector index from every supported document in one directory.
 
@@ -126,11 +128,27 @@ def ingest_knowledge_base(
             mineru_model_version=settings.mineru_model_version,
         )
 
-    return IngestResult(len(documents), len(chunks), rebuild, source_dir)
+    result = IngestResult(len(documents), len(chunks), rebuild, source_dir)
+    audit.record(
+        "ingest.directory",
+        actor=actor,
+        data_dir=str(source_dir),
+        knowledge_base_id=settings.knowledge_base_id,
+        documents=result.documents,
+        chunks=result.chunks,
+        rebuild=rebuild,
+        structurize=structurize,
+        structurize_provider=settings.structurize_provider if structurize else "",
+        embedding_model=settings.embedding_model,
+    )
+    return result
 
 
 def ingest_files(
-    settings: Settings, paths: list[Path], structurize: bool = False
+    settings: Settings,
+    paths: list[Path],
+    structurize: bool = False,
+    actor: str = "",
 ) -> FileIngestResult:
     """Incrementally index uploaded files without rebuilding the whole directory.
 
@@ -201,17 +219,41 @@ def ingest_files(
         )
         write_index_manifest(settings.chroma_persist_dir, settings.embedding_model)
 
-    return FileIngestResult(len(paths), len(documents), len(chunks))
+    result = FileIngestResult(len(paths), len(documents), len(chunks))
+    # Chunks carry the doc_id that split_documents assigned; the log uses it to
+    # correlate an ingest with the access policy.
+    doc_ids = sorted(
+        {
+            str(chunk.metadata.get("doc_id", ""))
+            for chunk in chunks
+            if chunk.metadata.get("doc_id")
+        }
+    )
+    audit.record(
+        "ingest.files",
+        actor=actor,
+        knowledge_base_id=settings.knowledge_base_id,
+        files=[Path(path).name for path in paths],
+        doc_ids=doc_ids,
+        documents=result.documents,
+        chunks=result.chunks,
+        structurize=structurize,
+        structurize_provider=settings.structurize_provider if structurize else "",
+        embedding_model=settings.embedding_model,
+    )
+    return result
 
 
-def delete_indexed_documents(settings: Settings, doc_ids: list[str]) -> int:
+def delete_indexed_documents(
+    settings: Settings, doc_ids: list[str], actor: str = ""
+) -> int:
     """Delete every chunk of the given documents from the configured knowledge base."""
 
     if not any(doc_id.strip() for doc_id in doc_ids):
         raise ValueError("At least one doc_id is required")
 
     with knowledge_base_lock.write():
-        return delete_documents(
+        deleted = delete_documents(
             doc_ids,
             persist_dir=settings.chroma_persist_dir,
             embedding_model=settings.embedding_model,
@@ -219,6 +261,16 @@ def delete_indexed_documents(settings: Settings, doc_ids: list[str]) -> int:
             embedding_base_url=settings.embedding_base_url,
             knowledge_base_id=settings.knowledge_base_id,
         )
+
+    audit.record(
+        "delete.documents",
+        actor=actor,
+        knowledge_base_id=settings.knowledge_base_id,
+        doc_ids=[doc_id for doc_id in doc_ids if doc_id.strip()],
+        deleted_chunks=deleted,
+        embedding_model=settings.embedding_model,
+    )
+    return deleted
 
 
 def _chunk_order(metadata: dict[str, object]) -> int:

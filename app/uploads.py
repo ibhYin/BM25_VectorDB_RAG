@@ -165,11 +165,12 @@ class UploadJobStore:
         files: list[tuple[str, bytes]],
         data_dir: Path,
         structurize: bool = False,
+        actor: str = "",
     ) -> dict[str, Any]:
         """Reserve the queue slot before replacing any existing file.
 
         When structurize is True, uploaded files are converted to Markdown via
-        markitdown before chunking.
+        markitdown before chunking. ``actor`` is recorded in the audit trail.
         """
 
         with self._lock:
@@ -209,6 +210,7 @@ class UploadJobStore:
                 "filenames": [filename for filename, _ in files],
                 "paths": [str(path) for path in paths],
                 "structurize": structurize,
+                "actor": actor,
                 "status": "queued",
                 "error": "",
                 "files": 0,
@@ -269,9 +271,10 @@ class UploadJobStore:
             self._save_locked()
             paths = [Path(path) for path in job["paths"]]
             structurize = job.get("structurize", False)
+            actor = job.get("actor", "")
 
         try:
-            result = ingest_files(self._settings, paths, structurize)
+            result = ingest_files(self._settings, paths, structurize, actor)
         except Exception as exc:
             with self._lock:
                 job = self._jobs[job_id]
