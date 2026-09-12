@@ -22,7 +22,7 @@ def multipart(filename: str, content: bytes = b"hello") -> bytes:
 
 
 def test_multipart_parser_sanitizes_paths_and_preserves_content() -> None:
-    files = parse_multipart(
+    files, fields = parse_multipart(
         "multipart/form-data; boundary=boundary",
         multipart("../../nested/note.md", b"# note"),
         supported_suffixes=SUPPORTED_SUFFIXES,
@@ -30,6 +30,7 @@ def test_multipart_parser_sanitizes_paths_and_preserves_content() -> None:
     )
 
     assert files == [("note.md", b"# note")]
+    assert fields == {}
 
 
 def test_multipart_parser_rejects_unsupported_and_duplicate_files() -> None:

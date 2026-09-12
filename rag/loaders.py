@@ -26,8 +26,13 @@ def load_documents(
     openai_base_url: str = "",
     ocr_model: str = DEFAULT_OCR_MODEL,
     ocr_max_pages: int | None = None,
+    structurize: bool = False,
 ) -> list[Document]:
-    """Load local text documents from the knowledge base directory."""
+    """Load local text documents from the knowledge base directory.
+
+    When structurize is True, PDF and plain-text files are converted to Markdown
+    via markitdown before chunking, preserving headings, lists, and tables.
+    """
 
     documents: list[Document] = []
 
@@ -43,6 +48,7 @@ def load_documents(
                 openai_base_url=openai_base_url,
                 ocr_model=ocr_model,
                 ocr_max_pages=ocr_max_pages,
+                structurize=structurize,
             )
         )
 
@@ -55,13 +61,35 @@ def load_document_file(
     openai_base_url: str = "",
     ocr_model: str = DEFAULT_OCR_MODEL,
     ocr_max_pages: int | None = None,
+    structurize: bool = False,
 ) -> list[Document]:
-    """Load one supported file through the same path as directory ingestion."""
+    """Load one supported file through the same path as directory ingestion.
+
+    When structurize is True, uses markitdown to convert the file to structured
+    Markdown before splitting. Falls back to raw text extraction on failure.
+    """
 
     if not path.is_file():
         raise ValueError(f"Document does not exist: {path}")
     if path.suffix.lower() not in SUPPORTED_SUFFIXES:
         raise ValueError(f"Unsupported document type: {path.suffix or '(none)'}")
+
+    if structurize:
+        from rag.structurizer import convert_to_markdown
+
+        markdown_text = convert_to_markdown(path)
+        if markdown_text:
+            # Structurization succeeded; return as a single document with .md metadata.
+            return [
+                Document(
+                    page_content=markdown_text,
+                    metadata={
+                        "source": str(path),
+                        "structurized": True,
+                    },
+                )
+            ]
+        # Conversion failed; fall through to raw extraction below.
 
     if path.suffix.lower() in TEXT_SUFFIXES:
         from langchain_community.document_loaders import TextLoader

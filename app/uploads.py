@@ -33,7 +33,12 @@ def parse_multipart(
     *,
     supported_suffixes: frozenset[str],
     max_files: int,
-) -> list[tuple[str, bytes]]:
+) -> tuple[list[tuple[str, bytes]], dict[str, str]]:
+    """Parse multipart/form-data upload body.
+
+    Returns (files, fields) where files is [(filename, bytes)] and fields is
+    {name: value} for non-file form fields.
+    """
     media_type = content_type.partition(";")[0].strip().lower()
     if media_type != "multipart/form-data":
         raise ValueError("Expected multipart/form-data")
@@ -51,32 +56,38 @@ def parse_multipart(
         raise ValueError("Invalid multipart body")
 
     files: list[tuple[str, bytes]] = []
+    fields: dict[str, str] = {}
     seen_names: set[str] = set()
     for part in message.iter_parts():
-        if part.get_param("name", header="content-disposition") != "files":
-            continue
-        raw_filename = part.get_filename()
-        if raw_filename is None:
-            raise ValueError("A file part is missing its filename")
-        filename = safe_filename(raw_filename)
-        key = filename.casefold()
-        if key in seen_names:
-            raise ValueError(f"Duplicate filename: {filename}")
-        if Path(filename).suffix.lower() not in supported_suffixes:
-            raise ValueError(f"Unsupported document type: {filename}")
-        content = part.get_payload(decode=True)
-        if content is None:
-            raise ValueError(f"Empty file body: {filename}")
-        if not content:
-            raise ValueError(f"Empty file: {filename}")
-        seen_names.add(key)
-        files.append((filename, content))
+        field_name = part.get_param("name", header="content-disposition")
+        if field_name == "files":
+            raw_filename = part.get_filename()
+            if raw_filename is None:
+                raise ValueError("A file part is missing its filename")
+            filename = safe_filename(raw_filename)
+            key = filename.casefold()
+            if key in seen_names:
+                raise ValueError(f"Duplicate filename: {filename}")
+            if Path(filename).suffix.lower() not in supported_suffixes:
+                raise ValueError(f"Unsupported document type: {filename}")
+            content = part.get_payload(decode=True)
+            if content is None:
+                raise ValueError(f"Empty file body: {filename}")
+            if not content:
+                raise ValueError(f"Empty file: {filename}")
+            seen_names.add(key)
+            files.append((filename, content))
+        elif field_name and part.get_filename() is None:
+            # Non-file form field
+            raw_value = part.get_payload(decode=True)
+            if raw_value is not None:
+                fields[field_name] = raw_value.decode("utf-8", errors="replace").strip()
 
     if not files:
         raise ValueError("At least one supported file is required")
     if len(files) > max_files:
         raise ValueError(f"At most {max_files} files per upload")
-    return files
+    return files, fields
 
 
 def save_upload_files(
@@ -153,8 +164,13 @@ class UploadJobStore:
         self,
         files: list[tuple[str, bytes]],
         data_dir: Path,
+        structurize: bool = False,
     ) -> dict[str, Any]:
-        """Reserve the queue slot before replacing any existing file."""
+        """Reserve the queue slot before replacing any existing file.
+
+        When structurize is True, uploaded files are converted to Markdown via
+        markitdown before chunking.
+        """
 
         with self._lock:
             active = [
@@ -192,6 +208,7 @@ class UploadJobStore:
                 "id": job_id,
                 "filenames": [filename for filename, _ in files],
                 "paths": [str(path) for path in paths],
+                "structurize": structurize,
                 "status": "queued",
                 "error": "",
                 "files": 0,
@@ -251,9 +268,10 @@ class UploadJobStore:
             job["started_at"] = utc_now()
             self._save_locked()
             paths = [Path(path) for path in job["paths"]]
+            structurize = job.get("structurize", False)
 
         try:
-            result = ingest_files(self._settings, paths)
+            result = ingest_files(self._settings, paths, structurize)
         except Exception as exc:
             with self._lock:
                 job = self._jobs[job_id]

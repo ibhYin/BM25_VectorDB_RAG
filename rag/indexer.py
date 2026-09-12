@@ -24,8 +24,13 @@ def build_vector_index(
     rebuild: bool = False,
     knowledge_base_id: str = "default",
     access_policy_file: Path | None = None,
+    structurize: bool = False,
 ) -> tuple[list[Document], list[Document]]:
-    """Load, split and index one directory through the shared vector pipeline."""
+    """Load, split and index one directory through the shared vector pipeline.
+
+    When structurize is True, documents are converted to Markdown via markitdown
+    before chunking, preserving headings, lists, and tables.
+    """
 
     # None means unset; an explicitly empty value allows keyless local servers.
     embedding_api_key = openai_api_key if embedding_api_key is None else embedding_api_key
@@ -40,6 +45,7 @@ def build_vector_index(
         openai_base_url=openai_base_url,
         ocr_model=ocr_model,
         ocr_max_pages=ocr_max_pages,
+        structurize=structurize,
     )
     if not documents:
         raise ValueError(f"No supported documents found in: {data_dir}")

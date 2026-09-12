@@ -95,8 +95,13 @@ def ingest_knowledge_base(
     settings: Settings,
     data_dir: Path | None = None,
     rebuild: bool = False,
+    structurize: bool = False,
 ) -> IngestResult:
-    """Build the vector index from every supported document in one directory."""
+    """Build the vector index from every supported document in one directory.
+
+    When structurize is True, documents are converted to Markdown via markitdown
+    before chunking, preserving headings, lists, and tables.
+    """
 
     with knowledge_base_lock.write():
         source_dir = data_dir or settings.data_dir
@@ -115,13 +120,20 @@ def ingest_knowledge_base(
             rebuild=rebuild,
             knowledge_base_id=settings.knowledge_base_id,
             access_policy_file=settings.access_policy_file,
+            structurize=structurize,
         )
 
     return IngestResult(len(documents), len(chunks), rebuild, source_dir)
 
 
-def ingest_files(settings: Settings, paths: list[Path]) -> FileIngestResult:
-    """Incrementally index uploaded files without rebuilding the whole directory."""
+def ingest_files(
+    settings: Settings, paths: list[Path], structurize: bool = False
+) -> FileIngestResult:
+    """Incrementally index uploaded files without rebuilding the whole directory.
+
+    When structurize is True, files are converted to Markdown via markitdown
+    before chunking.
+    """
 
     if not paths:
         raise ValueError("At least one file is required")
@@ -136,6 +148,7 @@ def ingest_files(settings: Settings, paths: list[Path]) -> FileIngestResult:
                     openai_base_url=settings.openai_base_url,
                     ocr_model=settings.ocr_model,
                     ocr_max_pages=settings.ocr_max_pages,
+                    structurize=structurize,
                 )
             )
 

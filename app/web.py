@@ -270,13 +270,14 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
         body = self.rfile.read(content_length)
         try:
-            files = parse_multipart(
+            files, fields = parse_multipart(
                 self.headers.get("Content-Type", ""),
                 body,
                 supported_suffixes=SUPPORTED_SUFFIXES,
                 max_files=settings.max_upload_files,
             )
-            job = get_upload_store().create_uploaded(files, settings.data_dir)
+            structurize = fields.get("structurize") == "on"
+            job = get_upload_store().create_uploaded(files, settings.data_dir, structurize)
         except ValueError as exc:
             raise RequestError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
         except RuntimeError as exc:

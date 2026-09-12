@@ -26,12 +26,17 @@ def ingest(
         "--rebuild",
         help="Remove stale Chroma chunks after the new index is written.",
     ),
+    structurize: bool = typer.Option(
+        False,
+        "--structurize",
+        help="Convert documents to Markdown via markitdown (preserves headings/lists/tables).",
+    ),
 ) -> None:
     from app.service import ingest_knowledge_base
 
     settings = get_settings()
     try:
-        result = ingest_knowledge_base(settings, data_dir, rebuild)
+        result = ingest_knowledge_base(settings, data_dir, rebuild, structurize)
     except Exception as exc:
         console.print(f"[red]Ingestion failed:[/red] {exc}")
         raise typer.Exit(code=1) from exc

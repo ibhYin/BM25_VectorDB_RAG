@@ -45,6 +45,7 @@ const elements = {
   uploadPermission: document.querySelector("#upload-permission"),
   dropZone: document.querySelector("#drop-zone"),
   fileInput: document.querySelector("#file-input"),
+  structurizeCheckbox: document.querySelector("#structurize-checkbox"),
   chooseFilesButton: document.querySelector("#choose-files-button"),
   queueSummary: document.querySelector("#queue-summary"),
   jobList: document.querySelector("#job-list"),
@@ -319,6 +320,9 @@ function uploadFiles(fileList) {
   const form = new FormData();
   for (const file of valid) {
     form.append("files", file, file.name);
+  }
+  if (elements.structurizeCheckbox.checked) {
+    form.append("structurize", "on");
   }
 
   const uploadJob = {

@@ -475,6 +475,27 @@ svg {
   text-align: center;
 }
 
+.upload-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  user-select: none;
+}
+
+.upload-option input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+
+.upload-option:hover {
+  color: var(--ink);
+}
+
 .item-list {
   display: flex;
   flex-direction: column;
