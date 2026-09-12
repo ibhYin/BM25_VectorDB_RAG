@@ -6,6 +6,8 @@
 
 - 浏览器拖拽上传，后台增量索引，同名文档安全替换旧切片。
 - PDF 文本提取与扫描件 OCR 分流。
+- **可选的文档结构化提取**：上传或 CLI 入库时勾选「结构化提取」，通过 `markitdown` 将 PDF/TXT
+  转换为 Markdown 后再切片，保留标题、列表、表格结构，提升检索与回答质量。
 - 稳定的 `doc_id`、`chunk_id`、页码和章节元数据。
 - 本地 Ollama Embedding 与远程 LLM 可独立配置。
 - 网页内直接配置 LLM / Embedding 的请求地址、API Key 与模型名，保存后立即生效，无需修改 `.env`。
@@ -42,6 +44,7 @@ tests/              不访问真实外部服务的测试
 ```bash
 conda activate langchain
 pip install -r requirements.txt
+pip install 'markitdown[pdf]'  # 可选：支持结构化提取（保留标题/列表/表格）
 ```
 
 创建 `.env` 文件并配置 Chat 服务。Embedding 可以复用 Chat 服务，也可以独立指向本地 Ollama：
@@ -109,6 +112,12 @@ Chat 端点指向 `opencode.ai` 时，程序会自动附加该网关要求的 `x
 
 ```bash
 python -m app.main ingest
+```
+
+结构化提取（保留标题、列表、表格）：
+
+```bash
+python -m app.main ingest --structurize
 ```
 
 删除当前数据目录中已经不存在的旧切片：
