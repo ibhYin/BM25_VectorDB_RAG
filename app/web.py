@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from app.access import UserContext, load_access_policy
+from app.access import UserContext, known_groups, load_access_policy
 from app.config import get_settings
 from app.uploads import parse_multipart
 from rag.constants import SUPPORTED_SUFFIXES
@@ -71,6 +71,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._handle_get_config()
         elif parsed.path == "/api/audit":
             self._handle_audit_log(parsed.query)
+        elif parsed.path == "/api/staging":
+            self._handle_staging_list()
         elif parsed.path == "/api/documents":
             self._handle_documents()
         elif parsed.path.startswith("/api/documents/"):
@@ -101,6 +103,11 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._handle_list_models()
         elif parsed.path == "/api/documents/upload":
             self._handle_document_upload()
+        elif parsed.path.startswith("/api/staging/"):
+            item_id, _, action = parsed.path.removeprefix("/api/staging/").partition("/")
+            if action not in ("approve", "reject"):
+                raise RequestError(HTTPStatus.NOT_FOUND, "Not found")
+            self._handle_staging_decision(item_id, action)
         elif parsed.path == "/api/answer-jobs":
             self._handle_create_answer_job()
         else:
@@ -273,11 +280,68 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             }
         )
 
+    def _handle_staging_list(self) -> None:
+        from app.staging import get_staging_store
+
+        settings = get_settings()
+        self._require_admin()
+        policy = load_access_policy(settings.access_policy_file)
+        self._send_json(
+            {
+                "items": get_staging_store().snapshot(),
+                "groups": sorted(known_groups(settings.access_policy_file))
+                if policy is not None
+                else [],
+            }
+        )
+
+    def _handle_staging_decision(self, raw_item_id: str, action: str) -> None:
+        from app.service import approve_staged_upload, reject_staged_upload
+
+        user = self._require_admin()
+        item_id = unquote(raw_item_id).strip()
+        if not item_id:
+            raise RequestError(HTTPStatus.BAD_REQUEST, "item_id is required")
+        payload = self._read_json()
+        actor = _actor_name(user)
+        settings = get_settings()
+
+        try:
+            if action == "approve":
+                group = payload.get("group", "")
+                if not isinstance(group, str):
+                    raise RequestError(HTTPStatus.BAD_REQUEST, "group must be a string")
+                group = group.strip()
+                if group and group not in known_groups(settings.access_policy_file):
+                    raise RequestError(
+                        HTTPStatus.BAD_REQUEST, f"未知的访问组：{group}"
+                    )
+                item = approve_staged_upload(settings, item_id, group, actor)
+            else:
+                reason = payload.get("reason", "")
+                item = reject_staged_upload(
+                    item_id, actor, reason if isinstance(reason, str) else ""
+                )
+        except KeyError as exc:
+            raise RequestError(HTTPStatus.NOT_FOUND, str(exc)) from exc
+        except ValueError as exc:
+            raise RequestError(HTTPStatus.CONFLICT, str(exc)) from exc
+        self._send_json(item)
+
+    def _upload_permission(self, settings) -> tuple[UserContext | None, bool]:
+        """Admins index directly; everyone else submits to the staging queue."""
+
+        policy = load_access_policy(settings.access_policy_file)
+        user = self._current_user(settings)
+        if policy is None:
+            return user, True
+        return user, user is not None and policy.is_admin(user)
+
     def _handle_document_upload(self) -> None:
         from app.uploads import get_upload_store
 
         settings = get_settings()
-        user = self._require_admin()
+        user, is_admin = self._upload_permission(settings)
         try:
             content_length = int(self.headers.get("Content-Length", "0"))
         except ValueError as exc:
@@ -300,9 +364,24 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 max_files=settings.max_upload_files,
             )
             structurize = fields.get("structurize") == "on"
-            job = get_upload_store().create_uploaded(
-                files, settings.data_dir, structurize, _actor_name(user)
-            )
+            if is_admin:
+                job = get_upload_store().create_uploaded(
+                    files, settings.data_dir, structurize, _actor_name(user)
+                )
+            else:
+                # No write access: park it for an admin to approve.
+                from app import audit
+                from app.staging import get_staging_store
+
+                job = get_staging_store().add(files, _actor_name(user), structurize)
+                job["staged"] = True
+                audit.record(
+                    "staging.submitted",
+                    actor=_actor_name(user),
+                    item_id=job["id"],
+                    files=job["filenames"],
+                    structurize=structurize,
+                )
         except ValueError as exc:
             raise RequestError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
         except RuntimeError as exc:

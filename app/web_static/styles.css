@@ -1540,3 +1540,79 @@ svg {
   flex: none;
   white-space: nowrap;
 }
+
+/* Info variant of the upload notice: staging is a normal path, not an error. */
+.permission-note.info {
+  background: #eef2fa;
+  color: #35507f;
+}
+
+.staging-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.staging-actions .config-select {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  font-size: 12px;
+}
+
+.staging-actions .ghost-button,
+.staging-actions .primary-button {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.audit-list {
+  max-height: 52vh;
+  overflow-y: auto;
+}
+
+.audit-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin-bottom: 6px;
+  background: var(--surface);
+}
+
+.audit-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.audit-head strong {
+  font-size: 12.5px;
+}
+
+.audit-time {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.audit-meta {
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+.audit-stats {
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
+.audit-list {
+  list-style: none;
+}

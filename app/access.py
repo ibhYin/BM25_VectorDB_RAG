@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -90,8 +91,61 @@ def load_access_policy(path: Path) -> AccessPolicy | None:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"Invalid access policy: {path}") from exc
     if not isinstance(payload, dict):
-        raise ValueError(f"Access policy must be a JSON object: {path}")
+        raise ValueError("Access policy must be a JSON object: %s" % path)
     return AccessPolicy.from_mapping(payload)
+
+
+def known_groups(path: Path) -> set[str]:
+    """Every group referenced anywhere in the policy, plus the public group."""
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {PUBLIC_GROUP}
+    if not isinstance(payload, dict):
+        return {PUBLIC_GROUP}
+
+    groups = {PUBLIC_GROUP}
+    for user in (payload.get("users") or {}).values():
+        if isinstance(user, dict):
+            groups.update(str(group) for group in user.get("groups", []))
+    for section in ("knowledge_bases", "documents"):
+        for entry in (payload.get(section) or {}).values():
+            if isinstance(entry, dict) and entry.get("group"):
+                groups.add(str(entry["group"]))
+    groups.update(str(group) for group in payload.get("admins", []))
+    return groups
+
+
+def set_document_group(path: Path, doc_id: str, group: str) -> None:
+    """Point one document at an access group, creating the entry if needed.
+
+    Chunk metadata bakes in the group at split time, so this must run *before*
+    the document is indexed.
+    """
+
+    doc_id = doc_id.strip()
+    group = group.strip()
+    if not doc_id or not group:
+        raise ValueError("doc_id and group are required")
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Invalid access policy: {path}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"Access policy must be a JSON object: {path}")
+
+    documents = payload.setdefault("documents", {})
+    if not isinstance(documents, dict):
+        raise ValueError(f"Policy 'documents' must be an object: {path}")
+    documents[doc_id] = {"group": group}
+
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    os.replace(temporary, path)
 
 
 def document_access_metadata(

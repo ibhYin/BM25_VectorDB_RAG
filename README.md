@@ -21,6 +21,8 @@
 - Enter 发送，Shift+Enter 换行。
 - 多问答并发；索引写入与问答读取通过进程内读写锁隔离。
 - 可选的知识库级和文档级访问控制；权限在向量/BM25 检索前过滤。
+- 无入库权限的用户可以提交文档，进入待审区由管理员审核通过后才入库。
+- 每次向量库写入都留审计记录，网页端可查看（仅管理员）。
 
 ## 目录
 
@@ -209,8 +211,10 @@ PDF 只携带视觉排版，不含「这是二级标题」这类语义信息，�
 | 事件 | 触发方式 |
 |---|---|
 | `ingest.directory` | CLI `python -m app.main ingest` |
-| `ingest.files` | 网页上传 |
+| `ingest.files` | 网页上传（或审核通过后的实际入库） |
 | `delete.documents` | 网页删除文档 |
+| `staging.submitted` | 无入库权限的用户提交待审 |
+| `staging.approved` / `staging.rejected` | 管理员审核决定 |
 
 每条记录包含**微秒精度的本地时间带时区偏移**（如 `2026-09-12T15:37:01.630276+08:00`，
 既可排序又无需换算）、操作者、知识库、来源文件、`doc_ids`、文档/切片数、以及当时的
@@ -231,10 +235,39 @@ PDF 只携带视觉排版，不含「这是二级标题」这类语义信息，�
 
 日志文件路径可用 `VECTOR_AUDIT_LOG` 覆盖。
 
+管理员也可以点右上角「写入审计」按钮在网页里查看（最新 200 条）。
+
+## 写入权限与审核
+
+启用权限策略后，上传分两条路径：
+
+| 身份 | 行为 |
+|---|---|
+| 管理员 | 直接入库（原有行为） |
+| 其他已认证用户 | 提交到**待审区**，不切片、不落库，等管理员决定 |
+
+待审文件存在 `data/pending/<item_id>/`，元数据在 `.web_staging.json`。
+
+管理员在左侧「待审核」面板逐项处理：选择一个**访问组**后点「通过」，或直接「拒绝」。
+
+**访问组必须在入库之前写入策略**——因为切片时就把 `document_access_group` 写进了 chunk
+metadata，事后改策略需要重新索引。所以「通过」的动作顺序是：
+
+1. 按源文件路径算出 `doc_id`（`build_doc_id` 由路径确定性推导）
+2. 把 `documents[doc_id]` 写入 `config/access_policy.json`
+3. 把文件交给正常的上传队列入库
+
+这样新文档对指定的组可见，其他组检索不到。
+
+> 注意：待审区的文件是**明文暂存**在磁盘上的，提交者与审核者都能看到；涉密材料不要走这条路。
+
 ## Web API
 
 - `GET /api/status`：运行配置、索引状态，以及建库模型和是否与当前配置不一致。
 - `GET /api/audit`：向量库写入审计日志，`limit` 默认 100（1-1000），返回最新在前。仅管理员。
+- `GET /api/staging`：待审提交列表和可用的访问组。仅管理员。
+- `POST /api/staging/:id/approve`：批准入库，`group` 指定访问组（须是策略里已有的组）。仅管理员。
+- `POST /api/staging/:id/reject`：拒绝并删除暂存文件。仅管理员。
 - `GET /api/config`：当前模型接入配置（API Key 不回显，只给 `••••` 加尾 4 位）和索引建库
   模型。仅管理员。
 - `POST /api/config`：更新 LLM / Embedding 的请求地址、API Key 与模型名，以及 MinerU 的
@@ -249,7 +282,7 @@ PDF 只携带视觉排版，不含「这是二级标题」这类语义信息，�
   `chunk_id`）。
 - `DELETE /api/documents/:doc_id`：删除该文档的全部切片，不影响源文件。仅管理员。
 - `GET /api/upload-jobs`：上传索引任务。仅管理员。
-- `POST /api/documents/upload`：上传 `files`，支持 PDF、Markdown、TXT。仅管理员。
+- `POST /api/documents/upload`：上传 `files`，支持 PDF、Markdown、TXT。管理员直接入库；其他用户返回 `staged: true` 并进入待审区。
 - `POST /api/answer-jobs`：创建异步问答任务。
 - `GET /api/answer-jobs/:id`：查看编码、检索、生成进度和向量命中。
 - `POST /api/ask`：同步问答兼容接口。
@@ -307,6 +340,8 @@ API 流程与写入审计。测试不访问真实外部服务。
 - `data/raw/` 中的真实文档
 - `.web_upload_jobs.json`
 - `data/vector_audit.jsonl`（向量库写入审计日志）
+- `.web_staging.json`
+- `data/pending/`（待审核上传的暂存文件）
 - `output/`
 - `.playwright-cli/`
 - 虚拟环境和 Python 缓存

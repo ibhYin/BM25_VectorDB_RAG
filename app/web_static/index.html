@@ -27,6 +27,9 @@
           </button>
           <div id="user-menu" class="user-menu" role="menu" hidden></div>
         </div>
+        <button id="audit-button" class="icon-button" type="button" title="写入审计" aria-label="写入审计" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></svg>
+        </button>
         <button id="config-button" class="icon-button" type="button" title="模型接入配置" aria-label="模型接入配置" hidden>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/></svg>
         </button>
@@ -83,6 +86,14 @@
           <div class="item-list" id="job-list" aria-live="polite" aria-busy="true">
             <div class="loading-state"><span class="loading-spinner" aria-hidden="true"></span><span>加载中</span></div>
           </div>
+        </section>
+
+        <section class="rail-section" id="staging-section" hidden>
+          <div class="section-head">
+            <h2>待审核</h2>
+            <span class="section-hint" id="staging-summary">—</span>
+          </div>
+          <div class="item-list" id="staging-list" aria-live="polite"></div>
         </section>
 
         <section class="rail-section">
@@ -281,6 +292,25 @@
           </div>
         </footer>
       </form>
+    </dialog>
+
+    <dialog id="audit-dialog" class="config-dialog" aria-labelledby="audit-title">
+      <div class="config-form">
+        <header class="config-head">
+          <h2 id="audit-title">向量库写入审计</h2>
+          <button id="audit-close" class="icon-button" type="button" title="关闭" aria-label="关闭">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+          </button>
+        </header>
+        <p class="config-note" id="audit-note">每一次对向量库的写入都会记录在这里。</p>
+        <div class="item-list audit-list" id="audit-list" aria-live="polite"></div>
+        <footer class="config-foot">
+          <span class="config-status" id="audit-status"></span>
+          <div class="config-actions">
+            <button id="audit-refresh" class="ghost-button" type="button">刷新</button>
+          </div>
+        </footer>
+      </div>
     </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>

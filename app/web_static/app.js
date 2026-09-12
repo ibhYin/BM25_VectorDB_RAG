@@ -45,6 +45,16 @@ const elements = {
   configStructurizeProvider: document.querySelector("#config-structurize-provider"),
   configMineruScope: document.querySelector("#config-mineru-scope"),
   structurizeLabel: document.querySelector("#structurize-label"),
+  auditButton: document.querySelector("#audit-button"),
+  auditDialog: document.querySelector("#audit-dialog"),
+  auditClose: document.querySelector("#audit-close"),
+  auditRefresh: document.querySelector("#audit-refresh"),
+  auditList: document.querySelector("#audit-list"),
+  auditNote: document.querySelector("#audit-note"),
+  auditStatus: document.querySelector("#audit-status"),
+  stagingSection: document.querySelector("#staging-section"),
+  stagingList: document.querySelector("#staging-list"),
+  stagingSummary: document.querySelector("#staging-summary"),
   documentCount: document.querySelector("#document-count"),
   chunkCount: document.querySelector("#chunk-count"),
   uploadLimit: document.querySelector("#upload-limit"),
@@ -110,15 +120,24 @@ function setRetrievalMethod(value) {
 }
 
 function canUpload() {
-  return !identityState.user || identityState.isAdmin;
+  return true;
+}
+
+// Without direct write access an upload is parked for review instead of indexed.
+function uploadsToStaging() {
+  return Boolean(identityState.user) && !identityState.isAdmin;
 }
 
 function renderUploadPermission() {
-  const allowed = canUpload();
-  elements.dropZone.setAttribute("aria-disabled", String(!allowed));
-  elements.dropZone.classList.toggle("disabled", !allowed);
-  elements.chooseFilesButton.disabled = !allowed;
-  elements.uploadPermission.hidden = allowed;
+  const staged = uploadsToStaging();
+  elements.dropZone.setAttribute("aria-disabled", "false");
+  elements.dropZone.classList.remove("disabled");
+  elements.chooseFilesButton.disabled = false;
+  elements.uploadPermission.hidden = !staged;
+  elements.uploadPermission.classList.toggle("info", staged);
+  elements.uploadPermission.textContent = staged
+    ? "当前身份无直接入库权限，提交后需管理员审核"
+    : "";
 }
 
 async function requestJson(url, options = {}) {
@@ -310,10 +329,6 @@ function renderLibraryError(message) {
 }
 
 function uploadFiles(fileList) {
-  if (!canUpload()) {
-    showToast("仅管理员可上传文档", "error");
-    return;
-  }
   const files = Array.from(fileList || []);
   if (!files.length) return;
 
@@ -363,6 +378,15 @@ function uploadFiles(fileList) {
     }
 
     if (request.status >= 200 && request.status < 300) {
+      if (payload.staged) {
+        // Non-admin submission: parked for review, so it is not an index job.
+        const index = state.jobs.indexOf(uploadJob);
+        if (index >= 0) state.jobs.splice(index, 1);
+        renderJobs();
+        showToast("已提交，等待管理员审核");
+        loadStaging();
+        return;
+      }
       const index = state.jobs.indexOf(uploadJob);
       if (index >= 0) {
         state.jobs.splice(index, 1, payload);
@@ -910,14 +934,10 @@ function clearChat() {
 }
 
 elements.refreshButton.addEventListener("click", async () => {
-  await Promise.all([refreshStatus(), refreshDocuments()]);
+  await Promise.all([refreshStatus(), refreshDocuments(), loadStaging()]);
 });
 elements.reloadDocumentsButton.addEventListener("click", refreshDocuments);
 function openFilePicker() {
-  if (!canUpload()) {
-    showToast("仅管理员可上传文档", "error");
-    return;
-  }
   elements.fileInput.click();
 }
 
@@ -1003,6 +1023,7 @@ async function loadIdentity() {
   if (state.documents.length) {
     renderDocuments();
   }
+  renderStaging();
 }
 
 function renderUserSwitcher() {
@@ -1068,7 +1089,9 @@ function canConfigure() {
 }
 
 function renderConfigButton() {
-  elements.configButton.hidden = !canConfigure();
+  const allowed = canConfigure();
+  elements.configButton.hidden = !allowed;
+  elements.auditButton.hidden = !allowed;
 }
 
 function setConfigStatus(message, variant = "") {
@@ -1424,6 +1447,214 @@ for (const target of ["llm", "embedding"]) {
   });
   custom.addEventListener("input", renderEmbeddingStatuses);
 }
+
+const stagingState = { items: [], groups: [] };
+
+const AUDIT_EVENT_LABELS = {
+  "ingest.directory": "目录入库",
+  "ingest.files": "上传入库",
+  "delete.documents": "删除文档",
+  "staging.submitted": "提交待审",
+  "staging.approved": "审核通过",
+  "staging.rejected": "审核拒绝",
+};
+
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function formatTime(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? String(value || "")
+    : date.toLocaleString("zh-CN", { hour12: false });
+}
+
+async function loadStaging() {
+  if (!canConfigure()) {
+    elements.stagingSection.hidden = true;
+    return;
+  }
+  try {
+    const payload = await requestJson("/api/staging");
+    stagingState.items = payload.items || [];
+    stagingState.groups = payload.groups || [];
+  } catch (_) {
+    stagingState.items = [];
+  }
+  renderStaging();
+}
+
+function renderStaging() {
+  const pending = stagingState.items.filter((item) => item.status === "pending");
+  elements.stagingSection.hidden = !canConfigure() || !pending.length;
+  elements.stagingList.replaceChildren();
+  elements.stagingSummary.textContent = pending.length
+    ? `${pending.length} 项待审核`
+    : "空闲";
+  for (const item of pending) {
+    elements.stagingList.append(createStagingCard(item));
+  }
+}
+
+function createStagingCard(item) {
+  const card = document.createElement("article");
+  card.className = "job-item staging-item";
+
+  const header = document.createElement("div");
+  header.className = "job-header";
+  const title = document.createElement("strong");
+  title.textContent =
+    item.filenames.length > 1
+      ? `${item.filenames[0]} 等 ${item.filenames.length} 个文件`
+      : item.filenames[0];
+  const badge = document.createElement("span");
+  badge.className = "job-badge";
+  badge.textContent = "待审核";
+  header.append(title, badge);
+
+  const detail = document.createElement("div");
+  detail.className = "job-detail";
+  detail.textContent = [
+    item.uploader,
+    formatBytes(item.size_bytes),
+    formatTime(item.created_at),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  const actions = document.createElement("div");
+  actions.className = "staging-actions";
+
+  const groupSelect = document.createElement("select");
+  groupSelect.className = "config-select";
+  groupSelect.setAttribute("aria-label", "入库后的访问组");
+  const groups = stagingState.groups.length ? stagingState.groups : ["public"];
+  for (const group of groups) {
+    const option = document.createElement("option");
+    option.value = group;
+    option.textContent = group === "public" ? "public（所有人可见）" : group;
+    groupSelect.append(option);
+  }
+
+  const reject = document.createElement("button");
+  reject.type = "button";
+  reject.className = "ghost-button";
+  reject.textContent = "拒绝";
+  reject.addEventListener("click", () =>
+    decideStaging(item.id, "reject", "", reject),
+  );
+
+  const approve = document.createElement("button");
+  approve.type = "button";
+  approve.className = "primary-button";
+  approve.textContent = "通过";
+  approve.addEventListener("click", () =>
+    decideStaging(item.id, "approve", groupSelect.value, approve),
+  );
+
+  actions.append(groupSelect, reject, approve);
+  card.append(header, detail, actions);
+  return card;
+}
+
+async function decideStaging(itemId, action, group, button) {
+  button.disabled = true;
+  try {
+    await requestJson(
+      `/api/staging/${encodeURIComponent(itemId)}/${action}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(action === "approve" ? { group } : {}),
+      },
+    );
+    showToast(action === "approve" ? "已通过，开始入库" : "已拒绝");
+    await loadStaging();
+    if (action === "approve") startPolling();
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function loadAudit() {
+  elements.auditStatus.textContent = "加载中…";
+  try {
+    const payload = await requestJson("/api/audit?limit=200");
+    elements.auditNote.textContent = `日志文件：${payload.path}`;
+    renderAudit(payload.entries || []);
+    elements.auditStatus.textContent = `共 ${(payload.entries || []).length} 条`;
+  } catch (error) {
+    elements.auditStatus.textContent = error.message;
+  }
+}
+
+function renderAudit(entries) {
+  elements.auditList.replaceChildren();
+  if (!entries.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-list";
+    empty.textContent = "暂无写入记录";
+    elements.auditList.append(empty);
+    return;
+  }
+  for (const entry of entries) elements.auditList.append(createAuditRow(entry));
+}
+
+function createAuditRow(entry) {
+  const row = document.createElement("article");
+  row.className = "audit-row";
+
+  const head = document.createElement("div");
+  head.className = "audit-head";
+  const event = document.createElement("strong");
+  event.textContent = AUDIT_EVENT_LABELS[entry.event] || String(entry.event || "");
+  const time = document.createElement("span");
+  time.className = "audit-time";
+  time.textContent = formatTime(entry.timestamp);
+  head.append(event, time);
+
+  const meta = document.createElement("div");
+  meta.className = "audit-meta";
+  meta.textContent = [
+    `操作者 ${entry.actor}`,
+    Array.isArray(entry.files) && entry.files.length
+      ? entry.files.join("、")
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  const stats = document.createElement("div");
+  stats.className = "audit-stats";
+  const bits = [];
+  if (entry.uploader) bits.push(`提交者 ${entry.uploader}`);
+  if (entry.chunks !== undefined) bits.push(`${entry.chunks} 切片`);
+  if (entry.documents !== undefined) bits.push(`${entry.documents} 页`);
+  if (entry.deleted_chunks !== undefined) bits.push(`删除 ${entry.deleted_chunks} 切片`);
+  if (entry.access_group) bits.push(`访问组 ${entry.access_group}`);
+  if (entry.structurize_provider) bits.push(entry.structurize_provider);
+  if (entry.embedding_model) bits.push(entry.embedding_model);
+  stats.textContent = bits.join(" · ");
+
+  row.append(head, meta, stats);
+  return row;
+}
+
+async function openAudit() {
+  if (!canConfigure()) return;
+  elements.auditDialog.showModal();
+  await loadAudit();
+}
+
+elements.auditButton.addEventListener("click", openAudit);
+elements.auditClose.addEventListener("click", () => elements.auditDialog.close());
+elements.auditRefresh.addEventListener("click", loadAudit);
 
 const docState = {
   docId: "",

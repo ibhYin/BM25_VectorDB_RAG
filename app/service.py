@@ -7,7 +7,7 @@ from threading import BoundedSemaphore, Condition
 from typing import TypedDict
 
 from app.config import Settings, get_settings
-from app.access import UserContext, load_access_policy
+from app.access import UserContext, load_access_policy, set_document_group
 from app import audit
 from rag.indexer import build_vector_index
 from rag.index_manifest import write_index_manifest
@@ -273,9 +273,70 @@ def delete_indexed_documents(
     return deleted
 
 
+def approve_staged_upload(
+    settings: Settings,
+    item_id: str,
+    group: str = "",
+    actor: str = "",
+) -> dict[str, object]:
+    """Index a staged upload, optionally pinning it to an access group.
+
+    The group has to be written into the policy *before* indexing, because chunk
+    metadata bakes in ``document_access_group`` at split time.
+    """
+
+    from app.staging import get_staging_store
+    from app.uploads import get_upload_store
+    from rag.splitter import build_doc_id
+
+    store = get_staging_store()
+    item, payload = store.take(item_id)
+
+    doc_ids: list[str] = []
+    policy_file = settings.access_policy_file
+    if group and policy_file.is_file():
+        for filename, _ in payload:
+            doc_id = build_doc_id(str(settings.data_dir / filename))
+            set_document_group(policy_file, doc_id, group)
+            doc_ids.append(doc_id)
+
+    job = get_upload_store().create_uploaded(
+        payload, settings.data_dir, item["structurize"], actor
+    )
+    audit.record(
+        "staging.approved",
+        actor=actor,
+        uploader=item["uploader"],
+        item_id=item_id,
+        files=item["filenames"],
+        access_group=group,
+        doc_ids=doc_ids,
+        job_id=job["id"],
+    )
+    return store.decide(item_id, "approved", actor, job_id=job["id"])
+
+
+def reject_staged_upload(
+    item_id: str, actor: str = "", reason: str = ""
+) -> dict[str, object]:
+    """Discard a staged upload without touching the vector store."""
+
+    from app.staging import get_staging_store
+
+    item = get_staging_store().discard(item_id, actor)
+    audit.record(
+        "staging.rejected",
+        actor=actor,
+        uploader=item["uploader"],
+        item_id=item_id,
+        files=item["filenames"],
+        reason=reason,
+    )
+    return item
+
+
 def _chunk_order(metadata: dict[str, object]) -> int:
     """Chunk ids are "<doc_id>#chunk_007", assigned in load order."""
-
     chunk_id = str(metadata.get("chunk_id", ""))
     suffix = chunk_id.rsplit("_", 1)[-1] if "_" in chunk_id else ""
     return int(suffix) if suffix.isdigit() else 0
