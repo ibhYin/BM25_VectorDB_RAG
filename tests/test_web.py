@@ -230,3 +230,18 @@ def test_read_config_updates_rejects_unknown_mineru_version() -> None:
         WebRequestHandler._read_config_updates({"mineru_model_version": "turbo"})
 
     assert error.value.status == HTTPStatus.BAD_REQUEST
+
+
+def test_read_config_updates_accepts_structurize_provider() -> None:
+    updates = WebRequestHandler._read_config_updates(
+        {"structurize_provider": "mineru"}
+    )
+
+    assert updates == {"structurize_provider": "mineru"}
+
+
+def test_read_config_updates_rejects_unknown_structurize_provider() -> None:
+    with pytest.raises(RequestError) as error:
+        WebRequestHandler._read_config_updates({"structurize_provider": "unknown"})
+
+    assert error.value.status == HTTPStatus.BAD_REQUEST

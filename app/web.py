@@ -397,6 +397,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             "supported_files": supported_files,
             "chroma_exists": (settings.chroma_persist_dir / "chroma.sqlite3").is_file(),
             "mineru_configured": bool(settings.mineru_api_token),
+            "structurize_provider": settings.structurize_provider,
             **self._index_model_info(settings),
         }
 
@@ -523,6 +524,14 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                     "mineru_model_version must be pipeline or vlm",
                 )
             updates["mineru_model_version"] = str(value)
+        if "structurize_provider" in payload:
+            value = payload["structurize_provider"]
+            if value not in ("markitdown", "mineru"):
+                raise RequestError(
+                    HTTPStatus.BAD_REQUEST,
+                    "structurize_provider must be markitdown or mineru",
+                )
+            updates["structurize_provider"] = str(value)
         return updates
 
     @staticmethod

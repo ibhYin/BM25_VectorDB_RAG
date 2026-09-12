@@ -240,18 +240,25 @@
 
         <fieldset class="config-group" aria-label="文档解析 MinerU">
           <div class="config-group-head">
-            <span class="config-group-title">文档解析（MinerU 在线）</span>
+            <span class="config-group-title">文档解析（结构化提取）</span>
             <span class="scope-badge" id="config-mineru-scope">未配置</span>
           </div>
+          <label class="config-field">
+            <span>解析引擎</span>
+            <select id="config-structurize-provider" class="config-select" aria-label="结构化引擎">
+              <option value="markitdown">markitdown（本地，适用 docx/pptx/xlsx）</option>
+              <option value="mineru">MinerU（在线，适用 PDF 复杂版面）</option>
+            </select>
+          </label>
           <div class="config-field">
-            <span>API Token</span>
+            <span>MinerU Token</span>
             <div class="config-input-row">
               <input id="config-mineru-token" type="password" placeholder="留空则保持不变" autocomplete="new-password" spellcheck="false" />
               <button id="config-mineru-clear" class="text-button" type="button">清除</button>
             </div>
           </div>
           <label class="config-field">
-            <span>解析精度</span>
+            <span>MinerU 精度</span>
             <select id="config-mineru-model-version" class="config-select" aria-label="解析精度">
               <option value="vlm">vlm（精度最高，推荐）</option>
               <option value="pipeline">pipeline（更快，精度较低）</option>
@@ -260,7 +267,7 @@
           <p class="config-hint">
             在
             <a href="https://mineru.net/apiManage/docs" target="_blank" rel="noreferrer noopener">mineru.net/apiManage</a>
-            创建 Token。配置后，勾选「结构化提取」的上传会走 MinerU 在线版面分析。
+            创建 Token。引擎选 MinerU 时，勾选「结构化提取」的上传会走在线版面分析。
           </p>
           <p class="config-hint warning">文档会上传到 mineru.net 第三方服务，请勿用于涉密材料。</p>
         </fieldset>

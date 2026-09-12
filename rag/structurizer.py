@@ -1,12 +1,13 @@
 """Turn a source document into Markdown before chunking.
 
-Two backends, in order of preference:
+Two backends, chosen explicitly by the caller (``structurize_provider``):
 
-* **MinerU online** — real layout analysis, so headings/lists/tables survive.
-  Needs an API token. This is the only backend that structures PDFs usefully.
-* **markitdown** — local, free, good for formats that already carry structure
-  (docx/pptx/xlsx/html). For PDFs it is weaker than the existing PyMuPDF path,
-  which is why it is only a fallback.
+* **mineru** — MinerU's online precise API. Real layout analysis, so headings,
+  lists and tables survive. This is the only backend that structures PDFs
+  usefully, and it needs an API token.
+* **markitdown** — local and free, good for formats that already carry
+  structure (docx/pptx/xlsx/html). For PDFs it is weaker than the built-in
+  PyMuPDF path, so it is not a good default for PDF-heavy corpora.
 """
 
 from pathlib import Path
@@ -16,24 +17,32 @@ from markitdown import MarkItDown
 from rag.mineru_client import MineruError, convert_file as convert_with_mineru
 
 
+MARKITDOWN = "markitdown"
+MINERU = "mineru"
+STRUCTURIZE_PROVIDERS = (MARKITDOWN, MINERU)
+
 _converter = MarkItDown()
 
 
 def convert_to_markdown(
     file_path: Path,
+    provider: str = MARKITDOWN,
     mineru_token: str = "",
     mineru_model_version: str = "vlm",
 ) -> str:
-    """Convert one file to Markdown, or "" when no backend produced anything.
+    """Convert one file to Markdown using the requested backend.
 
-    With a MinerU token the online service is authoritative and its failures
-    propagate: falling back silently would feed the index noticeably worse text
-    than the caller asked for.
+    Failures propagate rather than falling back to the other backend: silently
+    switching engines would feed the index text the caller did not ask for.
     """
 
-    if mineru_token:
+    if provider == MINERU:
+        if not mineru_token:
+            raise MineruError("已选择 MinerU 解析，但尚未配置 MinerU API Token")
         return convert_with_mineru(file_path, mineru_token, mineru_model_version)
-    return convert_with_markitdown(file_path)
+    if provider == MARKITDOWN:
+        return convert_with_markitdown(file_path)
+    raise ValueError(f"未知的结构化引擎：{provider}")
 
 
 def convert_with_markitdown(file_path: Path) -> str:
@@ -48,6 +57,9 @@ def convert_with_markitdown(file_path: Path) -> str:
 
 
 __all__ = [
+    "MARKITDOWN",
+    "MINERU",
+    "STRUCTURIZE_PROVIDERS",
     "MineruError",
     "convert_to_markdown",
     "convert_with_markitdown",

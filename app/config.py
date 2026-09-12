@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     # MinerU online parsing; a token turns structurization on for real documents.
     mineru_api_token: str = ""
     mineru_model_version: Literal["pipeline", "vlm"] = "vlm"
+    # Which converter runs when an ingest asks for structured extraction.
+    structurize_provider: Literal["markitdown", "mineru"] = "markitdown"
     chunk_size: int = 800
     chunk_overlap: int = 120
     retrieval_top_k: int = 20
@@ -101,6 +103,7 @@ RUNTIME_CONFIG_FIELDS = (
     "embedding_model",
     "mineru_api_token",
     "mineru_model_version",
+    "structurize_provider",
 )
 # Empty means "keep what is already there": the UI never echoes secrets back,
 # and a blank model picker must not silently erase the configured model.
@@ -111,6 +114,7 @@ RUNTIME_CONFIG_KEEP_WHEN_EMPTY = (
     "embedding_model",
     "mineru_api_token",
     "mineru_model_version",
+    "structurize_provider",
 )
 
 
@@ -226,6 +230,7 @@ def runtime_config_view() -> dict[str, object]:
         "mineru_api_token_set": bool(settings.mineru_api_token),
         "mineru_api_token_hint": _mask_secret(settings.mineru_api_token),
         "mineru_model_version": settings.mineru_model_version,
+        "structurize_provider": settings.structurize_provider,
         "runtime_config_file": str(runtime_config_path()),
     }
 

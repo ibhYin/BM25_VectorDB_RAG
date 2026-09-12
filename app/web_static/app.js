@@ -42,6 +42,7 @@ const elements = {
   configMineruToken: document.querySelector("#config-mineru-token"),
   configMineruClear: document.querySelector("#config-mineru-clear"),
   configMineruModelVersion: document.querySelector("#config-mineru-model-version"),
+  configStructurizeProvider: document.querySelector("#config-structurize-provider"),
   configMineruScope: document.querySelector("#config-mineru-scope"),
   structurizeLabel: document.querySelector("#structurize-label"),
   documentCount: document.querySelector("#document-count"),
@@ -159,7 +160,7 @@ async function refreshStatus() {
     elements.documentCount.textContent = String(state.documents.length);
     elements.chunkCount.textContent = String(chunkCount);
     renderIndexWarning(status);
-    renderStructurizeLabel(Boolean(status.mineru_configured));
+    renderStructurizeLabel(status.structurize_provider || "markitdown");
   } catch (error) {
     elements.serviceSummary.textContent = "服务连接失败";
     elements.vectorStatus.textContent = "服务不可用";
@@ -1098,6 +1099,7 @@ async function openConfig() {
       ? `已配置 ${config.embedding_api_key_hint} · 留空保持不变`
       : "留空则保持不变";
     elements.configMineruModelVersion.value = config.mineru_model_version || "vlm";
+    elements.configStructurizeProvider.value = config.structurize_provider || "markitdown";
     elements.configMineruToken.placeholder = config.mineru_api_token_set
       ? `已配置 ${config.mineru_api_token_hint} · 留空保持不变`
       : "留空则保持不变";
@@ -1233,16 +1235,18 @@ function renderEmbeddingStatuses() {
 }
 
 function renderMineruScope(configured) {
-  elements.configMineruScope.textContent = configured ? "已启用" : "未配置";
-  elements.configMineruScope.className = `scope-badge ${configured ? "cloud" : "empty"}`;
+  const provider = elements.configStructurizeProvider.value;
+  const active = configured && provider === "mineru";
+  elements.configMineruScope.textContent = active ? "已启用" : configured ? "已配置" : "未配置";
+  elements.configMineruScope.className = `scope-badge ${active ? "cloud" : configured ? "local" : "empty"}`;
 }
 
-// The upload checkbox means different things depending on whether MinerU is set
-// up: real layout analysis when it is, the weaker local parser when it is not.
-function renderStructurizeLabel(mineruConfigured) {
-  elements.structurizeLabel.textContent = mineruConfigured
-    ? "结构化提取（MinerU 在线解析）"
-    : "结构化提取（本地 markitdown，PDF 效果一般）";
+// The upload checkbox means different things depending on the chosen provider.
+function renderStructurizeLabel(provider) {
+  elements.structurizeLabel.textContent =
+    provider === "mineru"
+      ? "结构化提取（MinerU 在线解析）"
+      : "结构化提取（本地 markitdown）";
 }
 
 async function loadModels(target) {
@@ -1320,6 +1324,10 @@ function collectConfigChanges() {
   if (mineruVersion !== (loaded.mineru_model_version || "vlm")) {
     changes.mineru_model_version = mineruVersion;
   }
+  const structurizeProvider = elements.configStructurizeProvider.value;
+  if (structurizeProvider !== (loaded.structurize_provider || "markitdown")) {
+    changes.structurize_provider = structurizeProvider;
+  }
   return changes;
 }
 
@@ -1393,6 +1401,10 @@ elements.configMineruToken.addEventListener("input", () => {
   if (!elements.configMineruToken.value.trim()) return;
   configState.clearMineruToken = false;
   renderMineruScope(true);
+});
+elements.configStructurizeProvider.addEventListener("change", () => {
+  renderMineruScope(Boolean(configState.loaded?.mineru_api_token_set));
+  renderStructurizeLabel(elements.configStructurizeProvider.value);
 });
 for (const target of ["llm", "embedding"]) {
   const { baseUrl, select, custom } = configTarget(target);

@@ -25,6 +25,7 @@ def build_vector_index(
     knowledge_base_id: str = "default",
     access_policy_file: Path | None = None,
     structurize: bool = False,
+    structurize_provider: str = "markitdown",
     mineru_token: str = "",
     mineru_model_version: str = "vlm",
 ) -> tuple[list[Document], list[Document]]:
@@ -48,6 +49,7 @@ def build_vector_index(
         ocr_model=ocr_model,
         ocr_max_pages=ocr_max_pages,
         structurize=structurize,
+        structurize_provider=structurize_provider,
         mineru_token=mineru_token,
         mineru_model_version=mineru_model_version,
     )
