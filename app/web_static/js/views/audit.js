@@ -1,0 +1,145 @@
+// 审计页：向量库写入记录，支持按事件类型与操作者筛选（筛选在客户端做，
+// 因为 /api/audit 只接受 limit）。
+
+import { formatTime, requestJson, state } from "../core.js";
+
+const el = {
+  list: document.querySelector("#audit-list"),
+  note: document.querySelector("#audit-note"),
+  status: document.querySelector("#audit-status"),
+  refresh: document.querySelector("#audit-refresh"),
+  eventFilter: document.querySelector("#audit-event-filter"),
+  actorFilter: document.querySelector("#audit-actor-filter"),
+};
+
+const EVENT_LABELS = {
+  "ingest.directory": "目录入库",
+  "ingest.files": "上传入库",
+  "delete.documents": "删除文档",
+  "staging.submitted": "提交待审",
+  "staging.approved": "审核通过",
+  "staging.rejected": "审核拒绝",
+};
+
+let mounted = false;
+let entries = [];
+
+function renderEntries() {
+  const wantedEvent = el.eventFilter.value;
+  const wantedActor = el.actorFilter.value;
+  const visible = entries.filter(
+    (entry) =>
+      (!wantedEvent || entry.event === wantedEvent) &&
+      (!wantedActor || entry.actor === wantedActor),
+  );
+
+  el.list.replaceChildren();
+  if (!visible.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-list";
+    empty.textContent = entries.length ? "没有符合筛选条件的记录" : "暂无写入记录";
+    el.list.append(empty);
+    return;
+  }
+  for (const entry of visible) el.list.append(createRow(entry));
+  el.status.textContent = `显示 ${visible.length} / ${entries.length} 条`;
+}
+
+function createRow(entry) {
+  const row = document.createElement("article");
+  row.className = "audit-row";
+
+  const head = document.createElement("div");
+  head.className = "audit-head";
+  const event = document.createElement("strong");
+  event.textContent = EVENT_LABELS[entry.event] || String(entry.event || "");
+  const time = document.createElement("span");
+  time.className = "audit-time";
+  time.textContent = formatTime(entry.timestamp);
+  head.append(event, time);
+
+  const meta = document.createElement("div");
+  meta.className = "audit-meta";
+  meta.textContent = [
+    `操作者 ${entry.actor}`,
+    Array.isArray(entry.files) && entry.files.length ? entry.files.join("、") : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  const stats = document.createElement("div");
+  stats.className = "audit-stats";
+  const bits = [];
+  if (entry.uploader) bits.push(`提交者 ${entry.uploader}`);
+  if (entry.chunks !== undefined) bits.push(`${entry.chunks} 切片`);
+  if (entry.documents !== undefined) bits.push(`${entry.documents} 页`);
+  if (entry.deleted_chunks !== undefined) bits.push(`删除 ${entry.deleted_chunks} 切片`);
+  if (entry.access_group) bits.push(`访问组 ${entry.access_group}`);
+  if (entry.structurize_provider) bits.push(entry.structurize_provider);
+  if (entry.embedding_model) bits.push(entry.embedding_model);
+  stats.textContent = bits.join(" · ");
+
+  row.append(head, meta, stats);
+  return row;
+}
+
+// Rebuild the filter options from whatever the log actually contains, keeping
+// the current selection when it is still valid.
+function renderFilters() {
+  const keepEvent = el.eventFilter.value;
+  const keepActor = el.actorFilter.value;
+
+  const events = [...new Set(entries.map((entry) => entry.event).filter(Boolean))].sort();
+  const actors = [...new Set(entries.map((entry) => entry.actor).filter(Boolean))].sort();
+
+  fillSelect(el.eventFilter, events, keepEvent, (value) => EVENT_LABELS[value] || value);
+  fillSelect(el.actorFilter, actors, keepActor, (value) => value);
+}
+
+function fillSelect(select, values, keep, label) {
+  select.replaceChildren();
+  select.append(new Option("全部", ""));
+  for (const value of values) select.append(new Option(label(value), value));
+  if (values.includes(keep)) select.value = keep;
+}
+
+async function loadAudit() {
+  el.status.textContent = "加载中…";
+  try {
+    const payload = await requestJson("/api/audit?limit=200");
+    entries = payload.entries || [];
+    el.note.textContent = `日志文件：${payload.path}`;
+    renderFilters();
+    renderEntries();
+  } catch (error) {
+    entries = [];
+    el.note.textContent = "";
+    el.list.replaceChildren();
+    const failed = document.createElement("div");
+    failed.className = "empty-list error";
+    failed.textContent = error.message;
+    el.list.append(failed);
+    el.status.textContent = "";
+  }
+}
+
+export default {
+  name: "audit",
+
+  mount() {
+    if (mounted) return;
+    mounted = true;
+    el.refresh.addEventListener("click", loadAudit);
+    el.eventFilter.addEventListener("change", renderEntries);
+    el.actorFilter.addEventListener("change", renderEntries);
+  },
+
+  show() {
+    loadAudit();
+  },
+
+  onIdentity() {
+    // Switching to a non-admin while on this page bounces away in core.
+    if (!state.identity.user && !state.identity.isAdmin) entries = [];
+  },
+};

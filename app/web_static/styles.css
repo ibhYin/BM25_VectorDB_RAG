@@ -252,14 +252,124 @@ svg {
   font-family: var(--mono);
 }
 
-.workspace {
-  --rail-left: 300px;
-  --rail-right: 348px;
+/* ============================ 页面骨架 ============================ */
+
+.page {
   flex: 1;
   min-height: 0;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+/* Non-ask pages get a readable content column; 问答 owns the full viewport. */
+.page:not(.page-ask) > * {
+  max-width: 1160px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.page-head {
+  margin-bottom: 18px;
+}
+
+.page-head h2 {
+  font-size: 18px;
+  font-weight: 650;
+}
+
+.page-head p {
+  margin-top: 2px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+
+.panel {
+  margin-bottom: 16px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.panel .section-head {
+  margin-bottom: 12px;
+}
+
+.section-head h3 {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.grid-2 {
   display: grid;
-  grid-template-columns: var(--rail-left) 6px minmax(0, 1fr) 6px var(--rail-right);
-  grid-template-areas: "library resizer-left chat resizer-right context";
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.grid-2 > .panel {
+  margin-bottom: 0;
+}
+
+/* ============================ 顶栏导航 ============================ */
+
+.app-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.nav-link {
+  position: relative;
+  padding: 5px 14px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--ink-soft);
+  text-decoration: none;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.nav-link:hover {
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.nav-link.active {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+.nav-badge {
+  display: inline-block;
+  min-width: 16px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+}
+
+/* ============================ 问答页 ============================ */
+
+.page-ask {
+  padding: 0;
+}
+
+.ask-layout {
+  --rail-right: 360px;
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 6px var(--rail-right);
 }
 
 .resizer {
@@ -287,15 +397,7 @@ svg {
   background: var(--accent);
 }
 
-.resizer-left {
-  grid-area: resizer-left;
-}
-
-.resizer-right {
-  grid-area: resizer-right;
-}
-
-.rail {
+.ask-rail {
   min-height: 0;
   overflow-y: auto;
   display: flex;
@@ -303,15 +405,6 @@ svg {
   gap: 22px;
   padding: 16px;
   background: var(--surface);
-}
-
-.rail-library {
-  grid-area: library;
-  border-right: 1px solid var(--line);
-}
-
-.rail-context {
-  grid-area: context;
   border-left: 1px solid var(--line);
 }
 
@@ -358,7 +451,7 @@ svg {
 
 .stats-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   border: 1px solid var(--line);
   border-radius: var(--radius);
   overflow: hidden;
@@ -677,19 +770,21 @@ svg {
   }
 }
 
-.chat {
-  grid-area: chat;
+.ask-main {
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
 
-.chat-view,
-.document-view {
-  flex: 1;
-  min-height: 0;
+/* 文档查看器现在在知识库页，作为列表的原地替换。 */
+#library-doc-view {
   display: flex;
   flex-direction: column;
+  min-height: 60vh;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
 }
 
 .doc-head {
@@ -799,7 +894,7 @@ svg {
   color: var(--ink-faint);
 }
 
-.chat-head {
+.ask-head {
   flex: none;
   display: flex;
   align-items: center;
@@ -809,7 +904,7 @@ svg {
   background: var(--surface);
 }
 
-.chat-head h2 {
+.ask-head h2 {
   font-size: 14px;
   font-weight: 650;
 }
@@ -1274,21 +1369,7 @@ svg {
   opacity: 0.6;
 }
 
-.config-dialog {
-  width: min(540px, calc(100vw - 32px));
-  max-height: 88vh;
-  overflow: auto;
-  padding: 0;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface);
-  color: var(--ink);
-  box-shadow: 0 24px 60px rgba(33, 31, 28, 0.24);
-}
 
-.config-dialog::backdrop {
-  background: rgba(33, 31, 28, 0.4);
-}
 
 .config-form {
   display: flex;
@@ -1615,4 +1696,219 @@ svg {
 
 .audit-list {
   list-style: none;
+}
+
+/* ============================ 知识库页 ============================ */
+
+.page-ask {
+  /* 问答页内部自己滚动（对话区 + 证据栏），页面本身不滚。 */
+  overflow: hidden;
+}
+
+.doc-table {
+  display: flex;
+  flex-direction: column;
+}
+
+.doc-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2.2fr) minmax(0, 2fr) 64px 92px;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.doc-row:last-child {
+  border-bottom: none;
+}
+
+.doc-row-head {
+  padding-bottom: 6px;
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
+.doc-row .document-open {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.doc-row .document-open:hover {
+  color: var(--accent-strong);
+  text-decoration: underline;
+}
+
+.doc-row .document-source {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+  font-family: var(--mono);
+}
+
+.doc-row .chunk-count {
+  font-size: 12px;
+  color: var(--ink-soft);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.doc-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+#library-doc-view .doc-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+#library-doc-view .doc-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+
+/* ============================ 设置页 ============================ */
+
+.page .config-form {
+  max-width: 1160px;
+  margin: 0 auto 16px;
+  padding: 0;
+  gap: 16px;
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 18px;
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.kv dt {
+  color: var(--ink-soft);
+}
+
+.kv dd {
+  margin: 0;
+}
+
+.kv code {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+/* ============================ 审计页 ============================ */
+
+.audit-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.audit-toolbar .mini-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.audit-toolbar .config-select {
+  width: auto;
+  min-width: 130px;
+  height: 30px;
+}
+
+.audit-toolbar #audit-note {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.audit-list {
+  max-height: none;
+}
+
+/* ============================ 响应式 ============================ */
+
+@media (max-width: 980px) {
+  .grid-2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ask-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  .ask-layout .resizer {
+    display: none;
+  }
+
+  .ask-rail {
+    border-left: none;
+    border-top: 1px solid var(--line);
+    max-height: 40vh;
+  }
+
+  .doc-row {
+    grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) 56px 84px;
+  }
+}
+
+@media (max-width: 720px) {
+  .doc-row-head {
+    display: none;
+  }
+
+  .doc-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "title actions"
+      "source chunks";
+  }
+
+  .doc-row .document-open { grid-area: title; }
+  .doc-row .document-source { grid-area: source; }
+  .doc-row .chunk-count { grid-area: chunks; }
+  .doc-row-actions { grid-area: actions; }
+}
+
+/* 历史任务会无限变长，限高避免把下面的文档列表顶下去。 */
+#job-list {
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+#staging-list {
+  max-height: 320px;
+  overflow-y: auto;
 }

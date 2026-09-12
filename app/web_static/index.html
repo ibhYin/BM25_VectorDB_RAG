@@ -16,6 +16,16 @@
           <p id="service-summary">正在连接服务…</p>
         </div>
       </div>
+
+      <nav class="app-nav" aria-label="主导航">
+        <a class="nav-link" href="#/ask" data-route="ask">问答</a>
+        <a class="nav-link" href="#/library" data-route="library">
+          知识库<span id="nav-library-badge" class="nav-badge" hidden>0</span>
+        </a>
+        <a class="nav-link" id="nav-settings" href="#/settings" data-route="settings">设置</a>
+        <a class="nav-link" id="nav-audit" href="#/audit" data-route="audit" hidden>审计</a>
+      </nav>
+
       <div class="header-actions">
         <span id="vector-status" class="chip loading"><span class="loading-spinner" aria-hidden="true"></span><span>加载中</span></span>
         <span id="model-status" class="chip loading"><span class="loading-spinner" aria-hidden="true"></span><span>加载中</span></span>
@@ -27,12 +37,6 @@
           </button>
           <div id="user-menu" class="user-menu" role="menu" hidden></div>
         </div>
-        <button id="audit-button" class="icon-button" type="button" title="写入审计" aria-label="写入审计" hidden>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></svg>
-        </button>
-        <button id="config-button" class="icon-button" type="button" title="模型接入配置" aria-label="模型接入配置" hidden>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/></svg>
-        </button>
         <button id="refresh-button" class="icon-button" type="button" title="刷新状态" aria-label="刷新状态">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
         </button>
@@ -41,170 +45,179 @@
 
     <div id="index-warning" class="index-warning" role="alert" hidden></div>
 
-    <main class="workspace">
-      <aside class="rail rail-library" aria-label="知识库管理">
+    <!-- ============================ 问答 ============================ -->
+    <section class="page page-ask" id="page-ask" aria-label="知识库问答">
+      <div class="ask-layout">
+        <div class="ask-main">
+          <div class="ask-head">
+            <div class="ask-head-text">
+              <h2>问答</h2>
+              <p id="run-status" role="status" aria-live="polite">就绪</p>
+            </div>
+            <button id="clear-chat-button" class="icon-button" type="button" title="清空对话" aria-label="清空对话">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
+          </div>
+
+          <div class="chat-stream" id="chat-stream" aria-live="polite">
+            <div class="empty-chat">
+              <span class="empty-mark" aria-hidden="true">RAG</span>
+              <strong>等待提问</strong>
+              <span>答案将引用知识库中的 chunk_id</span>
+            </div>
+          </div>
+
+          <div class="settings-bar" role="group" aria-label="检索参数">
+            <div class="segmented" id="retrieval-method" role="radiogroup" aria-label="检索方式">
+              <label><input type="radio" name="retrieval-method" value="vector" form="ask-form" checked /><span>向量</span></label>
+              <label><input type="radio" name="retrieval-method" value="bm25" form="ask-form" /><span>BM25</span></label>
+              <label><input type="radio" name="retrieval-method" value="hybrid" form="ask-form" /><span>混合</span></label>
+            </div>
+            <label class="mini-field">
+              <span>Top-K</span>
+              <input id="retrieval-top-k" type="number" form="ask-form" min="1" max="100" step="1" value="20" required />
+            </label>
+            <label class="mini-field">
+              <span>候选池</span>
+              <input id="candidate-pool" type="number" form="ask-form" min="20" max="500" step="1" value="100" required />
+            </label>
+            <label class="mini-field threshold-field">
+              <span>阈值</span>
+              <input id="similarity-threshold" type="range" form="ask-form" min="0" max="1" step="0.01" value="0.35" />
+              <output id="similarity-threshold-value" for="similarity-threshold">0.35</output>
+            </label>
+          </div>
+
+          <form id="ask-form" class="ask-form">
+            <label class="visually-hidden" for="question">问题</label>
+            <textarea id="question" rows="2" placeholder="输入问题，Enter 发送 · Shift+Enter 换行"></textarea>
+            <button id="ask-button" class="send-button" type="submit" title="发送" aria-label="发送">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+            </button>
+          </form>
+        </div>
+
+        <div class="resizer" id="resizer-right" role="separator" aria-orientation="vertical" aria-label="调整证据栏宽度" tabindex="0"></div>
+
+        <aside class="ask-rail" aria-label="检索过程与上下文">
+          <section class="rail-section">
+            <div class="section-head"><h2>问答过程</h2></div>
+            <div class="process-list" id="process-list" aria-live="polite"></div>
+          </section>
+          <section class="rail-section grow">
+            <div class="section-head"><h2>匹配内容</h2></div>
+            <div class="context-list" id="context-list" aria-live="polite"></div>
+          </section>
+        </aside>
+      </div>
+    </section>
+
+    <!-- ============================ 知识库 ============================ -->
+    <section class="page" id="page-library" hidden aria-label="知识库管理">
+      <div class="page-head">
+        <h2>知识库</h2>
+        <p>索引状态与文档管理</p>
+      </div>
+
+      <div id="library-list-view">
         <div class="stats-row" aria-label="索引统计">
           <div class="stat">
             <span class="stat-label">入库文档</span>
-            <strong id="document-count"><span class="loading-spinner" role="status" aria-label="加载中"></span></strong>
+            <strong id="document-count">—</strong>
           </div>
           <div class="stat">
             <span class="stat-label">向量切片</span>
-            <strong id="chunk-count"><span class="loading-spinner" role="status" aria-label="加载中"></span></strong>
+            <strong id="chunk-count">—</strong>
+          </div>
+          <div class="stat">
+            <span class="stat-label">待审核</span>
+            <strong id="pending-count">—</strong>
           </div>
         </div>
 
-        <section class="rail-section">
-          <div class="section-head">
-            <h2>添加文档</h2>
-            <span class="section-hint" id="upload-limit">PDF / MD / TXT</span>
-          </div>
-          <div class="drop-zone" id="drop-zone" role="button" tabindex="0" aria-describedby="drop-zone-description">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
-            <strong>拖拽文件到这里</strong>
-            <span id="drop-zone-description">或选择文件后自动上传并入向量库</span>
-          </div>
-          <input id="file-input" class="visually-hidden" type="file" multiple accept=".pdf,.md,.txt" />
-          <label class="upload-option">
-            <input id="structurize-checkbox" type="checkbox" />
-            <span id="structurize-label">结构化提取（保留标题、列表、表格）</span>
-          </label>
-          <button id="choose-files-button" class="ghost-button" type="button">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
-            选择文件
-          </button>
-          <p class="permission-note" id="upload-permission" hidden>
-            当前身份无上传权限（仅管理员可上传文档）
-          </p>
-        </section>
+        <div class="grid-2">
+          <section class="panel">
+            <div class="section-head">
+              <h3>添加文档</h3>
+              <span class="section-hint" id="upload-limit">PDF / MD / TXT</span>
+            </div>
+            <div class="drop-zone" id="drop-zone" role="button" tabindex="0" aria-describedby="drop-zone-description">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
+              <strong>拖拽文件到这里</strong>
+              <span id="drop-zone-description">或选择文件后自动上传并入向量库</span>
+            </div>
+            <input id="file-input" class="visually-hidden" type="file" multiple accept=".pdf,.md,.txt" />
+            <label class="upload-option">
+              <input id="structurize-checkbox" type="checkbox" />
+              <span id="structurize-label">结构化提取</span>
+            </label>
+            <button id="choose-files-button" class="ghost-button" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
+              选择文件
+            </button>
+            <p class="permission-note" id="upload-permission" hidden></p>
+          </section>
 
-        <section class="rail-section">
-          <div class="section-head">
-            <h2>处理任务</h2>
-            <span class="section-hint" id="queue-summary">空闲</span>
-          </div>
-          <div class="item-list" id="job-list" aria-live="polite" aria-busy="true">
-            <div class="loading-state"><span class="loading-spinner" aria-hidden="true"></span><span>加载中</span></div>
-          </div>
-        </section>
+          <section class="panel">
+            <div class="section-head">
+              <h3>处理任务</h3>
+              <span class="section-hint" id="queue-summary">空闲</span>
+            </div>
+            <div class="item-list" id="job-list" aria-live="polite" aria-busy="true">
+              <div class="loading-state"><span class="loading-spinner" aria-hidden="true"></span><span>加载中</span></div>
+            </div>
+          </section>
+        </div>
 
-        <section class="rail-section" id="staging-section" hidden>
+        <section class="panel" id="staging-section" hidden>
           <div class="section-head">
-            <h2>待审核</h2>
+            <h3>待审核</h3>
             <span class="section-hint" id="staging-summary">—</span>
           </div>
           <div class="item-list" id="staging-list" aria-live="polite"></div>
         </section>
 
-        <section class="rail-section">
+        <section class="panel">
           <div class="section-head">
-            <h2>已入库文档</h2>
+            <h3>已入库文档</h3>
             <button id="reload-documents-button" class="text-button" type="button">刷新</button>
           </div>
           <div class="item-list" id="document-list" aria-live="polite" aria-busy="true">
             <div class="loading-state"><span class="loading-spinner" aria-hidden="true"></span><span>加载中</span></div>
           </div>
         </section>
-      </aside>
+      </div>
 
-      <div class="resizer resizer-left" id="resizer-left" role="separator" aria-orientation="vertical" aria-label="调整知识库栏宽度" tabindex="0"></div>
-
-      <section class="chat" aria-label="知识库问答">
-        <div class="chat-view" id="chat-view">
-        <div class="chat-head">
-          <div class="chat-head-text">
-            <h2>问答</h2>
-            <p id="run-status" role="status" aria-live="polite">就绪</p>
-          </div>
-          <button id="clear-chat-button" class="icon-button" type="button" title="清空对话" aria-label="清空对话">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+      <div id="library-doc-view" hidden>
+        <div class="doc-head">
+          <button id="doc-back-button" class="icon-button" type="button" title="返回列表" aria-label="返回列表">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
           </button>
-        </div>
-
-        <div class="chat-stream" id="chat-stream" aria-live="polite">
-          <div class="empty-chat">
-            <span class="empty-mark" aria-hidden="true">RAG</span>
-            <strong>等待提问</strong>
-            <span>答案将引用知识库中的 chunk_id</span>
+          <div class="doc-head-text">
+            <h2 id="doc-title">文档</h2>
+            <p id="doc-meta"></p>
+          </div>
+          <div class="segmented" id="doc-view-mode" role="radiogroup" aria-label="查看方式">
+            <label><input type="radio" name="doc-view-mode" value="cards" checked /><span>切片</span></label>
+            <label><input type="radio" name="doc-view-mode" value="merged" /><span>连续阅读</span></label>
           </div>
         </div>
-
-        <div class="settings-bar" role="group" aria-label="检索参数">
-          <div class="segmented" id="retrieval-method" role="radiogroup" aria-label="检索方式">
-            <label><input type="radio" name="retrieval-method" value="vector" form="ask-form" checked /><span>向量</span></label>
-            <label><input type="radio" name="retrieval-method" value="bm25" form="ask-form" /><span>BM25</span></label>
-            <label><input type="radio" name="retrieval-method" value="hybrid" form="ask-form" /><span>混合</span></label>
-          </div>
-          <label class="mini-field">
-            <span>Top-K</span>
-            <input id="retrieval-top-k" type="number" form="ask-form" min="1" max="100" step="1" value="20" required />
-          </label>
-          <label class="mini-field">
-            <span>候选池</span>
-            <input id="candidate-pool" type="number" form="ask-form" min="20" max="500" step="1" value="100" required />
-          </label>
-          <label class="mini-field threshold-field">
-            <span>阈值</span>
-            <input id="similarity-threshold" type="range" form="ask-form" min="0" max="1" step="0.01" value="0.35" />
-            <output id="similarity-threshold-value" for="similarity-threshold">0.35</output>
-          </label>
+        <div class="doc-body" id="doc-body" aria-live="polite"></div>
+        <div class="doc-foot">
+          <span id="doc-progress">已显示 0 / 0</span>
+          <button id="doc-load-more" class="ghost-button" type="button" hidden>加载更多</button>
         </div>
+      </div>
+    </section>
 
-        <form id="ask-form" class="ask-form">
-          <label class="visually-hidden" for="question">问题</label>
-          <textarea id="question" rows="2" placeholder="输入问题，Enter 发送 · Shift+Enter 换行"></textarea>
-          <button id="ask-button" class="send-button" type="submit" title="发送" aria-label="发送">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
-          </button>
-        </form>
-        </div>
+    <!-- ============================ 设置 ============================ -->
+    <section class="page" id="page-settings" hidden aria-label="设置">
+      <div class="page-head">
+        <h2>设置</h2>
+        <p>模型接入与运行参数</p>
+      </div>
 
-        <section class="document-view" id="document-view" aria-label="文档查看" hidden>
-          <div class="doc-head">
-            <button id="doc-back-button" class="icon-button" type="button" title="返回问答" aria-label="返回问答">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
-            </button>
-            <div class="doc-head-text">
-              <h2 id="doc-title">文档</h2>
-              <p id="doc-meta"></p>
-            </div>
-            <div class="segmented" id="doc-view-mode" role="radiogroup" aria-label="查看方式">
-              <label><input type="radio" name="doc-view-mode" value="cards" checked /><span>切片</span></label>
-              <label><input type="radio" name="doc-view-mode" value="merged" /><span>连续阅读</span></label>
-            </div>
-          </div>
-          <div class="doc-body" id="doc-body" aria-live="polite"></div>
-          <div class="doc-foot">
-            <span id="doc-progress">已显示 0 / 0</span>
-            <button id="doc-load-more" class="ghost-button" type="button" hidden>加载更多</button>
-          </div>
-        </section>
-      </section>
-
-      <div class="resizer resizer-right" id="resizer-right" role="separator" aria-orientation="vertical" aria-label="调整检索栏宽度" tabindex="0"></div>
-
-      <aside class="rail rail-context" aria-label="检索过程与上下文">
-        <section class="rail-section">
-          <div class="section-head"><h2>问答过程</h2></div>
-          <div class="process-list" id="process-list" aria-live="polite"></div>
-        </section>
-        <section class="rail-section grow">
-          <div class="section-head"><h2>匹配内容</h2></div>
-          <div class="context-list" id="context-list" aria-live="polite"></div>
-        </section>
-      </aside>
-    </main>
-
-    <dialog id="config-dialog" class="config-dialog" aria-labelledby="config-title">
       <form id="config-form" class="config-form">
-        <header class="config-head">
-          <h2 id="config-title">模型接入配置</h2>
-          <button id="config-close" class="icon-button" type="button" title="关闭" aria-label="关闭">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-          </button>
-        </header>
-        <p class="config-note">保存在服务器本地，立即对问答与文档入库生效。留空表示沿用默认值。</p>
-
         <fieldset class="config-group" aria-label="对话模型 LLM">
           <div class="config-group-head">
             <span class="config-group-title">对话模型（LLM）</span>
@@ -284,36 +297,59 @@
         </fieldset>
 
         <footer class="config-foot">
-          <span id="config-status" role="status" aria-live="polite"></span>
+          <span class="config-status" id="config-status" role="status" aria-live="polite"></span>
           <div class="config-actions">
             <button id="config-refresh-models" class="ghost-button" type="button">刷新模型列表</button>
-            <button id="config-cancel" class="ghost-button" type="button">取消</button>
+            <button id="config-reset" class="ghost-button" type="button">放弃修改</button>
             <button id="config-save" class="primary-button" type="submit">保存</button>
           </div>
         </footer>
       </form>
-    </dialog>
 
-    <dialog id="audit-dialog" class="config-dialog" aria-labelledby="audit-title">
-      <div class="config-form">
-        <header class="config-head">
-          <h2 id="audit-title">向量库写入审计</h2>
-          <button id="audit-close" class="icon-button" type="button" title="关闭" aria-label="关闭">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-          </button>
-        </header>
-        <p class="config-note" id="audit-note">每一次对向量库的写入都会记录在这里。</p>
-        <div class="item-list audit-list" id="audit-list" aria-live="polite"></div>
-        <footer class="config-foot">
-          <span class="config-status" id="audit-status"></span>
-          <div class="config-actions">
-            <button id="audit-refresh" class="ghost-button" type="button">刷新</button>
-          </div>
-        </footer>
+      <section class="panel">
+        <div class="section-head"><h3>索引状态</h3></div>
+        <dl class="kv">
+          <dt>建库向量模型</dt>
+          <dd><code id="index-built-by">—</code></dd>
+          <dt>数据目录</dt>
+          <dd><code id="path-data">—</code></dd>
+          <dt>向量库目录</dt>
+          <dd><code id="path-chroma">—</code></dd>
+          <dt>配置文件</dt>
+          <dd><code id="path-config">—</code></dd>
+        </dl>
+        <p class="config-hint warning" id="index-mismatch" hidden>
+          当前配置的向量模型与建库时不同，检索结果可能失效，请重新入库文档。
+        </p>
+      </section>
+    </section>
+
+    <!-- ============================ 审计 ============================ -->
+    <section class="page" id="page-audit" hidden aria-label="写入审计">
+      <div class="page-head">
+        <h2>审计</h2>
+        <p>向量库写入记录</p>
       </div>
-    </dialog>
+
+      <section class="panel">
+        <div class="audit-toolbar">
+          <label class="mini-field">
+            <span>事件</span>
+            <select id="audit-event-filter" class="config-select"></select>
+          </label>
+          <label class="mini-field">
+            <span>操作者</span>
+            <select id="audit-actor-filter" class="config-select"></select>
+          </label>
+          <span class="section-hint" id="audit-note"></span>
+          <span class="config-status" id="audit-status" role="status" aria-live="polite"></span>
+          <button id="audit-refresh" class="ghost-button" type="button">刷新</button>
+        </div>
+        <div class="item-list audit-list" id="audit-list" aria-live="polite"></div>
+      </section>
+    </section>
 
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-    <script src="/static/app.js"></script>
+    <script type="module" src="/static/js/app.js"></script>
   </body>
 </html>
