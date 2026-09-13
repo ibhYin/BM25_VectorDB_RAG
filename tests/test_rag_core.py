@@ -350,3 +350,75 @@ def test_get_indexed_document_ignores_an_unknown_focus_chunk(
 
     assert page["offset"] == 0
     assert [chunk["chunk_id"] for chunk in page["chunks"]] == ["doc#chunk_001"]
+
+
+def _fake_retrieval(monkeypatch, embedded: list, answered: dict):
+    """Wire answer_question to fakes; records what got embedded and answered."""
+
+    class FakeEmbeddings:
+        def embed_query(self, question):
+            embedded.append(question)
+            return [0.1, 0.2]
+
+    class FakeVectorStore:
+        def similarity_search_by_vector_with_relevance_scores(self, embedding, k):
+            return []
+
+    monkeypatch.setattr("app.service.get_embeddings", lambda *args: FakeEmbeddings())
+    monkeypatch.setattr("app.service.get_vector_store", lambda *args: FakeVectorStore())
+
+    def fake_generate(**kwargs):
+        answered.update(kwargs)
+        return "答案"
+
+    monkeypatch.setattr("chains.answer_chain.generate_answer", fake_generate)
+
+
+def test_history_rewrites_the_retrieval_query_but_not_the_answered_question(
+    monkeypatch,
+) -> None:
+    embedded: list[str] = []
+    answered: dict = {}
+    stages: list[tuple[str, str]] = []
+    _fake_retrieval(monkeypatch, embedded, answered)
+    monkeypatch.setattr(
+        "chains.answer_chain.condense_question",
+        lambda history, question, **kwargs: "改写后的独立问题",
+    )
+
+    result = answer_question(
+        "它的优势是什么？",
+        Settings(_env_file=None),
+        progress=lambda stage, status, detail: stages.append((stage, status)),
+        retrieval_method="vector",
+        history=[{"question": "什么是 RAG？", "answer": "RAG 是……"}],
+    )
+
+    # 检索用改写后的问题，答题仍用原句 + 历史。
+    assert embedded == ["改写后的独立问题"]
+    assert answered["question"] == "它的优势是什么？"
+    assert answered["history"] == [{"question": "什么是 RAG？", "answer": "RAG 是……"}]
+    assert result["question"] == "它的优势是什么？"
+    assert ("condense", "completed") in stages
+
+
+def test_no_history_skips_the_rewrite_step(monkeypatch) -> None:
+    embedded: list[str] = []
+    answered: dict = {}
+    stages: list[tuple[str, str]] = []
+    _fake_retrieval(monkeypatch, embedded, answered)
+    monkeypatch.setattr(
+        "chains.answer_chain.condense_question",
+        lambda *args, **kwargs: pytest.fail("无历史时不应调用改写"),
+    )
+
+    answer_question(
+        "开放问答为什么要先检索？",
+        Settings(_env_file=None),
+        progress=lambda stage, status, detail: stages.append((stage, status)),
+        retrieval_method="vector",
+    )
+
+    assert ("condense", "skipped") in stages
+    assert embedded == ["开放问答为什么要先检索？"]
+    assert answered["history"] is None

@@ -245,3 +245,106 @@ def test_read_config_updates_rejects_unknown_structurize_provider() -> None:
         WebRequestHandler._read_config_updates({"structurize_provider": "unknown"})
 
     assert error.value.status == HTTPStatus.BAD_REQUEST
+
+
+def make_api_handler(*, user=None, payload=None):
+    """A handler with identity/IO stubbed, for exercising one endpoint method."""
+
+    handler = object.__new__(WebRequestHandler)
+    captured: dict = {}
+    handler._current_user = lambda *args, **kwargs: user
+    handler._read_json = lambda: payload if payload is not None else {}
+    handler._send_json = lambda body, status=HTTPStatus.OK: captured.update(
+        body=body, status=int(status)
+    )
+    return handler, captured
+
+
+@pytest.fixture
+def conversation_store(tmp_path, monkeypatch):
+    from app import conversations
+
+    monkeypatch.setenv("CONVERSATIONS_FILE", str(tmp_path / "conversations.json"))
+    monkeypatch.setattr(conversations, "_store", None)
+    yield conversations.get_conversation_store()
+    monkeypatch.setattr(conversations, "_store", None)
+
+
+def _user(user_id: str):
+    from app.access import UserContext
+
+    return UserContext(user_id, frozenset({"public"}))
+
+
+def test_conversation_list_only_returns_the_callers_own(conversation_store) -> None:
+    conversation_store.create("alice")
+    conversation_store.create("bob")
+
+    handler, captured = make_api_handler(user=_user("bob"))
+    handler._handle_conversations()
+
+    assert captured["status"] == HTTPStatus.OK
+    assert [c["title"] for c in captured["body"]["conversations"]] == ["新对话"]
+    assert len(captured["body"]["conversations"]) == 1
+
+
+def test_reading_another_users_conversation_is_forbidden(conversation_store) -> None:
+    alice = conversation_store.create("alice")
+
+    handler, _ = make_api_handler(user=_user("bob"))
+    with pytest.raises(RequestError) as error:
+        handler._handle_conversation_detail(alice["id"])
+
+    assert error.value.status == HTTPStatus.FORBIDDEN
+
+
+def test_reading_an_unknown_conversation_is_404(conversation_store) -> None:
+    handler, _ = make_api_handler(user=_user("alice"))
+
+    with pytest.raises(RequestError) as error:
+        handler._handle_conversation_detail("does-not-exist")
+
+    assert error.value.status == HTTPStatus.NOT_FOUND
+
+
+def test_deleting_another_users_conversation_is_forbidden(conversation_store) -> None:
+    alice = conversation_store.create("alice")
+
+    handler, _ = make_api_handler(user=_user("bob"))
+    with pytest.raises(RequestError) as error:
+        handler._handle_conversation_delete(alice["id"])
+
+    assert error.value.status == HTTPStatus.FORBIDDEN
+
+
+def test_creating_an_answer_job_for_another_users_conversation_is_forbidden(
+    conversation_store, monkeypatch
+) -> None:
+    alice = conversation_store.create("alice")
+    monkeypatch.setattr(
+        "app.answer_jobs.get_answer_store",
+        lambda: pytest.fail("归属校验失败时不应创建任务"),
+    )
+
+    handler, _ = make_api_handler(
+        user=_user("bob"),
+        payload={"question": "试探", "conversation_id": alice["id"]},
+    )
+
+    with pytest.raises(RequestError) as error:
+        handler._handle_create_answer_job()
+
+    assert error.value.status == HTTPStatus.FORBIDDEN
+
+
+def test_creating_an_answer_job_with_a_bad_conversation_id_type_is_rejected(
+    conversation_store,
+) -> None:
+    handler, _ = make_api_handler(
+        user=_user("alice"), payload={"question": "q", "conversation_id": 42}
+    )
+
+    with pytest.raises(RequestError) as error:
+        handler._handle_create_answer_job()
+
+    assert error.value.status == HTTPStatus.BAD_REQUEST

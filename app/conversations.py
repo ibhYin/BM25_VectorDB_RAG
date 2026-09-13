@@ -226,6 +226,14 @@ class ConversationStore:
         os.replace(temporary, self._state_path)
 
 
+DEFAULT_STATE_FILE = Path(".web_conversations.json")
+STATE_FILE_ENV = "CONVERSATIONS_FILE"
+
+
+def conversation_store_path() -> Path:
+    return Path(os.environ.get(STATE_FILE_ENV, str(DEFAULT_STATE_FILE)))
+
+
 _store: ConversationStore | None = None
 _store_lock = threading.Lock()
 
@@ -234,5 +242,5 @@ def get_conversation_store() -> ConversationStore:
     global _store
     with _store_lock:
         if _store is None:
-            _store = ConversationStore(Path(".web_conversations.json"))
+            _store = ConversationStore(conversation_store_path())
         return _store

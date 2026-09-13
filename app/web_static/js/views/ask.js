@@ -458,8 +458,6 @@ async function ask(event) {
     addChatMessage("answer", result.answer || "未生成答案");
     renderContext();
     setRunStatusLoading(false, "回答完成");
-    // 标题和轮数在服务端生成，回读一次列表。
-    loadConversations();
   } catch (error) {
     if (error instanceof StaleAnswer) return;
     addChatMessage("error", error.message);
@@ -468,6 +466,9 @@ async function ask(event) {
   } finally {
     el.askButton.disabled = false;
     el.question.focus();
+    // 标题与轮数由服务端生成。即使这轮答复已过期（用户切走了），列表也要刷新，
+    // 否则刚建的对话要等到下次刷新才出现在列表里。
+    loadConversations();
   }
 }
 
