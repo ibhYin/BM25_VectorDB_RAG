@@ -96,7 +96,12 @@ def load_access_policy(path: Path) -> AccessPolicy | None:
 
 
 def known_groups(path: Path) -> set[str]:
-    """Every group referenced anywhere in the policy, plus the public group."""
+    """Every group referenced anywhere in the policy, plus the public group.
+
+    Admin user ids are deliberately *not* included: they are identities, not
+    groups, and ``user_context`` never adds a user's own id to their groups — so
+    a document assigned to one would be visible to nobody.
+    """
 
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -113,7 +118,6 @@ def known_groups(path: Path) -> set[str]:
         for entry in (payload.get(section) or {}).values():
             if isinstance(entry, dict) and entry.get("group"):
                 groups.add(str(entry["group"]))
-    groups.update(str(group) for group in payload.get("admins", []))
     return groups
 
 

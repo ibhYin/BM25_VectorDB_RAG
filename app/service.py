@@ -7,7 +7,13 @@ from threading import BoundedSemaphore, Condition
 from typing import TypedDict
 
 from app.config import Settings, get_settings
-from app.access import UserContext, load_access_policy, set_document_group
+from app.access import (
+    PUBLIC_GROUP,
+    UserContext,
+    known_groups,
+    load_access_policy,
+    set_document_group,
+)
 from app import audit
 from rag.indexer import build_vector_index
 from rag.index_manifest import write_index_manifest
@@ -25,6 +31,7 @@ from rag.vector_store import (
     get_embeddings,
     get_vector_store,
     replace_documents,
+    set_document_access_group,
 )
 
 
@@ -273,6 +280,59 @@ def delete_indexed_documents(
     return deleted
 
 
+def set_document_access(
+    settings: Settings,
+    doc_id: str,
+    group: str,
+    actor: str = "",
+) -> int:
+    """Point one indexed document at an access group. Admin action.
+
+    Updates both halves of the truth: the policy file (what future indexing will
+    use) and the stored chunk metadata (what retrieval filters on right now).
+    Only metadata is rewritten, so this costs no embedding calls.
+    """
+
+    doc_id = doc_id.strip()
+    group = group.strip()
+    if not doc_id:
+        raise ValueError("doc_id is required")
+    if not group:
+        raise ValueError("group is required")
+
+    policy_path = settings.access_policy_file
+    if not policy_path.is_file():
+        raise ValueError("未启用访问控制：缺少访问策略文件")
+    # 只允许已存在的组，避免拼错把文档变成谁都看不见。
+    if group not in known_groups(policy_path):
+        raise ValueError(f"未知的访问组：{group}")
+
+    with knowledge_base_lock.write():
+        updated = set_document_access_group(
+            [doc_id],
+            group,
+            persist_dir=settings.chroma_persist_dir,
+            embedding_model=settings.embedding_model,
+            embedding_api_key=settings.embedding_api_key,
+            embedding_base_url=settings.embedding_base_url,
+            knowledge_base_id=settings.knowledge_base_id,
+        )
+        if not updated:
+            raise KeyError("Document not found")
+        # 先确认文档存在再落策略，避免给不存在的 doc_id 留下垃圾条目。
+        set_document_group(policy_path, doc_id, group)
+
+    audit.record(
+        "access.change",
+        actor=actor,
+        knowledge_base_id=settings.knowledge_base_id,
+        doc_ids=[doc_id],
+        access_group=group,
+        chunks=updated,
+    )
+    return updated
+
+
 def approve_staged_upload(
     settings: Settings,
     item_id: str,
@@ -432,8 +492,15 @@ def get_indexed_document(
 def list_indexed_documents(
     settings: Settings,
     user: UserContext | None = None,
+    admin: bool = False,
 ) -> list[dict[str, object]]:
-    """Aggregate indexed documents from Chroma metadata."""
+    """Aggregate indexed documents from Chroma metadata.
+
+    ``admin`` skips the per-document group filter: this listing doubles as the
+    admin's access-management view, and hiding documents you are meant to
+    administer would make it unusable. Content access is unchanged — retrieval
+    and the document viewer still filter by group.
+    """
 
     result = get_vector_store(
         settings.chroma_persist_dir,
@@ -445,7 +512,7 @@ def list_indexed_documents(
     access_policy = load_access_policy(settings.access_policy_file)
     for raw_metadata in result.get("metadatas", []):
         metadata = raw_metadata or {}
-        if access_policy is not None:
+        if access_policy is not None and not admin:
             if user is None or not access_policy.can_access(metadata, user, settings.knowledge_base_id):
                 continue
         doc_id = str(metadata.get("doc_id", ""))
@@ -457,6 +524,9 @@ def list_indexed_documents(
                 "doc_id": doc_id,
                 "title": str(metadata.get("title") or "未命名文档"),
                 "source": str(metadata.get("source") or ""),
+                "access_group": str(
+                    metadata.get("document_access_group") or PUBLIC_GROUP
+                ),
                 "chunk_count": 0,
             },
         )

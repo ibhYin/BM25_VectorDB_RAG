@@ -163,3 +163,48 @@ def delete_documents(
     if stale_ids:
         vector_store.delete(ids=stale_ids)
     return len(stale_ids)
+
+
+def set_document_access_group(
+    doc_ids: list[str],
+    group: str,
+    persist_dir: Path,
+    embedding_model: str,
+    embedding_api_key: str = "",
+    embedding_base_url: str = "",
+    knowledge_base_id: str | None = None,
+) -> int:
+    """Rewrite document_access_group on the stored chunks of these documents.
+
+    The group is normally baked in at split time, so changing it afterwards would
+    mean re-indexing the document. Updating only the metadata keeps the vectors
+    untouched — no embedding calls, and no risk to what the index already recalls.
+    """
+
+    unique_ids = sorted({doc_id for doc_id in doc_ids if doc_id})
+    if not unique_ids:
+        return 0
+
+    vector_store = get_vector_store(
+        persist_dir, embedding_model, embedding_api_key, embedding_base_url
+    )
+    where: dict[str, object] = {"doc_id": {"$in": unique_ids}}
+    if knowledge_base_id:
+        where = {"$and": [where, {"knowledge_base_id": knowledge_base_id}]}
+
+    existing = vector_store.get(where=where, include=["metadatas"])
+    ids = list(existing.get("ids", []) or [])
+    metadatas = list(existing.get("metadatas", []) or [])
+    if not ids:
+        return 0
+
+    updated = []
+    for metadata in metadatas:
+        merged = dict(metadata or {})
+        merged["document_access_group"] = group
+        updated.append(merged)
+
+    # ponytail: langchain_chroma exposes no public metadata-only update, so reach
+    # through to the underlying chromadb collection.
+    vector_store._collection.update(ids=ids, metadatas=updated)
+    return len(ids)

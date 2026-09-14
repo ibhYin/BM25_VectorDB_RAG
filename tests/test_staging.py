@@ -162,7 +162,10 @@ def test_known_groups_collects_every_referenced_group(tmp_path: Path) -> None:
 
     groups = known_groups(policy_file)
 
-    assert {"public", "hr", "engineering", "finance", "legal", "alice"} <= groups
+    assert groups == {"public", "hr", "engineering", "finance", "legal"}
+    # Admin ids are identities, not groups: assigning a document to one would
+    # make it visible to nobody, so they must not be offered as options.
+    assert "alice" not in groups
 
 
 def test_known_groups_on_a_missing_file_is_just_public(tmp_path: Path) -> None:

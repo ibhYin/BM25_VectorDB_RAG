@@ -111,6 +111,11 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._handle_list_models()
         elif parsed.path == "/api/documents/upload":
             self._handle_document_upload()
+        elif parsed.path.startswith("/api/documents/"):
+            doc_id, _, action = parsed.path.removeprefix("/api/documents/").partition("/")
+            if action != "access":
+                raise RequestError(HTTPStatus.NOT_FOUND, "Not found")
+            self._handle_document_access(doc_id)
         elif parsed.path.startswith("/api/staging/"):
             item_id, _, action = parsed.path.removeprefix("/api/staging/").partition("/")
             if action not in ("approve", "reject"):
@@ -288,14 +293,54 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         self._send_json(job)
 
     def _handle_documents(self) -> None:
+        from app.access import known_groups, load_access_policy
         from app.service import list_indexed_documents
 
         settings = get_settings()
         user = self._current_user(settings)
+        policy = load_access_policy(settings.access_policy_file)
+        is_admin = policy is not None and user is not None and policy.is_admin(user)
+        access = {
+            "enabled": policy is not None,
+            "manageable": is_admin,
+            "groups": sorted(known_groups(settings.access_policy_file))
+            if policy is not None
+            else [],
+        }
+
         if not (settings.chroma_persist_dir / "chroma.sqlite3").is_file():
-            self._send_json({"documents": []})
+            self._send_json({"documents": [], "access": access})
             return
-        self._send_json({"documents": list_indexed_documents(settings, user)})
+        self._send_json(
+            {
+                "documents": list_indexed_documents(settings, user, admin=is_admin),
+                "access": access,
+            }
+        )
+
+    def _handle_document_access(self, raw_doc_id: str) -> None:
+        from app.service import set_document_access
+
+        user = self._require_admin()
+        doc_id = unquote(raw_doc_id).strip()
+        group = self._read_json().get("group", "")
+        if not isinstance(group, str):
+            raise RequestError(HTTPStatus.BAD_REQUEST, "group must be a string")
+        try:
+            updated = set_document_access(
+                get_settings(), doc_id, group, _actor_name(user)
+            )
+        except KeyError as exc:
+            raise RequestError(HTTPStatus.NOT_FOUND, "Document not found") from exc
+        except ValueError as exc:
+            raise RequestError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+        self._send_json(
+            {
+                "doc_id": doc_id,
+                "access_group": group.strip(),
+                "updated_chunks": updated,
+            }
+        )
 
     def _handle_audit_log(self, query: str) -> None:
         from app.audit import audit_log_path, read_entries

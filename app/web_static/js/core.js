@@ -4,6 +4,7 @@
 export const state = {
   status: null,
   documents: [],
+  access: { enabled: false, manageable: false, groups: [] },
   identity: { user: null, users: [], isAdmin: false },
   jobs: [],
   polling: null,
@@ -309,6 +310,7 @@ export async function refreshDocuments() {
   try {
     const payload = await requestJson("/api/documents");
     state.documents = payload.documents || [];
+    state.access = payload.access || { enabled: false, manageable: false, groups: [] };
     emit("documents", state.documents);
   } catch (error) {
     emit("documents:error", error.message);

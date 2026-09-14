@@ -141,8 +141,8 @@ def test_list_indexed_documents_aggregates_chunk_counts(
         def get(self, include):
             return {
                 "metadatas": [
-                    {"doc_id": "a", "title": "A", "source": "a.md"},
-                    {"doc_id": "a", "title": "A", "source": "a.md"},
+                    {"doc_id": "a", "title": "A", "source": "a.md", "document_access_group": "hr"},
+                    {"doc_id": "a", "title": "A", "source": "a.md", "document_access_group": "hr"},
                     {"doc_id": "b", "title": "B", "source": "b.md"},
                 ]
             }
@@ -155,8 +155,21 @@ def test_list_indexed_documents_aggregates_chunk_counts(
     documents = list_indexed_documents(Settings(_env_file=None))
 
     assert documents == [
-        {"doc_id": "a", "title": "A", "source": "a.md", "chunk_count": 2},
-        {"doc_id": "b", "title": "B", "source": "b.md", "chunk_count": 1},
+        {
+            "doc_id": "a",
+            "title": "A",
+            "source": "a.md",
+            "access_group": "hr",
+            "chunk_count": 2,
+        },
+        # 没写访问组的分片按 public 计。
+        {
+            "doc_id": "b",
+            "title": "B",
+            "source": "b.md",
+            "access_group": "public",
+            "chunk_count": 1,
+        },
     ]
 
 

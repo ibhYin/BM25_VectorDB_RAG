@@ -392,9 +392,15 @@ function renderDocuments() {
   const table = document.createElement("div");
   table.className = "doc-table";
 
+  const canManageAccess = Boolean(state.access.manageable);
+  const headers = ["标题", "来源", "切片"];
+  if (canManageAccess) headers.push("访问组");
+  headers.push("");
+  table.classList.toggle("with-access", canManageAccess);
+
   const head = document.createElement("div");
   head.className = "doc-row doc-row-head";
-  for (const label of ["标题", "来源", "切片", ""]) {
+  for (const label of headers) {
     const cell = document.createElement("span");
     cell.textContent = label;
     head.append(cell);
@@ -442,10 +448,56 @@ function renderDocuments() {
       actions.append(remove);
     }
 
-    row.append(title, source, chunks, actions);
+    row.append(title, source, chunks);
+    if (canManageAccess) {
+      row.append(createAccessSelect(indexedDocument));
+    }
+    row.append(actions);
     table.append(row);
   }
   el.documentList.append(table);
+}
+
+// 每个文档一行下拉，改完立即生效（只改元数据，不重新向量化）。
+function createAccessSelect(indexedDocument) {
+  const select = document.createElement("select");
+  select.className = "config-select doc-access-select";
+  select.setAttribute("aria-label", `${indexedDocument.title} 的访问组`);
+
+  const groups = state.access.groups || [];
+  const current = indexedDocument.access_group || "public";
+  // 当前组若不在已知组里（例如策略被改过），也要显示出来，否则会误显示成别的组。
+  const options = groups.includes(current) ? groups : [current, ...groups];
+  for (const group of options) {
+    const option = document.createElement("option");
+    option.value = group;
+    option.textContent = group === "public" ? "public（所有人）" : group;
+    select.append(option);
+  }
+  select.value = current;
+
+  select.addEventListener("change", async () => {
+    const next = select.value;
+    select.disabled = true;
+    try {
+      await requestJson(
+        `/api/documents/${encodeURIComponent(indexedDocument.doc_id)}/access`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ group: next }),
+        },
+      );
+      indexedDocument.access_group = next;
+      showToast(`已将「${indexedDocument.title}」改为 ${next}`);
+    } catch (error) {
+      select.value = current;
+      showToast(error.message, "error");
+    } finally {
+      select.disabled = false;
+    }
+  });
+  return select;
 }
 
 async function deleteDocument(indexedDocument) {
