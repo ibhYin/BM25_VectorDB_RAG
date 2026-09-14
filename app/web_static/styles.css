@@ -1737,14 +1737,26 @@ svg {
   overflow: hidden;
 }
 
+/* 列模板按可见列数分三档，集中在这里，`.doc-row` 只负责消费。
+   标题 / 来源 / 切片 / 切片方式 对所有人可见；入库人·时间与访问组只有管理员看得到。 */
 .doc-table {
+  --doc-cols: minmax(0, 2.2fr) minmax(0, 1.8fr) 56px 116px 118px;
   display: flex;
   flex-direction: column;
 }
 
+.doc-table.with-ingest {
+  --doc-cols: minmax(0, 2.2fr) minmax(0, 1.6fr) 56px 116px 132px 118px;
+}
+
+/* 管理员同时有两列（入库 + 访问组），所以这一档必须排在 with-ingest 之后。 */
+.doc-table.with-access {
+  --doc-cols: minmax(0, 2fr) minmax(0, 1.5fr) 52px 116px 132px 132px 118px;
+}
+
 .doc-row {
   display: grid;
-  grid-template-columns: minmax(0, 2.2fr) minmax(0, 2fr) 64px 118px;
+  grid-template-columns: var(--doc-cols);
   align-items: center;
   gap: 12px;
   padding: 9px 4px;
@@ -1923,8 +1935,16 @@ svg {
     max-height: 40vh;
   }
 
-  .doc-row {
-    grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) 56px 108px;
+  .doc-table {
+    --doc-cols: minmax(0, 1.6fr) minmax(0, 1fr) 48px 104px 100px;
+  }
+
+  .doc-table.with-ingest {
+    --doc-cols: minmax(0, 1.6fr) minmax(0, 1fr) 48px 104px 116px 100px;
+  }
+
+  .doc-table.with-access {
+    --doc-cols: minmax(0, 1.5fr) minmax(0, 1fr) 44px 100px 116px 116px 96px;
   }
 }
 
@@ -1933,16 +1953,22 @@ svg {
     display: none;
   }
 
+  /* 每行是独立的 grid，col2 用 auto 的话各行宽度会随内容变化，切片方式就会左右参差；
+     固定成能放下「标题对齐·mineru」和「查看+删除」的宽度，行与行才对得齐。 */
   .doc-row {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) 118px;
     grid-template-areas:
       "title actions"
-      "source chunks";
+      "source source"
+      "chunks strategy"
+      "ingest ingest";
   }
 
   .doc-row .document-open { grid-area: title; }
   .doc-row .document-source { grid-area: source; }
   .doc-row .chunk-count { grid-area: chunks; }
+  .doc-row .chunk-strategy { grid-area: strategy; }
+  .doc-row .document-ingest { grid-area: ingest; }
   .doc-row-actions { grid-area: actions; }
 }
 
@@ -1957,11 +1983,6 @@ svg {
   overflow-y: auto;
 }
 
-/* 管理员多一列「访问组」下拉。 */
-.doc-table.with-access .doc-row {
-  grid-template-columns: minmax(0, 2.2fr) minmax(0, 1.8fr) 56px 150px 118px;
-}
-
 .doc-access-select {
   width: 100%;
   height: 28px;
@@ -1972,19 +1993,28 @@ svg {
   opacity: 0.6;
 }
 
-@media (max-width: 980px) {
-  .doc-table.with-access .doc-row {
-    grid-template-columns: minmax(0, 1.8fr) minmax(0, 1.2fr) 48px 130px 108px;
-  }
+/* 切片方式与入库列：窄列，溢出就省略，完整信息在 title 里。 */
+.chunk-strategy,
+.document-ingest {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.document-ingest {
+  color: var(--ink-faint);
 }
 
 @media (max-width: 720px) {
   .doc-table.with-access .doc-row {
-    grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas:
       "title actions"
-      "source access"
-      "chunks access";
+      "source source"
+      "chunks strategy"
+      "ingest ingest"
+      "access access";
   }
 
   .doc-table.with-access .doc-access-select { grid-area: access; }

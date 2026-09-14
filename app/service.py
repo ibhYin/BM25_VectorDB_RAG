@@ -489,6 +489,34 @@ def get_indexed_document(
     }
 
 
+def _ingest_attribution() -> dict[str, dict[str, str]]:
+    """Map doc_id → who *most recently* ingested that document, and when.
+
+    The audit trail is the only record of this. Chunk metadata carries a
+    ``created_at`` key, but the splitter only ever sets it to an empty string,
+    so it cannot answer the question.
+
+    Documents indexed before the trail existed have no entry. They must render
+    as unknown — never inherit a neighbouring document's actor.
+    """
+
+    attribution: dict[str, dict[str, str]] = {}
+    for entry in audit.read_entries(limit=None):
+        if not str(entry.get("event", "")).startswith("ingest."):
+            continue
+        for doc_id in entry.get("doc_ids") or []:
+            # read_entries yields newest first, so re-ingesting a document
+            # overwrites the earlier attribution rather than keeping it.
+            attribution.setdefault(
+                str(doc_id),
+                {
+                    "actor": str(entry.get("actor") or ""),
+                    "timestamp": str(entry.get("timestamp") or ""),
+                },
+            )
+    return attribution
+
+
 def list_indexed_documents(
     settings: Settings,
     user: UserContext | None = None,
@@ -503,6 +531,9 @@ def list_indexed_documents(
 
     读取必须在读锁内：此前这里没加锁，于是文档列表会和后台入库的写入同时访问
     sqlite，撞出 tenant 校验失败。`get_indexed_document` 一直是加锁的。
+
+    最近入库人与时间只回给管理员：它们来自审计日志，而审计页本身就是仅管理员可见。
+    切片方式对所有人可见——那是文档自身的属性，不涉及谁做了什么。
     """
 
     with knowledge_base_lock.read():
@@ -514,6 +545,7 @@ def list_indexed_documents(
         ).get(include=["metadatas"])
     documents: dict[str, dict[str, object]] = {}
     access_policy = load_access_policy(settings.access_policy_file)
+    attribution = _ingest_attribution() if admin else {}
     for raw_metadata in result.get("metadatas", []):
         metadata = raw_metadata or {}
         if access_policy is not None and not admin:
@@ -522,6 +554,10 @@ def list_indexed_documents(
         doc_id = str(metadata.get("doc_id", ""))
         if not doc_id:
             continue
+        ingested = attribution.get(doc_id) or {}
+        # structured_by is written per chunk at split time; its presence is what
+        # routes a document to heading-aligned chunking in the first place.
+        provider = str(metadata.get("structured_by") or "")
         document = documents.setdefault(
             doc_id,
             {
@@ -532,6 +568,10 @@ def list_indexed_documents(
                     metadata.get("document_access_group") or PUBLIC_GROUP
                 ),
                 "chunk_count": 0,
+                "chunk_strategy": "heading" if provider else "fixed",
+                "chunk_strategy_provider": provider,
+                "last_ingested_by": ingested.get("actor", ""),
+                "last_ingested_at": ingested.get("timestamp", ""),
             },
         )
         document["chunk_count"] = int(document["chunk_count"]) + 1

@@ -75,6 +75,17 @@ def test_read_entries_respects_the_limit(log_path: Path) -> None:
     assert [entry["index"] for entry in entries] == [4, 3]
 
 
+def test_read_entries_without_a_limit_scans_the_whole_trail(log_path: Path) -> None:
+    """入库归属要能查到很久以前的记录，不能被默认的 100 条窗口截断。"""
+
+    for index in range(150):
+        audit.record("ingest.files", actor="a", index=index)
+
+    assert len(audit.read_entries(limit=None)) == 150
+    assert len(audit.read_entries(limit=100)) == 100
+    assert len(audit.read_entries(limit=None)) > len(audit.read_entries())
+
+
 def test_read_entries_skips_a_torn_line(log_path: Path) -> None:
     audit.record("good", actor="a")
     with log_path.open("a", encoding="utf-8") as handle:

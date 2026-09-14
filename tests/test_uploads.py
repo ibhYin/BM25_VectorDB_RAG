@@ -161,6 +161,12 @@ def test_list_indexed_documents_aggregates_chunk_counts(
             "source": "a.md",
             "access_group": "hr",
             "chunk_count": 2,
+            # 没有 structured_by 的分片走的是固定长度切分。
+            "chunk_strategy": "fixed",
+            "chunk_strategy_provider": "",
+            # 非管理员：入库人/时间不参与（它们来自仅管理员可见的审计日志）。
+            "last_ingested_by": "",
+            "last_ingested_at": "",
         },
         # 没写访问组的分片按 public 计。
         {
@@ -169,8 +175,117 @@ def test_list_indexed_documents_aggregates_chunk_counts(
             "source": "b.md",
             "access_group": "public",
             "chunk_count": 1,
+            "chunk_strategy": "fixed",
+            "chunk_strategy_provider": "",
+            "last_ingested_by": "",
+            "last_ingested_at": "",
         },
     ]
+
+
+def test_list_indexed_documents_reports_heading_chunking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """structured_by 是切片时分流用的字段，正是「切片方式」的来源。"""
+
+    class FakeVectorStore:
+        def get(self, include):
+            return {
+                "metadatas": [
+                    {"doc_id": "s", "title": "S", "source": "s.pdf", "structured_by": "mineru"},
+                    {"doc_id": "s", "title": "S", "source": "s.pdf", "structured_by": "mineru"},
+                    {"doc_id": "m", "title": "M", "source": "m.docx", "structured_by": "markitdown"},
+                ]
+            }
+
+    monkeypatch.setattr(
+        "app.service.get_vector_store",
+        lambda *args, **kwargs: FakeVectorStore(),
+    )
+
+    by_id = {d["doc_id"]: d for d in list_indexed_documents(Settings(_env_file=None))}
+
+    assert by_id["s"]["chunk_strategy"] == "heading"
+    assert by_id["s"]["chunk_strategy_provider"] == "mineru"
+    assert by_id["m"]["chunk_strategy_provider"] == "markitdown"
+
+
+def test_list_indexed_documents_attributes_ingest_to_the_audit_trail(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """入库人与时间只有审计日志记得；重复入库取最近一次。"""
+    log = tmp_path / "vector_audit.jsonl"
+    monkeypatch.setenv("VECTOR_AUDIT_LOG", str(log))
+    log.write_text(
+        "\n".join(
+            [
+                # 最早一条：a 第一次入库
+                '{"timestamp": "2026-09-12T15:31:43.000000+08:00", "event": "ingest.files",'
+                ' "actor": "alice", "doc_ids": ["a"]}',
+                # 删文档：不该被当成入库
+                '{"timestamp": "2026-09-13T09:00:00.000000+08:00", "event": "delete.documents",'
+                ' "actor": "bob", "doc_ids": ["a"]}',
+                # a 重新入库：应取这条
+                '{"timestamp": "2026-09-14T15:39:23.933703+08:00", "event": "ingest.files",'
+                ' "actor": "carol", "doc_ids": ["a"]}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class FakeVectorStore:
+        def get(self, include):
+            return {
+                "metadatas": [
+                    {"doc_id": "a", "title": "A", "source": "a.md"},
+                    # b 是审计日志建立之前入的库，没有任何记录
+                    {"doc_id": "b", "title": "B", "source": "b.md"},
+                ]
+            }
+
+    monkeypatch.setattr(
+        "app.service.get_vector_store",
+        lambda *args, **kwargs: FakeVectorStore(),
+    )
+
+    by_id = {
+        d["doc_id"]: d
+        for d in list_indexed_documents(Settings(_env_file=None), admin=True)
+    }
+
+    assert by_id["a"]["last_ingested_by"] == "carol"
+    assert by_id["a"]["last_ingested_at"] == "2026-09-14T15:39:23.933703+08:00"
+    # 没有记录的文档留空，不能借用别人的入库人。
+    assert by_id["b"]["last_ingested_by"] == ""
+    assert by_id["b"]["last_ingested_at"] == ""
+
+
+def test_list_indexed_documents_hides_ingest_attribution_from_non_admins(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    log = tmp_path / "vector_audit.jsonl"
+    monkeypatch.setenv("VECTOR_AUDIT_LOG", str(log))
+    log.write_text(
+        '{"timestamp": "2026-09-14T15:39:23.000000+08:00", "event": "ingest.files",'
+        ' "actor": "alice", "doc_ids": ["a"]}\n',
+        encoding="utf-8",
+    )
+
+    class FakeVectorStore:
+        def get(self, include):
+            return {"metadatas": [{"doc_id": "a", "title": "A", "source": "a.md"}]}
+
+    monkeypatch.setattr(
+        "app.service.get_vector_store",
+        lambda *args, **kwargs: FakeVectorStore(),
+    )
+
+    documents = list_indexed_documents(Settings(_env_file=None))
+
+    assert documents[0]["last_ingested_by"] == ""
+    # 切片方式与身份无关，仍然返回。
+    assert documents[0]["chunk_strategy"] == "fixed"
 
 
 def test_ingest_files_records_an_audit_entry(

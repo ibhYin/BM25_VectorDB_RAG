@@ -378,6 +378,48 @@ async function decideStaging(itemId, action, group, button) {
 
 // --- indexed documents ----------------------------------------------------
 
+const CHUNK_STRATEGY_LABELS = { heading: "标题对齐", fixed: "固定长度" };
+
+// 切片方式来自入库时写进元数据的 structured_by：有它才会走标题对齐切分
+// （先按 Markdown 标题分节，节内再按字数切），没有就是固定长度切分。
+function chunkStrategyLabel(indexedDocument) {
+  const kind = indexedDocument.chunk_strategy || "fixed";
+  const provider = indexedDocument.chunk_strategy_provider || "";
+  const label = CHUNK_STRATEGY_LABELS[kind] || kind;
+  return provider ? `${label}·${provider}` : label;
+}
+
+function chunkStrategyDetail(indexedDocument) {
+  const provider = indexedDocument.chunk_strategy_provider || "";
+  return provider
+    ? `先按 Markdown 标题层级分节，节内再按字数切（${provider} 结构化提取）`
+    : "固定长度切分（未做结构化提取）";
+}
+
+// 「09-14 15:39」：年月日放在 title 里，列窄，放不下完整时间。
+function formatIngestClock(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (number) => String(number).padStart(2, "0");
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function ingestLabel(indexedDocument) {
+  const actor = indexedDocument.last_ingested_by || "";
+  const clock = formatIngestClock(indexedDocument.last_ingested_at);
+  if (!actor && !clock) return "—";
+  return [actor, clock].filter(Boolean).join(" · ");
+}
+
+// 只代表**最近一次**入库（同名文档重新入库会覆盖），不是这份文档最初被谁放进来的。
+function ingestDetail(indexedDocument) {
+  if (!indexedDocument.last_ingested_at) {
+    return "没有入库记录：该文档早于审计日志建立（2026-09-12）";
+  }
+  return `最近一次入库：${indexedDocument.last_ingested_by}，${formatTime(indexedDocument.last_ingested_at)}`;
+}
+
 function renderDocuments() {
   el.documentList.replaceChildren();
   clearListLoading(el.documentList);
@@ -393,9 +435,14 @@ function renderDocuments() {
   table.className = "doc-table";
 
   const canManageAccess = Boolean(state.access.manageable);
-  const headers = ["标题", "来源", "切片"];
+  // 入库人与时间来自审计日志，服务端只回给管理员（审计页本身也是仅管理员可见）。
+  const isAdmin = Boolean(state.identity.isAdmin);
+  const headers = ["标题", "来源", "切片", "切片方式"];
+  if (isAdmin) headers.push("最近入库");
   if (canManageAccess) headers.push("访问组");
   headers.push("");
+  // 列模板按这两个 class 切换（见 styles.css 的 --doc-cols）。
+  table.classList.toggle("with-ingest", isAdmin);
   table.classList.toggle("with-access", canManageAccess);
 
   const head = document.createElement("div");
@@ -426,6 +473,16 @@ function renderDocuments() {
     chunks.className = "chunk-count";
     chunks.textContent = String(indexedDocument.chunk_count);
 
+    const strategy = document.createElement("span");
+    strategy.className = "chunk-strategy";
+    strategy.textContent = chunkStrategyLabel(indexedDocument);
+    strategy.title = chunkStrategyDetail(indexedDocument);
+
+    const ingest = document.createElement("span");
+    ingest.className = "document-ingest";
+    ingest.textContent = ingestLabel(indexedDocument);
+    ingest.title = ingestDetail(indexedDocument);
+
     const actions = document.createElement("span");
     actions.className = "doc-row-actions";
 
@@ -436,7 +493,7 @@ function renderDocuments() {
     view.addEventListener("click", () => openDocument(indexedDocument));
     actions.append(view);
 
-    if (state.identity.isAdmin) {
+    if (isAdmin) {
       const remove = document.createElement("button");
       remove.type = "button";
       remove.className = "row-action";
@@ -448,7 +505,10 @@ function renderDocuments() {
       actions.append(remove);
     }
 
-    row.append(title, source, chunks);
+    row.append(title, source, chunks, strategy);
+    if (isAdmin) {
+      row.append(ingest);
+    }
     if (canManageAccess) {
       row.append(createAccessSelect(indexedDocument));
     }

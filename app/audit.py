@@ -51,8 +51,13 @@ def record(event: str, actor: str = "", **fields: object) -> None:
         logger.warning("Could not write audit entry %s: %s", event, exc)
 
 
-def read_entries(limit: int = 100) -> list[dict[str, object]]:
-    """Return the most recent entries, newest first."""
+def read_entries(limit: int | None = 100) -> list[dict[str, object]]:
+    """Return the most recent entries, newest first.
+
+    ``limit=None`` scans the whole trail. Callers that attribute a document to
+    its ingest need that: a document indexed long ago sits far past the tail,
+    and stopping early would silently render it as "no record".
+    """
 
     path = audit_log_path()
     if not path.is_file():
@@ -73,6 +78,6 @@ def read_entries(limit: int = 100) -> list[dict[str, object]]:
             continue
         if isinstance(payload, dict):
             entries.append(payload)
-        if len(entries) >= limit:
+        if limit is not None and len(entries) >= limit:
             break
     return entries
