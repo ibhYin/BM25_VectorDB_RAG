@@ -422,3 +422,108 @@ def test_no_history_skips_the_rewrite_step(monkeypatch) -> None:
     assert ("condense", "skipped") in stages
     assert embedded == ["开放问答为什么要先检索？"]
     assert answered["history"] is None
+
+
+STRUCTURED_MARKDOWN = """# 论文标题
+
+## 1 引言
+
+引言正文，讲了一些背景。
+
+## 2 方法
+
+### 2.1 负采样
+
+负采样是这样做的：用噪声对比估计替代全量 softmax。
+
+### 2.2 下采样
+
+下采样是那样做的：按频率丢弃高频词。
+"""
+
+
+def test_structured_document_splits_on_the_heading_hierarchy() -> None:
+    document = Document(
+        page_content=STRUCTURED_MARKDOWN,
+        metadata={"source": "paper.pdf", "structured_by": "mineru"},
+    )
+
+    chunks = split_documents([document], chunk_size=200, chunk_overlap=0)
+
+    by_path = {chunk.metadata["section_path"]: chunk.page_content for chunk in chunks}
+    assert "论文标题 > 1 引言" in by_path
+    assert "论文标题 > 2 方法 > 2.1 负采样" in by_path
+    assert "论文标题 > 2 方法 > 2.2 下采样" in by_path
+
+
+def test_a_structured_chunk_never_straddles_two_sections() -> None:
+    document = Document(
+        page_content=STRUCTURED_MARKDOWN,
+        metadata={"source": "paper.pdf", "structured_by": "mineru"},
+    )
+
+    chunks = split_documents([document], chunk_size=200, chunk_overlap=0)
+    negative = next(
+        chunk
+        for chunk in chunks
+        if chunk.metadata["section_path"].endswith("2.1 负采样")
+    )
+
+    assert "负采样是这样做的" in negative.page_content
+    # 下一节的正文不能混进来 —— 这正是按固定长度切分做不到的。
+    assert "下采样是那样做的" not in negative.page_content
+
+
+def test_structured_offsets_are_absolute_positions_in_the_source() -> None:
+    document = Document(
+        page_content=STRUCTURED_MARKDOWN,
+        metadata={"source": "paper.pdf", "structured_by": "mineru"},
+    )
+
+    chunks = split_documents([document], chunk_size=120, chunk_overlap=20)
+
+    assert len(chunks) > 1
+    for chunk in chunks:
+        start = chunk.metadata["start_char"]
+        end = chunk.metadata["end_char"]
+        # 「连续阅读」视图靠这个偏移裁重叠，必须能精确切回原切片。
+        assert STRUCTURED_MARKDOWN[start:end] == chunk.page_content
+
+
+def test_unstructured_documents_still_split_by_size() -> None:
+    document = Document(
+        page_content="段落一。段落二。段落三。" * 40,
+        metadata={"source": "notes.txt"},
+    )
+
+    chunks = split_documents([document], chunk_size=100, chunk_overlap=0)
+
+    assert len(chunks) > 1
+    assert chunks[0].metadata["start_char"] == 0
+    assert chunks[0].metadata["end_char"] == len(chunks[0].page_content)
+
+
+def test_a_section_path_drops_the_heading_that_repeats_the_document_title() -> None:
+    # 标题行与文档标题一致（MinerU 输出的 h1 就是这么来的）。
+    document = Document(
+        page_content="# paper\n\n## 方法\n\n正文。\n",
+        metadata={"source": "paper.pdf", "structured_by": "mineru"},
+    )
+
+    chunks = split_documents([document], chunk_size=200, chunk_overlap=0)
+
+    paths = [chunk.metadata["section_path"] for chunk in chunks]
+    # 重复的那一级被去掉，路径从真正有信息量的层级开始 —— 证据卡片是右截断的。
+    assert "方法" in paths
+    assert all(not path.startswith("paper") for path in paths)
+
+
+def test_a_section_path_keeps_a_root_that_is_not_the_document_title() -> None:
+    document = Document(
+        page_content="# 另一本书\n\n## 第 1 章\n\n正文。\n",
+        metadata={"source": "book.pdf", "structured_by": "mineru"},
+    )
+
+    chunks = split_documents([document], chunk_size=200, chunk_overlap=0)
+
+    assert "另一本书 > 第 1 章" in [chunk.metadata["section_path"] for chunk in chunks]

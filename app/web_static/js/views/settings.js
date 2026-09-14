@@ -1,6 +1,6 @@
 // 设置页：模型接入配置（LLM / Embedding / MinerU）与索引状态。
 
-import { on, refreshStatus, requestJson, showToast, state } from "../core.js";
+import { formatBytes, on, refreshStatus, requestJson, showToast, state } from "../core.js";
 
 const el = {
   form: document.querySelector("#config-form"),
@@ -37,6 +37,7 @@ const el = {
   pathData: document.querySelector("#path-data"),
   pathChroma: document.querySelector("#path-chroma"),
   pathConfig: document.querySelector("#path-config"),
+  pathCache: document.querySelector("#path-cache"),
 };
 
 let mounted = false;
@@ -212,6 +213,15 @@ function renderIndexStatus() {
   el.pathData.textContent = status.data_dir || "—";
   el.pathChroma.textContent = status.chroma_persist_dir || "—";
   el.pathConfig.textContent = status.runtime_config_file || "—";
+
+  // 缓存可随时删除，删了下次入库重新解析；这里顺带显示条目数方便判断。
+  const cache = status.markdown_cache || {};
+  const entries = Number(cache.entries) || 0;
+  el.pathCache.textContent = cache.dir
+    ? entries
+      ? `${cache.dir}（${entries} 项 · ${formatBytes(cache.bytes)}）`
+      : `${cache.dir}（空）`
+    : "—";
 }
 
 async function loadConfig() {

@@ -13,6 +13,7 @@ from app.access import UserContext, known_groups, load_access_policy
 from app.config import get_settings
 from app.uploads import parse_multipart
 from rag.constants import SUPPORTED_SUFFIXES
+from rag import markdown_cache
 from rag.index_manifest import read_index_embedding_model
 
 
@@ -625,6 +626,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             "chroma_exists": (settings.chroma_persist_dir / "chroma.sqlite3").is_file(),
             "mineru_configured": bool(settings.mineru_api_token),
             "structurize_provider": settings.structurize_provider,
+            "markdown_cache": markdown_cache.info(),
             **self._index_model_info(settings),
         }
 

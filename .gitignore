@@ -3,6 +3,7 @@
 __pycache__/
 .pytest_cache/
 .chroma*/
+.markdown-cache/
 *.pyc
 *.pyo
 *.pyd

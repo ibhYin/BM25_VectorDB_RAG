@@ -14,6 +14,7 @@ from pathlib import Path
 
 from markitdown import MarkItDown
 
+from rag import markdown_cache
 from rag.mineru_client import MineruError, convert_file as convert_with_mineru
 
 
@@ -32,17 +33,32 @@ def convert_to_markdown(
 ) -> str:
     """Convert one file to Markdown using the requested backend.
 
+    Conversions are cached by file contents + converter identity, so re-indexing
+    a corpus does not re-call a metered parser for files that have not changed.
+
     Failures propagate rather than falling back to the other backend: silently
     switching engines would feed the index text the caller did not ask for.
     """
 
+    cached = markdown_cache.read(file_path, provider, mineru_model_version)
+    if cached is not None:
+        return cached
+
     if provider == MINERU:
         if not mineru_token:
             raise MineruError("已选择 MinerU 解析，但尚未配置 MinerU API Token")
-        return convert_with_mineru(file_path, mineru_token, mineru_model_version)
-    if provider == MARKITDOWN:
-        return convert_with_markitdown(file_path)
-    raise ValueError(f"未知的结构化引擎：{provider}")
+        markdown = convert_with_mineru(file_path, mineru_token, mineru_model_version)
+    elif provider == MARKITDOWN:
+        markdown = convert_with_markitdown(file_path)
+    else:
+        raise ValueError(f"未知的结构化引擎：{provider}")
+
+    # 空结果不缓存——那多半是失败，缓存住会挡住重试。
+    if markdown:
+        markdown_cache.write(
+            file_path, provider, mineru_model_version, markdown, str(file_path)
+        )
+    return markdown
 
 
 def convert_with_markitdown(file_path: Path) -> str:

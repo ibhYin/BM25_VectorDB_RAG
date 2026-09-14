@@ -9,6 +9,8 @@ os.environ.setdefault("RUNTIME_CONFIG_FILE", os.devnull)
 os.environ.setdefault("VECTOR_AUDIT_LOG", os.devnull)
 # And the conversation store, so a test run never touches the real file.
 os.environ.setdefault("CONVERSATIONS_FILE", os.devnull)
+# And the markdown cache, so tests never read or write the real one.
+os.environ.setdefault("MARKDOWN_CACHE_DIR", os.devnull)
 
 
 @pytest.fixture(autouse=True)
@@ -18,3 +20,4 @@ def disable_default_access_policy(monkeypatch, tmp_path):
     monkeypatch.setenv("RUNTIME_CONFIG_FILE", str(tmp_path / "runtime_config.json"))
     monkeypatch.setenv("VECTOR_AUDIT_LOG", str(tmp_path / "vector_audit.jsonl"))
     monkeypatch.setenv("CONVERSATIONS_FILE", str(tmp_path / "conversations.json"))
+    monkeypatch.setenv("MARKDOWN_CACHE_DIR", str(tmp_path / "markdown-cache"))
