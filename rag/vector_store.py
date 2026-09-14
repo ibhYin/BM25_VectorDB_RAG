@@ -1,5 +1,6 @@
 import hashlib
 from pathlib import Path
+from threading import Lock
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
@@ -7,6 +8,15 @@ from langchain_openai import OpenAIEmbeddings
 
 
 COLLECTION_NAME = "knowledge_base"
+
+# chromadb 用进程级引用计数共享一个 System（按 persist_directory 索引）。每次调用都
+# 新建 Chroma 意味着每次创建都 +2、每次回收都可能 -2 归零，于是 System 被反复
+# stop()；而「创建客户端」这一步要打开 sqlite 校验 tenant，和并发写入撞上就会
+# ValueError: Could not connect to tenant，紧接着 chromadb 的清理路径再用一次
+# 二次 stop() 把它掩盖成 AttributeError: bindings。缓存住客户端让计数稳定不变，
+# 创建只发生一次。
+_store_cache: dict[tuple, Chroma] = {}
+_store_cache_lock = Lock()
 
 
 def build_vector_id(document: Document) -> str:
@@ -46,15 +56,34 @@ def get_vector_store(
     embedding_base_url: str = "",
     collection_name: str = COLLECTION_NAME,
 ) -> Chroma:
-    return Chroma(
-        collection_name=collection_name,
-        embedding_function=get_embeddings(
-            embedding_model,
-            embedding_api_key,
-            embedding_base_url,
-        ),
-        persist_directory=str(persist_dir),
+    """One long-lived Chroma client per configuration.
+
+    每次请求都新建客户端在 chromadb 里代价很高也更脆：见 `_store_cache` 的注释。
+    同配置复用同一个客户端，并发读写由 chromadb 自己处理，写入的互斥由调用方的
+    knowledge_base_lock 负责。
+    """
+
+    key = (
+        str(persist_dir),
+        embedding_model,
+        embedding_api_key,
+        embedding_base_url,
+        collection_name,
     )
+    with _store_cache_lock:
+        store = _store_cache.get(key)
+        if store is None:
+            store = Chroma(
+                collection_name=collection_name,
+                embedding_function=get_embeddings(
+                    embedding_model,
+                    embedding_api_key,
+                    embedding_base_url,
+                ),
+                persist_directory=str(persist_dir),
+            )
+            _store_cache[key] = store
+        return store
 
 
 def ingest_documents(

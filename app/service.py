@@ -500,14 +500,18 @@ def list_indexed_documents(
     admin's access-management view, and hiding documents you are meant to
     administer would make it unusable. Content access is unchanged — retrieval
     and the document viewer still filter by group.
+
+    读取必须在读锁内：此前这里没加锁，于是文档列表会和后台入库的写入同时访问
+    sqlite，撞出 tenant 校验失败。`get_indexed_document` 一直是加锁的。
     """
 
-    result = get_vector_store(
-        settings.chroma_persist_dir,
-        settings.embedding_model,
-        settings.embedding_api_key,
-        settings.embedding_base_url,
-    ).get(include=["metadatas"])
+    with knowledge_base_lock.read():
+        result = get_vector_store(
+            settings.chroma_persist_dir,
+            settings.embedding_model,
+            settings.embedding_api_key,
+            settings.embedding_base_url,
+        ).get(include=["metadatas"])
     documents: dict[str, dict[str, object]] = {}
     access_policy = load_access_policy(settings.access_policy_file)
     for raw_metadata in result.get("metadatas", []):
