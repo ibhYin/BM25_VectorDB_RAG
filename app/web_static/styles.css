@@ -691,8 +691,7 @@ svg {
   overflow-y: auto;
 }
 
-.job-item,
-.document-item {
+.job-item {
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -711,7 +710,6 @@ svg {
 }
 
 .job-item strong,
-.document-item strong,
 .document-open {
   font-size: 12.5px;
   font-weight: 600;
@@ -720,12 +718,6 @@ svg {
   white-space: nowrap;
 }
 
-.document-item {
-  flex-direction: row;
-  align-items: center;
-}
-
-.document-item strong,
 .document-open {
   flex: 1;
   min-width: 0;
@@ -741,17 +733,9 @@ svg {
   text-decoration: underline;
 }
 
-.document-item .document-source {
-  max-width: 45%;
-}
-
-.document-item .chunk-count {
-  flex: none;
-  font-size: 11px;
-  font-family: var(--mono);
-  color: var(--ink-faint);
-}
-
+/* 常驻可见：以前是悬停才显形，靠 `.document-item:hover` 触发——而列表改成
+   `.doc-row` 表格后那个 class 就不存在了，按钮一直停在 opacity: 0 上，
+   功能正常但谁也看不见。删除有二次确认兜底，不靠隐藏防误触。 */
 .row-action {
   flex: none;
   display: grid;
@@ -760,8 +744,7 @@ svg {
   height: 24px;
   border-radius: 6px;
   color: var(--ink-faint);
-  opacity: 0;
-  transition: opacity 120ms ease, background-color 120ms ease, color 120ms ease;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
 .row-action:hover {
@@ -769,20 +752,9 @@ svg {
   color: var(--danger);
 }
 
-.document-item:hover .row-action,
-.row-action:focus-visible {
-  opacity: 1;
-}
-
 .row-action svg {
   width: 14px;
   height: 14px;
-}
-
-@media (hover: none) {
-  .row-action {
-    opacity: 1;
-  }
 }
 
 .job-badge {
@@ -804,8 +776,7 @@ svg {
   color: var(--danger);
 }
 
-.job-detail,
-.document-item .document-source {
+.job-detail {
   font-size: 11.5px;
   color: var(--ink-soft);
   overflow: hidden;
@@ -1358,31 +1329,12 @@ svg {
   .resizer {
     display: none;
   }
-
-  .workspace {
-    grid-template-columns: 280px minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) auto;
-    grid-template-areas:
-      "library chat"
-      "library context";
-  }
-
-  .rail-context {
-    border-left: none;
-    border-top: 1px solid var(--line);
-    max-height: 42vh;
-  }
 }
 
 @media (max-width: 840px) {
   body {
     height: auto;
     min-height: 100%;
-  }
-
-  .workspace {
-    display: flex;
-    flex-direction: column;
   }
 
   .rail,
@@ -1469,17 +1421,6 @@ svg {
   padding: 20px;
 }
 
-.config-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.config-head h2 {
-  font-size: 15px;
-}
-
-.config-note,
 .config-hint {
   font-size: 12px;
   color: var(--ink-soft);
@@ -1803,7 +1744,7 @@ svg {
 
 .doc-row {
   display: grid;
-  grid-template-columns: minmax(0, 2.2fr) minmax(0, 2fr) 64px 92px;
+  grid-template-columns: minmax(0, 2.2fr) minmax(0, 2fr) 64px 118px;
   align-items: center;
   gap: 12px;
   padding: 9px 4px;
@@ -1983,7 +1924,7 @@ svg {
   }
 
   .doc-row {
-    grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) 56px 84px;
+    grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) 56px 108px;
   }
 }
 
@@ -2018,7 +1959,7 @@ svg {
 
 /* 管理员多一列「访问组」下拉。 */
 .doc-table.with-access .doc-row {
-  grid-template-columns: minmax(0, 2.2fr) minmax(0, 1.8fr) 56px 150px 92px;
+  grid-template-columns: minmax(0, 2.2fr) minmax(0, 1.8fr) 56px 150px 118px;
 }
 
 .doc-access-select {
@@ -2033,7 +1974,7 @@ svg {
 
 @media (max-width: 980px) {
   .doc-table.with-access .doc-row {
-    grid-template-columns: minmax(0, 1.8fr) minmax(0, 1.2fr) 48px 130px 84px;
+    grid-template-columns: minmax(0, 1.8fr) minmax(0, 1.2fr) 48px 130px 108px;
   }
 }
 
