@@ -791,31 +791,35 @@ def answer_question(
                 pool=effective_pool if method == "hybrid" else None,
                 vector_hits=hits,
             )
-            vector_context = format_vector_hits(hits)
+        # 检索必须留在锁内（要读向量库），但**生成答案不能**：那是远程 LLM
+        # 调用，一次几十秒。读锁是「有写者在等就阻塞新读者」的写者优先实现，
+        # 所以占着读锁等 LLM 会让一次入库把全站问答一起堵住——和上面改写那步
+        # 同样的道理，这里此前漏了。hits 已经在锁内取出来，释放锁后再用是安全的。
+        vector_context = format_vector_hits(hits)
 
-            from chains.answer_chain import generate_answer
+        from chains.answer_chain import generate_answer
 
-            report("answer", "running", model=settings.llm_model)
-            started = perf_counter()
-            answer = generate_answer(
-                question=question,
-                vector_context=vector_context,
-                model_name=settings.llm_model,
-                openai_api_key=settings.openai_api_key,
-                openai_base_url=settings.openai_base_url,
-                history=history,
-            )
-            report(
-                "answer",
-                "completed",
-                model=settings.llm_model,
-                duration_ms=round((perf_counter() - started) * 1000),
-            )
+        report("answer", "running", model=settings.llm_model)
+        started = perf_counter()
+        answer = generate_answer(
+            question=question,
+            vector_context=vector_context,
+            model_name=settings.llm_model,
+            openai_api_key=settings.openai_api_key,
+            openai_base_url=settings.openai_base_url,
+            history=history,
+        )
+        report(
+            "answer",
+            "completed",
+            model=settings.llm_model,
+            duration_ms=round((perf_counter() - started) * 1000),
+        )
 
-            return {
-                "question": question,
-                "retrieval_method": method,
-                "vector_context": vector_context,
-                "vector_hits": hits,
-                "answer": answer,
-            }
+        return {
+            "question": question,
+            "retrieval_method": method,
+            "vector_context": vector_context,
+            "vector_hits": hits,
+            "answer": answer,
+        }
