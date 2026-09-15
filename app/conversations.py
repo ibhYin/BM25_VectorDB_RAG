@@ -179,6 +179,28 @@ class ConversationStore:
                 for turn in turns
             ]
 
+    def first_turn_questions(self) -> list[dict[str, str]]:
+        """每个会话的首轮问题，给评估集导入用。
+
+        **只取首轮**：追问依赖对话上下文，而改写后的独立问题只存在内存里的 job
+        detail 中、不落盘，把追问原样拿来评估等于测一个断章问题。
+        """
+
+        with self._lock:
+            items = [dict(item) for item in self._items.values()]
+
+        questions: list[dict[str, str]] = []
+        for item in items:
+            turns = item.get("turns") or []
+            if not turns:
+                continue
+            question = str(turns[0].get("question") or "").strip()
+            if question:
+                questions.append(
+                    {"owner": str(item.get("owner") or ""), "question": question}
+                )
+        return questions
+
     # --- internals --------------------------------------------------------
 
     @staticmethod

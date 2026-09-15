@@ -11,6 +11,8 @@ os.environ.setdefault("VECTOR_AUDIT_LOG", os.devnull)
 os.environ.setdefault("CONVERSATIONS_FILE", os.devnull)
 # And the markdown cache, so tests never read or write the real one.
 os.environ.setdefault("MARKDOWN_CACHE_DIR", os.devnull)
+# And the retrieval evaluation set — a test must never append to real labels.
+os.environ.setdefault("RETRIEVAL_EVAL_FILE", os.devnull)
 
 
 @pytest.fixture(autouse=True)
@@ -21,3 +23,4 @@ def disable_default_access_policy(monkeypatch, tmp_path):
     monkeypatch.setenv("VECTOR_AUDIT_LOG", str(tmp_path / "vector_audit.jsonl"))
     monkeypatch.setenv("CONVERSATIONS_FILE", str(tmp_path / "conversations.json"))
     monkeypatch.setenv("MARKDOWN_CACHE_DIR", str(tmp_path / "markdown-cache"))
+    monkeypatch.setenv("RETRIEVAL_EVAL_FILE", str(tmp_path / "retrieval_eval.jsonl"))

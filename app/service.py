@@ -826,6 +826,59 @@ def retrieve_question(
         )
 
 
+def resolve_chunks(
+    settings: Settings, chunk_ids: list[str]
+) -> dict[str, dict[str, object]]:
+    """按 `chunk_id` 取回当前的切片（正文 + 定位元数据）。查不到的 id 不在结果里。
+
+    标注时用它打指纹，重新入库之后用它重新锚定标签——两处都要回答「这个 id 现在
+    到底是什么」。返回的字段与 `retrieve_question` 的 hit 同形，好让
+    `eval_store.fingerprints_for` 直接吃下去。
+
+    调用方据「查不到」判定标签失效，所以这里**不替调用方猜**：没有就是没有。
+
+    不做权限过滤：这是标注/维护动作（网页上仅管理员可达，CLI 本机运行），不是对
+    外提供内容的路径。
+    """
+
+    wanted = [str(chunk_id) for chunk_id in chunk_ids if str(chunk_id).strip()]
+    if not wanted:
+        return {}
+
+    with knowledge_base_lock.read():
+        result = get_vector_store(
+            settings.chroma_persist_dir,
+            settings.embedding_model,
+            settings.embedding_api_key,
+            settings.embedding_base_url,
+        ).get(
+            where={
+                "$and": [
+                    {"chunk_id": {"$in": wanted}},
+                    {"knowledge_base_id": settings.knowledge_base_id},
+                ]
+            },
+            include=["documents", "metadatas"],
+        )
+
+    resolved: dict[str, dict[str, object]] = {}
+    for text, raw_metadata in zip(
+        result.get("documents") or [], result.get("metadatas") or []
+    ):
+        metadata = raw_metadata or {}
+        chunk_id = str(metadata.get("chunk_id") or "")
+        if not chunk_id:
+            continue
+        resolved[chunk_id] = {
+            "chunk_id": chunk_id,
+            "text": str(text or ""),
+            "doc_id": str(metadata.get("doc_id") or ""),
+            "section_path": str(metadata.get("section_path") or ""),
+            "page": metadata.get("page"),
+        }
+    return resolved
+
+
 def answer_question(
     question: str,
     settings: Settings,

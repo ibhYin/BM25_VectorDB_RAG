@@ -22,3 +22,7 @@ config/runtime_config.json
 # Local documents and reproducible generated data.
 data/raw/*
 !data/raw/README.md
+
+# 检索评估：问题集与人工标注（只在生成它的那份索引下有含义），以及跑批快照
+data/retrieval_eval.jsonl
+reports/
