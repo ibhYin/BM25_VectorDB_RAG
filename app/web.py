@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import re
+import signal
+import sys
+import threading
 from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,20 +43,63 @@ class RagWebServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
+    def handle_error(self, request: object, client_address: object) -> None:
+        """连接级异常走 logger，别把 traceback 喷进 stderr。
+
+        线程数无上限，每个连接又都有读超时——公网上一堆扫描器只把连接开一半就
+        晾着，超时回收是常态。这些不是「程序出错」，默认的 traceback 只会把
+        launchd 的日志刷满。
+        """
+
+        logger.info("连接异常已回收 (%s): %s", client_address, sys.exc_info()[1])
+
 
 def run_web_server(host: str = "127.0.0.1", port: int = 8000) -> None:
     from app.uploads import get_upload_store
 
+    # 常驻服务的可观测性基本只有这个日志：launchd 把 stderr 收进
+    # StandardErrorPath。不配 basicConfig 的话 root logger 是 WARNING 级且没有
+    # handler，logger.info 会被无声丢掉——包括下面的停机信息、连接回收和
+    # 客户端断开记录。basicConfig 已有 handler 时是空操作，所以 CLI 重复调用无害。
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
+
     get_upload_store().recover()
     server = RagWebServer((host, port), WebRequestHandler)
+
+    # 收到 SIGTERM/SIGINT 走 shutdown()，而不是让默认行为当场结束进程：先停止
+    # 接受新连接、把手上的请求放完。shutdown() 与 serve_forever() 不能在同一个
+    # 线程里互相等，所以丢给一个短命线程。
+    #
+    # 注意别把这里当成「保护索引写入」——索引跑在 ThreadPoolExecutor（uploads.py）
+    # 里，它的 worker 是非 daemon，解释器退出时 concurrent.futures 的 atexit 会
+    # join 它们，所以排队中的入库本来就会跑完。真正的坑是**退出可能很久**：那些
+    # 排队任务要先跑完，超过 launchd 默认 20s 的 ExitTimeOut 就会被 SIGKILL，
+    # 那才是真的硬杀。所以部署时 plist 里必须调大 ExitTimeOut（见 deploy/）。
+    def _stop(signum: int, _frame: object) -> None:
+        logger.info("收到信号 %s，正在停止…", signum)
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    for _signal in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(_signal, _stop)
+
     try:
         server.serve_forever()
     finally:
         server.server_close()
+        logger.info("服务已停止")
 
 
 class WebRequestHandler(BaseHTTPRequestHandler):
     server_version = "RAGWeb/1.0"
+
+    # 连接空闲超过这个秒数就断开。线程数无上限，不设超时的话，只把连接开一半
+    # 晾着就能一直占着线程。按「每次读」计时，所以 100MB 上传只要持续有数据就
+    # 不会被打断，只能挡住真正的停滞连接。
+    timeout = 60
 
     def do_GET(self) -> None:
         self._run_request(self._dispatch_get)
@@ -69,7 +116,12 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/":
             self._send_static_file(STATIC_DIR / "index.html", "text/html; charset=utf-8")
         elif parsed.path == "/api/status":
-            self._send_json(self._status_payload())
+            # 顶栏状态条对所有用户都要显示，所以是「认证即可」而非仅管理员。
+            # 走 _current_user 而不是 _require_admin：开放模式下它返回 None 且
+            # 不报错，本地单机不受影响。
+            self._send_json(self._status_payload(self._current_user(get_settings())))
+        elif parsed.path == "/api/me":
+            self._handle_me()
         elif parsed.path == "/api/config":
             self._handle_get_config()
         elif parsed.path == "/api/audit":
@@ -141,8 +193,30 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         else:
             raise RequestError(HTTPStatus.NOT_FOUND, "Not found")
 
+    def _require_trusted_proxy(self) -> None:
+        """校验反向代理共享密钥（设置了才生效）。
+
+        身份最终来自 X-User-ID 头，所以任何能连上后端端口的人都能冒充任何人。
+        把后端绑在回环地址是第一道防线；这个密钥是第二道——后端端口万一被意外
+        暴露（改错绑定、容器网络、SSH 转发），没有密钥仍然进不来。
+
+        这是纵深防御，**不是**认证本身：没设密钥时直接放行，本地开发无感。
+        """
+
+        expected = get_settings().trusted_proxy_secret
+        if not expected:
+            return
+        supplied = self.headers.get("X-Proxy-Secret", "")
+        # 比较 bytes 而不是 str：str 版 compare_digest 遇到非 ASCII 会抛
+        # TypeError，而 header 是按 latin-1 解出来的，攻击者发一个高位字节
+        # （`X-Proxy-Secret: caf\xe9`）就能把 401 顶成 500 并往日志里灌 traceback。
+        # 失败方向仍然是关闭的，只是没必要留这个噪音。
+        if not hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8")):
+            raise RequestError(HTTPStatus.UNAUTHORIZED, "请求未经过可信代理")
+
     def _run_request(self, handler: Callable[[], None]) -> None:
         try:
+            self._require_trusted_proxy()
             handler()
         except RequestError as exc:
             self._send_error(exc.status, str(exc))
@@ -451,7 +525,12 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         self._send_json(item)
 
     def _upload_permission(self, settings) -> tuple[UserContext | None, bool]:
-        """Admins index directly; everyone else submits to the staging queue."""
+        """Admins index directly; everyone else submits to the staging queue.
+
+        顺序是承重的：`_current_user` 必须在 `policy is None` 之前调用。要求策略
+        却读不到策略时它会抛 503，于是下面那个「开放模式直接入库」的分支走不到——
+        否则匿名者就能往向量库写东西。重排这两行会重新打开那个缺口。
+        """
 
         policy = load_access_policy(settings.access_policy_file)
         user = self._current_user(settings)
@@ -593,10 +672,42 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             and index_model != settings.embedding_model,
         }
 
-    def _status_payload(self) -> dict[str, object]:
+    def _handle_me(self) -> None:
+        """当前身份，前端靠它决定「设置 / 审计」导航显不显示。
+
+        dev_proxy 也提供这个路由，但它会连全部账号名一起返回、供本地切换身份用。
+        这里**故意不回那份列表**：它既不该外泄，前端拿到还会渲染出「切换身份」
+        菜单——点下去跳的 /login 只有 dev_proxy 有，生产环境根本不存在。
+
+        开放模式（没有策略文件）算管理员，与 _require_admin / _status_payload
+        保持一致：那种状态下后端本来就什么都允许，前端显示管理员入口才是诚实的。
+        """
+
         settings = get_settings()
+        user = self._current_user(settings)
+        policy = load_access_policy(settings.access_policy_file)
+        self._send_json(
+            {
+                "user": user.user_id if user else None,
+                "users": [],
+                "is_admin": policy is None
+                or (user is not None and policy.is_admin(user)),
+            }
+        )
+
+    def _status_payload(self, user: UserContext | None = None) -> dict[str, object]:
+        settings = get_settings()
+        # 绝对路径、data_dir 下的完整文件名清单、内网端点只给管理员：公网上这些
+        # 足够画出这台机器的结构（路径里还带本机用户名）。它们只被设置页用到，
+        # 而设置页本来就仅管理员可见。模型名与检索参数留给所有人——问答页要用。
+        #
+        # 没有策略文件时视为管理员，保持本地单机的既有行为。公网那侧不靠这里
+        # 兜底：REQUIRE_ACCESS_POLICY 会让「没有策略」根本无法启动。
+        policy = load_access_policy(settings.access_policy_file)
+        admin = policy is None or (user is not None and policy.is_admin(user))
+
         supported_files = []
-        if settings.data_dir.exists():
+        if admin and settings.data_dir.exists():
             supported_files = [
                 str(path)
                 for path in sorted(settings.data_dir.rglob("*"))
@@ -605,11 +716,13 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
         return {
             "has_openai_api_key": bool(settings.openai_api_key),
-            "data_dir": str(settings.data_dir),
-            "chroma_persist_dir": str(settings.chroma_persist_dir),
+            "data_dir": str(settings.data_dir) if admin else None,
+            "chroma_persist_dir": str(settings.chroma_persist_dir) if admin else None,
             "llm_model": settings.llm_model,
             "embedding_model": settings.embedding_model,
-            "embedding_base_url": settings.embedding_base_url or settings.openai_base_url,
+            "embedding_base_url": (
+                settings.embedding_base_url or settings.openai_base_url
+            ) if admin else None,
             "ocr_model": settings.ocr_model,
             "ocr_max_pages": settings.ocr_max_pages,
             "chunk_size": settings.chunk_size,
@@ -621,12 +734,12 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             "max_upload_bytes": settings.max_upload_bytes,
             "max_upload_files": settings.max_upload_files,
             "max_upload_jobs": settings.max_upload_jobs,
-            "openai_base_url": settings.openai_base_url,
+            "openai_base_url": settings.openai_base_url if admin else None,
             "supported_files": supported_files,
             "chroma_exists": (settings.chroma_persist_dir / "chroma.sqlite3").is_file(),
             "mineru_configured": bool(settings.mineru_api_token),
             "structurize_provider": settings.structurize_provider,
-            "markdown_cache": markdown_cache.info(),
+            "markdown_cache": markdown_cache.info() if admin else {},
             **self._index_model_info(settings),
         }
 
@@ -656,8 +769,21 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         return payload
 
     def _current_user(self, settings) -> UserContext | None:
+        """请求身份。策略文件缺失时是**失败即关闭**，不是放行。
+
+        没配策略 = 开放模式，本地单机靠它省掉登录。但同样的分支在公网就是灾难：
+        把策略文件删掉或改名，`_require_admin` 与上传鉴权会一起静默失效，匿名者
+        就能读写 API Key、直接往向量库写数据。所以公网部署要把
+        REQUIRE_ACCESS_POLICY 打开，让这种状态直接拒绝服务而不是降级成全开放。
+        """
+
         policy = load_access_policy(settings.access_policy_file)
         if policy is None:
+            if settings.require_access_policy:
+                raise RequestError(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "服务要求访问策略，但策略文件不存在或不可读",
+                )
             return None
         user_id = self.headers.get("X-User-ID", "").strip()
         if not user_id:
@@ -670,6 +796,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
     def _require_admin(self) -> UserContext | None:
         settings = get_settings()
         policy = load_access_policy(settings.access_policy_file)
+        # 先取身份：_current_user 负责「要求策略却没有策略」时的拒绝，
+        # 所以这里不能再用 `policy is not None` 把整条判断短路掉。
         user = self._current_user(settings)
         if policy is not None and (user is None or not policy.is_admin(user)):
             raise RequestError(HTTPStatus.FORBIDDEN, "需要管理员权限")

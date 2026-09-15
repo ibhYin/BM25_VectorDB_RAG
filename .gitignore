@@ -22,3 +22,6 @@ config/runtime_config.json
 # Local documents and reproducible generated data.
 data/raw/*
 !data/raw/README.md
+
+# Claude Code 本地权限设置，不提交
+.claude/

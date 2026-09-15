@@ -1,0 +1,66 @@
+# 公网入口：自动 TLS + 每人一个账号，认证后把用户名注入 X-User-ID。
+#
+# 用法
+#   1. **先做 deploy/README.md 第 0 步的前置检查。** 若运营商封了 80/443，
+#      这份配置的自动 TLS 走不通，要改成 DNS-01 挑战（见第 0 步）。
+#   2. 把下面 rag.example.com 换成你的域名，A 记录指向本机公网 IP
+#   3. 用 `caddy hash-password --plaintext '你的密码'` 生成哈希，替换 REPLACE_ME
+#      （哈希里有 $，shell 里要用单引号，否则会被展开打坏）
+#   4. 用户名必须与 config/access_policy.json 里的 user id **逐字一致**
+#      deploy/README.md 第 3 步有一个脚本可以对账
+#   5. `caddy fmt --overwrite Caddyfile && caddy validate --config Caddyfile`
+#   6. 443 是特权端口，必须用 root 起：`sudo brew services start caddy`
+#      （普通用户身份的 `brew services` 绑不上 443）
+
+{
+	# 关掉管理 API。它默认监听 127.0.0.1:2019 且能改写配置，
+	# 本机自用无所谓，放到公网服务器上是没必要的攻击面。
+	admin off
+}
+
+rag.example.com {
+	# 上传上限是 app 的 MAX_UPLOAD_BYTES=100MB，这里留点余量给 multipart 边界。
+	# 设小了会让大文件上传在后端还没看到之前就被代理拒掉。
+	# (Caddy 的指令序里 request_body 早于 basic_auth，所以未认证的巨型 body
+	#  会被提前 413 掉，不会白读一遍。)
+	request_body {
+		max_size 120MB
+	}
+
+	encode zstd gzip
+
+	# 每人一个账号。这是整套方案里唯一的认证，后端完全信任代理注入的身份头。
+	basic_auth {
+		alice $2a$14$REPLACE_ME
+		bob   $2a$14$REPLACE_ME
+	}
+
+	reverse_proxy 127.0.0.1:8000 {
+		# 这两行一起保证：客户端自己带的 X-User-ID 一定被丢掉，后端只看到
+		# Caddy 认证出来的那个身份。后端 100% 相信这个头，没有任何密码学校验，
+		# 所以这处改写是整套方案的安全支点。
+		# 必须写在 reverse_proxy 里（官方要求用 header_up，不能用 request_header，
+		# 后者不是 proxy-aware 的）。
+		header_up -X-User-ID
+		header_up -X-Proxy-Secret
+		header_up X-User-ID {http.auth.user.id}
+
+		# 可选：纵深防御。后端也设了 TRUSTED_PROXY_SECRET 时，即使 8000 端口被
+		# 意外暴露，光伪造身份头仍然进不来。开启方法：生成一个随机串，同时写进
+		# app 的 .env（TRUSTED_PROXY_SECRET=...）和下面一行，两边必须逐字相同。
+		# 不开启也没关系——后端绑在回环地址才是主要防线，这一步只是加一道。
+		# ⚠️ 一旦把真实密钥写进这一行，这份文件就**不要再提交进 Git** 了
+		#    （改到 /usr/local/etc/caddy/Caddyfile 那份去，仓库里留模板）。
+		# header_up X-Proxy-Secret "<与 .env 里相同的值>"
+
+		# 后端是 ThreadingHTTPServer，线程数没有上限（只有 60s 读超时挡停滞连接）。
+		# 这是唯一能挡住「开一堆连接占满线程」的闸门。后端说 HTTP/1.0、连接
+		# 用完即关，所以这个值就等于后端并发请求数的硬上限。
+		transport http {
+			max_conns_per_host 64
+		}
+	}
+
+	# 凭据型站点，验证过 TLS 正常之后可以打开 HSTS。
+	# header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+}
