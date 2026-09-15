@@ -9,6 +9,7 @@ from typing import TypedDict
 from app.config import Settings, get_settings
 from app.access import (
     PUBLIC_GROUP,
+    AccessPolicy,
     UserContext,
     known_groups,
     load_access_policy,
@@ -593,6 +594,238 @@ class AnswerResult(TypedDict):
 ProgressCallback = Callable[[str, str, dict[str, object]], None]
 
 
+def _retrieval_params(
+    settings: Settings,
+    retrieval_method: str | None,
+    top_k: int | None,
+    similarity_threshold: float | None,
+) -> tuple[str, int, float]:
+    """解析并校验检索参数。两个入口共用，免得默认值逻辑分叉。"""
+
+    method = settings.retrieval_method if retrieval_method is None else retrieval_method
+    if method not in ("vector", "bm25", "hybrid"):
+        raise ValueError("retrieval_method must be vector, bm25 or hybrid")
+    effective_top_k = top_k if top_k is not None else settings.retrieval_top_k
+    effective_threshold = (
+        similarity_threshold
+        if similarity_threshold is not None
+        else settings.similarity_threshold
+    )
+    return method, effective_top_k, effective_threshold
+
+
+def _access_context(
+    settings: Settings, user: UserContext | None
+) -> tuple[AccessPolicy | None, dict[str, object] | None]:
+    """策略与该用户的可检索过滤器。启用策略时没有身份就直接拒绝。"""
+
+    access_policy = load_access_policy(settings.access_policy_file)
+    if access_policy is not None and user is None:
+        raise PermissionError("Authenticated user context is required")
+    access_filter = (
+        access_policy.chroma_filter(settings.knowledge_base_id, user)
+        if access_policy is not None and user is not None
+        else None
+    )
+    return access_policy, access_filter
+
+
+def _retrieve_locked(
+    question: str,
+    settings: Settings,
+    method: str,
+    top_k: int,
+    threshold: float,
+    candidate_pool: int | None,
+    user: UserContext | None,
+    access_policy: AccessPolicy | None,
+    access_filter: dict[str, object] | None,
+    report: ProgressCallback,
+) -> list[dict[str, object]]:
+    """三种检索方式的唯一实现。**假定读锁已持有**，自己不取锁。
+
+    单拆一层是为了让 answer_question 与 retrieve_question 共用同一份逻辑。复制
+    一份的话两边语义迟早分叉，而这里有几处细节最容易搬错：
+
+    - `threshold` **只在 vector 分支生效**；hybrid 走 RRF 融合后取 top_k，阈值被忽略
+    - bm25 不用 embedding、不用 threshold、不用 pool，但要 user + 策略做过滤
+    - hybrid 的 `pool = max(candidate_pool, top_k)`，是向量粗筛的 k
+
+    不要在被持读锁时调用公开入口 `retrieve_question` 来「复用」这段逻辑：
+    KnowledgeBaseLock 是写者优先的，嵌套读锁一旦撞上等待中的写者就会自死锁。
+    """
+
+    recall: int | None = None
+
+    if method == "bm25":
+        report("encode", "skipped", retrieval_method=method)
+        report(
+            "vector_search",
+            "running",
+            top_k=top_k,
+            retrieval_method=method,
+        )
+        started = perf_counter()
+        hits = search_bm25(
+            question,
+            settings.chroma_persist_dir,
+            top_k,
+            settings.knowledge_base_id,
+            user,
+            access_policy,
+        )
+    elif method == "hybrid":
+        effective_pool = max(
+            (
+                candidate_pool
+                if candidate_pool is not None
+                else settings.candidate_pool_size
+            ),
+            top_k,
+        )
+        embeddings = get_embeddings(
+            settings.embedding_model,
+            settings.embedding_api_key,
+            settings.embedding_base_url,
+        )
+        vector_store = get_vector_store(
+            settings.chroma_persist_dir,
+            settings.embedding_model,
+            settings.embedding_api_key,
+            settings.embedding_base_url,
+        )
+
+        report("encode", "running", model=settings.embedding_model)
+        started = perf_counter()
+        query_embedding = embeddings.embed_query(question)
+        report(
+            "encode",
+            "completed",
+            model=settings.embedding_model,
+            dimensions=len(query_embedding),
+            duration_ms=round((perf_counter() - started) * 1000),
+            vector_preview=[round(value, 6) for value in query_embedding[:8]],
+        )
+
+        report(
+            "vector_search",
+            "running",
+            top_k=top_k,
+            retrieval_method=method,
+            pool=effective_pool,
+        )
+        started = perf_counter()
+        if access_filter is None:
+            matches = vector_store.similarity_search_by_vector_with_relevance_scores(
+                query_embedding, k=effective_pool
+            )
+        else:
+            matches = vector_store.similarity_search_by_vector_with_relevance_scores(
+                query_embedding, k=effective_pool, filter=access_filter
+            )
+        vector_hits = build_vector_hits(matches)
+        bm25_scores = rerank_bm25_scores(
+            [match[0].page_content for match in matches],
+            question,
+        )
+        hits = rrf_fuse(vector_hits, bm25_scores)[:top_k]
+        recall = len(matches)
+    else:
+        embeddings = get_embeddings(
+            settings.embedding_model,
+            settings.embedding_api_key,
+            settings.embedding_base_url,
+        )
+        vector_store = get_vector_store(
+            settings.chroma_persist_dir,
+            settings.embedding_model,
+            settings.embedding_api_key,
+            settings.embedding_base_url,
+        )
+
+        report("encode", "running", model=settings.embedding_model)
+        started = perf_counter()
+        query_embedding = embeddings.embed_query(question)
+        report(
+            "encode",
+            "completed",
+            model=settings.embedding_model,
+            dimensions=len(query_embedding),
+            duration_ms=round((perf_counter() - started) * 1000),
+            vector_preview=[round(value, 6) for value in query_embedding[:8]],
+        )
+
+        report("vector_search", "running", top_k=top_k, retrieval_method=method)
+        started = perf_counter()
+        if access_filter is None:
+            matches = vector_store.similarity_search_by_vector_with_relevance_scores(
+                query_embedding, k=top_k
+            )
+        else:
+            matches = vector_store.similarity_search_by_vector_with_relevance_scores(
+                query_embedding, k=top_k, filter=access_filter
+            )
+        raw_hits = build_vector_hits(matches)
+        recall = len(raw_hits)
+        hits = [hit for hit in raw_hits if hit["similarity"] >= threshold]
+
+    report(
+        "vector_search",
+        "completed",
+        top_k=top_k,
+        retrieval_method=method,
+        matches=len(hits),
+        recall=recall,
+        duration_ms=round((perf_counter() - started) * 1000),
+        similarity_threshold=threshold if method == "vector" else None,
+        pool=effective_pool if method == "hybrid" else None,
+        vector_hits=hits,
+    )
+    return hits
+
+
+def retrieve_question(
+    question: str,
+    settings: Settings,
+    retrieval_method: str | None = None,
+    top_k: int | None = None,
+    similarity_threshold: float | None = None,
+    candidate_pool: int | None = None,
+    user: UserContext | None = None,
+) -> list[dict[str, object]]:
+    """只要检索结果，不生成答案。
+
+    给评估与调试用：同一批问题换不同参数跑，就能看出差异，而不必付一次答案生成
+    的钱。返回的 hit 带全部分数与元数据（rank / similarity / bm25_score /
+    rrf_score / section_path / chunk_id …）——注意喂给 LLM 的 `format_vector_hits`
+    会把分数丢掉，这里不丢。
+
+    自己取读锁。**不要在已持锁时调用**，理由见 `_retrieve_locked`。
+    """
+
+    question = question.strip()
+    if not question:
+        raise ValueError("Question is required")
+    method, effective_top_k, effective_threshold = _retrieval_params(
+        settings, retrieval_method, top_k, similarity_threshold
+    )
+    access_policy, access_filter = _access_context(settings, user)
+
+    with knowledge_base_lock.read():
+        return _retrieve_locked(
+            question,
+            settings,
+            method,
+            effective_top_k,
+            effective_threshold,
+            candidate_pool,
+            user,
+            access_policy,
+            access_filter,
+            lambda *args, **kwargs: None,
+        )
+
+
 def answer_question(
     question: str,
     settings: Settings,
@@ -615,29 +848,15 @@ def answer_question(
     question = question.strip()
     if not question:
         raise ValueError("Question is required")
-    method = settings.retrieval_method if retrieval_method is None else retrieval_method
-    if method not in ("vector", "bm25", "hybrid"):
-        raise ValueError("retrieval_method must be vector, bm25 or hybrid")
-    effective_top_k = top_k if top_k is not None else settings.retrieval_top_k
-    effective_threshold = (
-        similarity_threshold
-        if similarity_threshold is not None
-        else settings.similarity_threshold
+    method, effective_top_k, effective_threshold = _retrieval_params(
+        settings, retrieval_method, top_k, similarity_threshold
     )
-    access_policy = load_access_policy(settings.access_policy_file)
-    if access_policy is not None and user is None:
-        raise PermissionError("Authenticated user context is required")
-    access_filter = (
-        access_policy.chroma_filter(settings.knowledge_base_id, user)
-        if access_policy is not None and user is not None
-        else None
-    )
+    access_policy, access_filter = _access_context(settings, user)
 
     def report(stage: str, status: str, **detail: object) -> None:
         if progress is not None:
             progress(stage, status, detail)
 
-    recall = None
     with answer_limiter:
         # 改写要在并发闸之内（它就是用来限制并发 LLM 调用的），但在读锁之外——
         # 占着读锁等一次慢的 LLM 调用会挡住等待中的写者。
@@ -665,131 +884,17 @@ def answer_question(
             report("condense", "skipped")
 
         with knowledge_base_lock.read():
-            if method == "bm25":
-                report("encode", "skipped", retrieval_method=method)
-                report(
-                    "vector_search",
-                    "running",
-                    top_k=effective_top_k,
-                    retrieval_method=method,
-                )
-                started = perf_counter()
-                hits = search_bm25(
-                    retrieval_question,
-                    settings.chroma_persist_dir,
-                    effective_top_k,
-                    settings.knowledge_base_id,
-                    user,
-                    access_policy,
-                )
-            elif method == "hybrid":
-                effective_pool = max(
-                    (
-                        candidate_pool
-                        if candidate_pool is not None
-                        else settings.candidate_pool_size
-                    ),
-                    effective_top_k,
-                )
-                embeddings = get_embeddings(
-                    settings.embedding_model,
-                    settings.embedding_api_key,
-                    settings.embedding_base_url,
-                )
-                vector_store = get_vector_store(
-                    settings.chroma_persist_dir,
-                    settings.embedding_model,
-                    settings.embedding_api_key,
-                    settings.embedding_base_url,
-                )
-
-                report("encode", "running", model=settings.embedding_model)
-                started = perf_counter()
-                query_embedding = embeddings.embed_query(retrieval_question)
-                report(
-                    "encode",
-                    "completed",
-                    model=settings.embedding_model,
-                    dimensions=len(query_embedding),
-                    duration_ms=round((perf_counter() - started) * 1000),
-                    vector_preview=[round(value, 6) for value in query_embedding[:8]],
-                )
-
-                report(
-                    "vector_search",
-                    "running",
-                    top_k=effective_top_k,
-                    retrieval_method=method,
-                    pool=effective_pool,
-                )
-                started = perf_counter()
-                if access_filter is None:
-                    matches = vector_store.similarity_search_by_vector_with_relevance_scores(
-                        query_embedding, k=effective_pool
-                    )
-                else:
-                    matches = vector_store.similarity_search_by_vector_with_relevance_scores(
-                        query_embedding, k=effective_pool, filter=access_filter
-                    )
-                vector_hits = build_vector_hits(matches)
-                bm25_scores = rerank_bm25_scores(
-                    [match[0].page_content for match in matches],
-                    retrieval_question,
-                )
-                hits = rrf_fuse(vector_hits, bm25_scores)[:effective_top_k]
-                recall = len(matches)
-            else:
-                embeddings = get_embeddings(
-                    settings.embedding_model,
-                    settings.embedding_api_key,
-                    settings.embedding_base_url,
-                )
-                vector_store = get_vector_store(
-                    settings.chroma_persist_dir,
-                    settings.embedding_model,
-                    settings.embedding_api_key,
-                    settings.embedding_base_url,
-                )
-
-                report("encode", "running", model=settings.embedding_model)
-                started = perf_counter()
-                query_embedding = embeddings.embed_query(retrieval_question)
-                report(
-                    "encode",
-                    "completed",
-                    model=settings.embedding_model,
-                    dimensions=len(query_embedding),
-                    duration_ms=round((perf_counter() - started) * 1000),
-                    vector_preview=[round(value, 6) for value in query_embedding[:8]],
-                )
-
-                report("vector_search", "running", top_k=effective_top_k, retrieval_method=method)
-                started = perf_counter()
-                if access_filter is None:
-                    matches = vector_store.similarity_search_by_vector_with_relevance_scores(
-                        query_embedding, k=effective_top_k
-                    )
-                else:
-                    matches = vector_store.similarity_search_by_vector_with_relevance_scores(
-                        query_embedding, k=effective_top_k, filter=access_filter
-                    )
-                raw_hits = build_vector_hits(matches)
-                recall = len(raw_hits)
-                hits = [
-                    hit for hit in raw_hits
-                    if hit["similarity"] >= effective_threshold
-                ]
-            report(
-                "vector_search",
-                "completed",
-                top_k=effective_top_k,
-                retrieval_method=method,
-                matches=len(hits),
-                recall=recall,
-                duration_ms=round((perf_counter() - started) * 1000),
-                similarity_threshold=effective_threshold if method == "vector" else None,
-                pool=effective_pool if method == "hybrid" else None,
-                vector_hits=hits,
+            hits = _retrieve_locked(
+                retrieval_question,
+                settings,
+                method,
+                effective_top_k,
+                effective_threshold,
+                candidate_pool,
+                user,
+                access_policy,
+                access_filter,
+                report,
             )
         # 检索必须留在锁内（要读向量库），但**生成答案不能**：那是远程 LLM
         # 调用，一次几十秒。读锁是「有写者在等就阻塞新读者」的写者优先实现，
