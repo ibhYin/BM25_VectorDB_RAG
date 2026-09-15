@@ -112,6 +112,40 @@ def _print_hits(hits: list[dict]) -> None:
         console.print(f"    {snippet[:160]}")
 
 
+def _snapshot_config(settings, method, top_k, pool, threshold) -> dict:
+    """这次跑批用的是哪套检索配置。
+
+    必须记全：配置不同的话，两份快照的指标差异就不是你要验的那个代码改动带来的。
+    """
+
+    import inspect
+
+    from rag.index_manifest import read_index_embedding_model
+    from rag.retriever import rrf_fuse
+
+    try:
+        rrf_k = inspect.signature(rrf_fuse).parameters["k"].default
+    except (KeyError, ValueError):  # 签名变了也别让快照写不出来
+        rrf_k = None
+
+    return {
+        "method": method or settings.retrieval_method,
+        "top_k": top_k if top_k is not None else settings.retrieval_top_k,
+        "candidate_pool": pool if pool is not None else settings.candidate_pool_size,
+        "similarity_threshold": (
+            threshold if threshold is not None else settings.similarity_threshold
+        ),
+        # 切片参数一并记下：它们变了的话语料指纹也会变，但那句话太笼统，写在这里
+        # 能让人一眼看出是哪一项动了。
+        "chunk_size": settings.chunk_size,
+        "chunk_overlap": settings.chunk_overlap,
+        "rrf_k": rrf_k,
+        "embedding_model": settings.embedding_model,
+        "index_embedding_model": read_index_embedding_model(settings.chroma_persist_dir),
+        "knowledge_base_id": settings.knowledge_base_id,
+    }
+
+
 @app.command()
 def retrieve(
     question: str,
@@ -253,12 +287,18 @@ def eval_run(
     threshold: float | None = typer.Option(None, "--threshold"),
     user_id: str | None = typer.Option(None, "--user-id"),
     show_hits: bool = typer.Option(False, "--show-hits", help="逐题打印召回的切片。"),
+    save: Path | None = typer.Option(
+        None, "--save", help="把这次跑批写成快照文件，之后用 eval compare 对比。"
+    ),
 ) -> None:
     """对问题集跑一遍检索，报告 Hit@K / MRR / Recall@K。
 
     **未标注的题会被剔除**，不是当成 0 分：「没标」和「一条都没召回对」是两回事。
     同理 `Recall@K` 是**下界**——人工标注必然标不全——所以判断好坏以 `Hit@K` 与
     `MRR` 为准。
+
+    加 `--save 快照.json` 存一份结果，改完代码再跑一份、用 `eval compare` 对比，
+    就是判断「这个改动到底有没有用」的方式。
     """
 
     from app.access import load_access_policy
@@ -309,9 +349,14 @@ def eval_run(
             raise typer.Exit(code=1) from exc
         rows.append(
             {
+                "id": entry.get("id"),
                 "question": str(entry.get("question") or ""),
                 "retrieved": [str(hit.get("chunk_id") or "") for hit in hits],
+                # 文档级也记一份：切片方式变了之后 chunk 编号不可比，但「有没有找到
+                # 对的文档」还是能看的。
+                "retrieved_docs": [str(hit.get("doc_id") or "") for hit in hits],
                 "relevant": list(entry.get("relevant_chunk_ids") or []),
+                "relevant_docs": list(entry.get("relevant_doc_ids") or []),
                 "stale": list(entry.get("stale_chunk_ids") or []),
                 "elapsed": perf_counter() - started,
                 "hits": hits,
@@ -368,6 +413,31 @@ def eval_run(
             if row["stale"]:
                 console.print(f"  [dim]{row['question'][:40]}[/dim] → {', '.join(row['stale'])}")
 
+    if save is not None:
+        from app.eval_snapshot import (
+            build_snapshot,
+            corpus_fingerprint,
+            label_fingerprint,
+            save_snapshot,
+        )
+        from app.service import corpus_chunks
+
+        chunks, doc_ids = corpus_chunks(settings)
+        snapshot = build_snapshot(
+            corpus=corpus_fingerprint(chunks, doc_ids),
+            labels=label_fingerprint(anchored),
+            config=_snapshot_config(settings, method, top_k, pool, threshold),
+            ks=ks,
+            rows=rows,
+        )
+        save_snapshot(save, snapshot)
+        console.print(
+            f"快照已写入 [bold]{save}[/bold]"
+            f"（语料 {snapshot['corpus']['chunks']} 片 / 已标注 "
+            f"{snapshot['labels']['labelled']} 题）。改完代码再存一份，然后 "
+            "`eval compare 旧 新`。"
+        )
+
     if not labelled:
         console.print(
             "[yellow]一道都没标注，没有可报告的数字。[/yellow]"
@@ -405,6 +475,115 @@ def eval_run(
         ),
     )
     console.print(summary)
+
+
+@eval_app.command("compare")
+def eval_compare(
+    before: Path = typer.Argument(..., help="基准快照（例如改代码之前跑的）。"),
+    after: Path = typer.Argument(..., help="对比快照（改完之后跑的）。"),
+    force: bool = typer.Option(
+        False, "--force", help="指纹不一致时仍然对比——结论要谨慎解读。"
+    ),
+) -> None:
+    """对比两份快照：先比指纹确认可比，再看指标差与逐题变化。
+
+    头条是**变好 / 变差 / 不变的题数**，不是均值：题目少的时候，一个均值会被单题
+    带飞，看不出真实分布。
+    """
+
+    from app.eval_snapshot import compare_snapshots, load_snapshot
+
+    try:
+        baseline = load_snapshot(before)
+        candidate = load_snapshot(after)
+    except (OSError, ValueError) as exc:
+        console.print(f"[red]读快照失败：[/red]{exc}")
+        raise typer.Exit(code=1) from exc
+
+    report = compare_snapshots(baseline, candidate)
+
+    if report["blockers"]:
+        console.print("[yellow]⚠ 这两份快照不是可以拿来直接比的：[/yellow]")
+        for reason in report["blockers"]:
+            console.print(f"  · {reason}")
+        if not force:
+            console.print(
+                "\n上面的差异可能来自语料或标注的变化，而不是你要验的那个改动——"
+                "那样比出来的数字没有意义。确认清楚原因之后仍要比，加 `--force`。"
+            )
+            raise typer.Exit(code=1)
+
+    _print_config_diff(report["config_before"], report["config_after"])
+
+    metrics = Table(box=None, pad_edge=False)
+    metrics.add_column("指标")
+    metrics.add_column("基准", justify="right")
+    metrics.add_column("对比", justify="right")
+    metrics.add_column("差", justify="right")
+    for name in report["before"]:
+        was = report["before"][name]
+        now = report["after"][name]
+        if was is None and now is None:
+            continue
+        delta = None if was is None or now is None else now - was
+        if delta is None:
+            style = "dim"
+        elif delta > 1e-9:
+            style = "green"
+        elif delta < -1e-9:
+            style = "red"
+        else:
+            style = "dim"
+        metrics.add_row(
+            name,
+            _fmt_number(was),
+            _fmt_number(now),
+            f"[{style}]{'+' if (delta or 0) > 0 else ''}{_fmt_number(delta)}[/{style}]",
+        )
+    console.print("[bold]整体指标（切片级）[/bold]")
+    console.print(metrics)
+
+    counts = report["counts"]
+    console.print(
+        f"\n[bold]逐题变化[/bold]（按 MRR 判定）："
+        f"[green]{counts['improved']} 题变好[/green] / "
+        f"[red]{counts['regressed']} 题变差[/red] / "
+        f"{counts['unchanged']} 题不变"
+        + (f" / {counts['only_in_before']} 题只在基准里" if counts["only_in_before"] else "")
+    )
+
+    changed = [row for row in report["questions"] if abs(row["delta"]) > 1e-9]
+    if changed:
+        detail = Table(box=None, pad_edge=False)
+        detail.add_column("问题", overflow="fold")
+        detail.add_column("基准名次", justify="right")
+        detail.add_column("对比名次", justify="right")
+        for row in sorted(changed, key=lambda item: item["delta"]):
+            detail.add_row(
+                str(row["question"])[:38],
+                str(row["before_rank"] or "未命中"),
+                str(row["after_rank"] or "未命中"),
+            )
+        console.print(detail)
+
+    if report["blockers"]:
+        console.print(
+            "[yellow]（用了 --force：上面的指纹差异仍在，结论请谨慎。）[/yellow]"
+        )
+
+
+def _print_config_diff(before: dict, after: dict) -> None:
+    differing = [
+        (key, before.get(key), after.get(key))
+        for key in sorted(set(before) | set(after))
+        if before.get(key) != after.get(key)
+    ]
+    if not differing:
+        console.print("[dim]两次跑批的检索配置相同。[/dim]")
+        return
+    console.print("[yellow]⚠ 检索配置不同——指标差异有一部分来自这里：[/yellow]")
+    for key, was, now in differing:
+        console.print(f"  {key}: {was} → {now}")
 
 
 @app.command()

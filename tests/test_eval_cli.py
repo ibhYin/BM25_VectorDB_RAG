@@ -213,6 +213,107 @@ def test_run_scores_labelled_questions(monkeypatch) -> None:
     assert "0.500" in result.output
 
 
+# --- compare ----------------------------------------------------------------
+
+
+def write_snapshot(path: Path, *, text: str, retrieved: list[str], relevant: list[str]) -> None:
+    from app.eval_snapshot import (
+        build_snapshot,
+        corpus_fingerprint,
+        label_fingerprint,
+        save_snapshot,
+    )
+
+    rows = [
+        {
+            "id": "q1",
+            "question": "问题一",
+            "retrieved": retrieved,
+            "retrieved_docs": [c.split("#")[0] for c in retrieved],
+            "relevant": relevant,
+            "relevant_docs": [c.split("#")[0] for c in relevant],
+            "stale": [],
+            "elapsed": 0.1,
+        }
+    ]
+    save_snapshot(
+        path,
+        build_snapshot(
+            corpus=corpus_fingerprint([("a#chunk_001", text)], ["a"]),
+            labels=label_fingerprint(
+                [{"id": "q1", "relevant_chunk_ids": relevant}]
+            ),
+            config={"method": "hybrid"},
+            ks=[1, 3],
+            rows=rows,
+        ),
+    )
+
+
+def test_compare_reports_the_metric_delta(tmp_path: Path) -> None:
+    before = tmp_path / "before.json"
+    after = tmp_path / "after.json"
+    write_snapshot(before, text="甲", retrieved=["a#chunk_001"], relevant=["a#chunk_001"])
+    write_snapshot(
+        after, text="甲", retrieved=["a#chunk_002", "a#chunk_001"], relevant=["a#chunk_001"]
+    )
+
+    result = runner.invoke(app, ["eval", "compare", str(before), str(after)])
+
+    assert result.exit_code == 0
+    assert "0 题变好" in result.output and "1 题变差" in result.output
+
+
+def test_compare_blocks_when_the_labels_changed(tmp_path: Path) -> None:
+    """标注变了，指标差异可能来自标注——这种事必须先拦住。"""
+
+    before = tmp_path / "before.json"
+    after = tmp_path / "after.json"
+    write_snapshot(before, text="甲", retrieved=["a#chunk_001"], relevant=[])
+    write_snapshot(after, text="甲", retrieved=["a#chunk_001"], relevant=["a#chunk_001"])
+
+    result = runner.invoke(app, ["eval", "compare", str(before), str(after)])
+
+    assert result.exit_code == 1
+    assert "标注不同" in result.output
+    assert "--force" in result.output
+
+
+def test_compare_blocks_when_the_corpus_text_changed(tmp_path: Path) -> None:
+    """编号没变、正文换了 —— 也必须拦住，否则比的是两份不同的语料。"""
+
+    before = tmp_path / "before.json"
+    after = tmp_path / "after.json"
+    write_snapshot(before, text="原来的正文", retrieved=["a#chunk_001"], relevant=["a#chunk_001"])
+    write_snapshot(after, text="新的正文", retrieved=["a#chunk_001"], relevant=["a#chunk_001"])
+
+    result = runner.invoke(app, ["eval", "compare", str(before), str(after)])
+
+    assert result.exit_code == 1
+    assert "切片方式" in result.output
+
+
+def test_compare_force_proceeds_but_still_warns(tmp_path: Path) -> None:
+    before = tmp_path / "before.json"
+    after = tmp_path / "after.json"
+    write_snapshot(before, text="原来的正文", retrieved=["a#chunk_001"], relevant=["a#chunk_001"])
+    write_snapshot(after, text="新的正文", retrieved=["a#chunk_001"], relevant=["a#chunk_001"])
+
+    result = runner.invoke(app, ["eval", "compare", str(before), str(after), "--force"])
+
+    assert result.exit_code == 0
+    assert "谨慎" in result.output
+
+
+def test_compare_reads_a_missing_snapshot_gracefully(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app, ["eval", "compare", str(tmp_path / "nope.json"), str(tmp_path / "nope2.json")]
+    )
+
+    assert result.exit_code == 1
+    assert "读快照失败" in result.output
+
+
 def test_show_hits_prints_the_chunks(monkeypatch) -> None:
     stub_anchoring(monkeypatch)
     upsert_question("问题一")

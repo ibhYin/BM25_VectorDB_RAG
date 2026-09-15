@@ -879,6 +879,39 @@ def resolve_chunks(
     return resolved
 
 
+def corpus_chunks(settings: Settings) -> tuple[list[tuple[str, str]], list[str]]:
+    """把索引里全部切片读成 `[(chunk_id, 正文)]`，外加文档 id 列表。
+
+    给评估快照算语料指纹用：只有比得出「两次跑的语料是不是同一份」，两份快照的
+    对比才有意义。
+    """
+
+    with knowledge_base_lock.read():
+        result = get_vector_store(
+            settings.chroma_persist_dir,
+            settings.embedding_model,
+            settings.embedding_api_key,
+            settings.embedding_base_url,
+        ).get(
+            where={"knowledge_base_id": settings.knowledge_base_id},
+            include=["documents", "metadatas"],
+        )
+
+    chunks: list[tuple[str, str]] = []
+    doc_ids: list[str] = []
+    for text, raw_metadata in zip(
+        result.get("documents") or [], result.get("metadatas") or []
+    ):
+        metadata = raw_metadata or {}
+        chunk_id = str(metadata.get("chunk_id") or "")
+        doc_id = str(metadata.get("doc_id") or "")
+        if chunk_id:
+            chunks.append((chunk_id, str(text or "")))
+        if doc_id:
+            doc_ids.append(doc_id)
+    return chunks, doc_ids
+
+
 def anchor_eval_labels(
     settings: Settings, questions: list[dict]
 ) -> list[dict]:
