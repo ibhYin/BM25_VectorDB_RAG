@@ -38,14 +38,6 @@ class Settings(BaseSettings):
     max_upload_jobs: int = 5
     knowledge_base_id: str = "default"
     access_policy_file: Path = Path("config/access_policy.json")
-    # 公网部署必须打开。策略文件缺失时拒绝服务，而不是静默退化成「全开放」——
-    # 后者意味着删掉一个文件就能让管理员校验与上传鉴权整体失效。
-    # 默认关，是为了不改变本地单机与测试的既有行为（测试默认就没有策略文件）。
-    require_access_policy: bool = False
-    # 反向代理共享密钥。设置后每个请求都必须带匹配的 X-Proxy-Secret，
-    # 于是即使后端端口意外暴露，光伪造 X-User-ID 也进不来。
-    # 空字符串 = 不启用。与代理侧的值逐字比较，不做 trim。
-    trusted_proxy_secret: str = ""
 
     data_dir: Path = Path("data/raw")
     chroma_persist_dir: Path = Path(".chroma")

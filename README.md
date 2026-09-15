@@ -43,7 +43,6 @@ app/web_static/         原生 HTML/CSS/JavaScript 页面
 chains/                 LLM 和回答 Prompt
 rag/                    文档加载、OCR、切片、Chroma 与检索结果
 data/raw/               本地知识库文件，不提交真实文档
-deploy/                 公网部署：Caddyfile、launchd plist、备份脚本、部署指南
 scripts/                macOS 双击启动/停止脚本
 tests/                  不访问真实外部服务的测试
 ```
@@ -84,12 +83,6 @@ CANDIDATE_POOL_SIZE=100
 MINERU_API_TOKEN=
 MINERU_MODEL_VERSION=vlm
 STRUCTURIZE_PROVIDER=markitdown
-
-# 可选：公网部署才需要（见 deploy/README.md）
-# 要求访问策略必须存在，缺失时拒绝服务而不是静默退化成「谁都能进」
-REQUIRE_ACCESS_POLICY=
-# 反向代理共享密钥；与代理侧的值逐字相同。留空 = 不启用
-TRUSTED_PROXY_SECRET=
 ```
 
 也可以在网页右上角的「模型接入配置」里直接填写请求地址、API Key 和模型名。保存后写入
@@ -409,10 +402,7 @@ metadata，事后改策略需要重新索引。所以「通过」的动作顺序
 
 ## Web API
 
-- `GET /api/status`：运行配置、索引状态，以及建库模型和是否与当前配置不一致。绝对路径、
-  `data/raw` 文件清单与内网端点**只回给管理员**（问答页要用的模型名与检索参数对所有人可见）。
-- `GET /api/me`：当前身份（`user` / `is_admin`）。`users` 恒为空——那份账号列表仅供
-  本地开发代理渲染「切换身份」菜单，生产环境不外泄。
+- `GET /api/status`：运行配置、索引状态，以及建库模型和是否与当前配置不一致。
 - `GET /api/audit`：向量库写入审计日志，`limit` 默认 100（1-1000），返回最新在前。仅管理员。
 - `GET /api/staging`：待审提交列表和可用的访问组。仅管理员。
 - `POST /api/staging/:id/approve`：批准入库，`group` 指定访问组（须是策略里已有的组）。仅管理员。
@@ -460,28 +450,8 @@ BM25 使用 jieba 中文分词和 SQLite FTS5 内置评分，直接读取 Chroma
 上传限制由 `MAX_UPLOAD_BYTES`、`MAX_UPLOAD_FILES`、`MAX_UPLOAD_JOBS` 控制。没有
 `ACCESS_POLICY_FILE` 时保持单用户开发模式；启用策略后，Web API 从上游认证层提供的
 `X-User-ID` 读取身份，问答、命中文档列表和异步任务都会做权限校验，上传只允许策略中的
-管理员。
-
-`X-User-ID` **不是认证机制**，没有任何密码学保证：谁能连上后端，填一个已知 user_id
-就获得该身份。所以暴露到网络时必须满足两条：
-
-- **后端只听 `127.0.0.1`**，公网入口走反向代理；代理负责认证，并**剥掉客户端自带的
-  `X-User-ID`**，只注入自己认证出的那个
-- 打开 `REQUIRE_ACCESS_POLICY`：策略文件不存在时拒绝服务（503），而不是静默退化成
-  「谁都能进」。不打开的话，删掉 `config/access_policy.json` 就会让管理员校验与上传
-  鉴权**一起失效**
-
-想再加一道纵深防御，可设 `TRUSTED_PROXY_SECRET`：之后每个请求（含静态文件）都必须带
-匹配的 `X-Proxy-Secret`，后端端口万一被意外暴露也进不来。三条一起用：
-
-| 机制 | 挡的是 |
-|---|---|
-| 绑回环 + 代理认证 | 「谁可以进来」 |
-| `REQUIRE_ACCESS_POLICY` | 「策略没了会不会变成全开放」 |
-| `TRUSTED_PROXY_SECRET` | 「后端端口被绕过」 |
-
-完整的公网部署步骤（域名、Caddy 自动 TLS、每人独立账号、launchd 服务化、备份、验证
-清单、以及运营商家宽封 80/443 时的退路）见 **[deploy/README.md](deploy/README.md)**。
+管理员。`X-User-ID` 不是认证机制，暴露到网络前必须由可信反向代理覆盖该请求头，并增加
+TLS、真实认证和限流。
 
 ## 检查
 

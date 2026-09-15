@@ -76,22 +76,7 @@ def web(
         help="Port for the local web server.",
     ),
 ) -> None:
-    from app.access import load_access_policy
     from app.web import run_web_server
-
-    settings = get_settings()
-    # 要求策略却读不到策略，必须当场失败。否则服务会静静地以「全开放」姿态起来：
-    # 管理员端点、上传鉴权全都不生效，而且从外面看不出任何异常。
-    # 请求期还有一道 503 兜底（策略文件可能在运行中被删），这里是为了让人在
-    # 启动日志里一眼看到原因，而不是等别人访问时才发现。
-    if settings.require_access_policy and load_access_policy(settings.access_policy_file) is None:
-        console.print(
-            f"[red]REQUIRE_ACCESS_POLICY 已开启，但访问策略文件不存在或不可读：[/red]"
-            f"{settings.access_policy_file}\n"
-            "请先创建该文件（可参考 config/access_policy.example.json），"
-            "或关闭 REQUIRE_ACCESS_POLICY。"
-        )
-        raise typer.Exit(code=1)
 
     console.print(f"Web UI running at http://{host}:{port}")
     run_web_server(host, port)
