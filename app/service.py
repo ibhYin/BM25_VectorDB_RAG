@@ -879,6 +879,106 @@ def resolve_chunks(
     return resolved
 
 
+def anchor_eval_labels(
+    settings: Settings, questions: list[dict]
+) -> list[dict]:
+    """把评估标注重新锚定到当前索引上，逐题返回有效与失效的 id。
+
+    每条切片级标注独立走三步：
+
+    1. `chunk_id` 还在、且正文指纹一致 → 直接有效
+    2. `chunk_id` 找不到、或指纹对不上（编号还在但内容换了）→ 用
+       `(doc_id, 正文指纹)` 在该文档里重新找
+    3. 还找不到 → 记进 `stale_chunk_ids`，**调用方必须从指标里剔除**
+
+    第 3 条最要紧：`chunk_id` 是按顺序编的号、`doc_id` 由路径派生，所以重新入库
+    或重命名源文件之后，同一个 id 会指向别的正文。把失效标签当成「没召回」会让
+    指标凭空变差，而完全看不出是索引变了——这正是评估集最容易骗人的地方。
+    """
+
+    from app.eval_store import fingerprint_text
+
+    doc_ids = sorted(
+        {
+            str((entry.get("fingerprints") or {}).get(chunk_id, {}).get("doc_id") or "")
+            for entry in questions
+            for chunk_id in (entry.get("relevant_chunk_ids") or [])
+        }
+        - {""}
+    )
+
+    by_doc: dict[str, dict[str, str]] = {}
+    if doc_ids:
+        with knowledge_base_lock.read():
+            result = get_vector_store(
+                settings.chroma_persist_dir,
+                settings.embedding_model,
+                settings.embedding_api_key,
+                settings.embedding_base_url,
+            ).get(
+                where={
+                    "$and": [
+                        {"doc_id": {"$in": doc_ids}},
+                        {"knowledge_base_id": settings.knowledge_base_id},
+                    ]
+                },
+                include=["documents", "metadatas"],
+            )
+        for text, raw_metadata in zip(
+            result.get("documents") or [], result.get("metadatas") or []
+        ):
+            metadata = raw_metadata or {}
+            chunk_id = str(metadata.get("chunk_id") or "")
+            doc_id = str(metadata.get("doc_id") or "")
+            if chunk_id and doc_id:
+                # 指纹 → 当前 chunk_id，用于按内容重新定位
+                by_doc.setdefault(doc_id, {})[fingerprint_text(str(text or ""))] = chunk_id
+
+    current = resolve_chunks(
+        settings,
+        [
+            str(chunk_id)
+            for entry in questions
+            for chunk_id in (entry.get("relevant_chunk_ids") or [])
+        ],
+    )
+
+    anchored: list[dict] = []
+    for entry in questions:
+        fingerprints = entry.get("fingerprints") or {}
+        resolved: list[str] = []
+        stale: list[str] = []
+        for raw_chunk_id in entry.get("relevant_chunk_ids") or []:
+            chunk_id = str(raw_chunk_id)
+            expected = str((fingerprints.get(chunk_id) or {}).get("text_sha1") or "")
+            doc_id = str((fingerprints.get(chunk_id) or {}).get("doc_id") or "")
+
+            live = current.get(chunk_id)
+            if live is not None and (
+                not expected or fingerprint_text(str(live.get("text") or "")) == expected
+            ):
+                resolved.append(chunk_id)
+                continue
+
+            relocated = by_doc.get(doc_id, {}).get(expected) if expected else None
+            if relocated:
+                resolved.append(relocated)
+            else:
+                stale.append(chunk_id)
+
+        anchored.append(
+            {
+                "id": entry.get("id"),
+                "question": str(entry.get("question") or ""),
+                "relevant_chunk_ids": resolved,
+                "relevant_doc_ids": [str(d) for d in (entry.get("relevant_doc_ids") or [])],
+                "stale_chunk_ids": stale,
+                "source": entry.get("source"),
+            }
+        )
+    return anchored
+
+
 def answer_question(
     question: str,
     settings: Settings,

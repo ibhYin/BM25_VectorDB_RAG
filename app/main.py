@@ -264,7 +264,7 @@ def eval_run(
     from app.access import load_access_policy
     from app.eval_metrics import hit_at_k, mean_over_labeled, mrr, recall_at_k
     from app.eval_store import read_questions
-    from app.service import retrieve_question
+    from app.service import anchor_eval_labels, retrieve_question
 
     try:
         ks = sorted({int(part) for part in k.split(",") if part.strip()})
@@ -286,8 +286,13 @@ def eval_run(
     policy = load_access_policy(settings.access_policy_file)
     user = policy.user_context(user_id) if policy and user_id else None
 
+    # 先重新锚定：索引变了之后，同一个 chunk_id 可能已经指向别的正文，靠标签里
+    # 存的正文指纹重新定位。锚不上的会被标为 stale 并**从指标里剔除**——绝不当成
+    # 「没召回」，否则索引一变指标就凭空变差，还看不出原因。
+    anchored = anchor_eval_labels(settings, questions)
+
     rows: list[dict] = []
-    for entry in questions:
+    for entry in anchored:
         started = perf_counter()
         try:
             hits = retrieve_question(
@@ -306,7 +311,8 @@ def eval_run(
             {
                 "question": str(entry.get("question") or ""),
                 "retrieved": [str(hit.get("chunk_id") or "") for hit in hits],
-                "relevant": [str(c) for c in (entry.get("relevant_chunk_ids") or [])],
+                "relevant": list(entry.get("relevant_chunk_ids") or []),
+                "stale": list(entry.get("stale_chunk_ids") or []),
                 "elapsed": perf_counter() - started,
                 "hits": hits,
             }
@@ -321,8 +327,10 @@ def eval_run(
     table.add_column(f"Recall@{last_k}", justify="right")
     table.add_column("耗时", justify="right", style="dim")
     for row in rows:
+        # 有失效标注的题打个记号：它的数字是基于「剩下的有效标注」算的
+        marker = "⚠ " if row["stale"] else ""
         table.add_row(
-            row["question"][:44],
+            marker + row["question"][:44],
             *[
                 _fmt_number(hit_at_k(row["retrieved"], row["relevant"], value), 2)
                 for value in ks
@@ -348,6 +356,18 @@ def eval_run(
         f"\n已标注 [bold]{len(labelled)}[/bold] / {len(rows)} 道题"
         f"（未标注的不计入指标）。"
     )
+
+    stale_total = sum(len(row["stale"]) for row in rows)
+    if stale_total:
+        console.print(
+            f"[yellow]⚠ {stale_total} 条标注找不到对应切片，已从指标里剔除"
+            "（不是算作没召回）。重建索引或源文件改名都会让 chunk 编号指向别的正文——"
+            "用 `eval label` 把这几道题重标一下。[/yellow]"
+        )
+        for row in rows:
+            if row["stale"]:
+                console.print(f"  [dim]{row['question'][:40]}[/dim] → {', '.join(row['stale'])}")
+
     if not labelled:
         console.print(
             "[yellow]一道都没标注，没有可报告的数字。[/yellow]"

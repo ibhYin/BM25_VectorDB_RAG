@@ -150,6 +150,19 @@ def test_relabelling_replaces_the_previous_labels() -> None:
 # --- run --------------------------------------------------------------------
 
 
+def stub_anchoring(monkeypatch) -> None:
+    """把重新锚定打桩成「原样通过」。
+
+    `eval run` 会先拿真实索引去锚定标签，那是另一个测试文件（test_eval_anchor.py）
+    的事；这里只测 CLI 的报告行为，不该依赖索引。
+    """
+
+    monkeypatch.setattr(
+        "app.service.anchor_eval_labels",
+        lambda settings, questions: [{**entry, "stale_chunk_ids": []} for entry in questions],
+    )
+
+
 def test_run_without_questions_points_at_the_onboarding_step() -> None:
     result = runner.invoke(app, ["eval", "run"])
 
@@ -167,6 +180,7 @@ def test_run_rejects_a_bad_k(bad_k: str) -> None:
 def test_run_reports_no_numbers_when_nothing_is_labelled(monkeypatch) -> None:
     """一道都没标注时不能报出数字——那会让人以为检索很糟。"""
 
+    stub_anchoring(monkeypatch)
     upsert_question("问题一")
     monkeypatch.setattr(
         "app.service.retrieve_question",
@@ -181,6 +195,7 @@ def test_run_reports_no_numbers_when_nothing_is_labelled(monkeypatch) -> None:
 
 
 def test_run_scores_labelled_questions(monkeypatch) -> None:
+    stub_anchoring(monkeypatch)
     upsert_question("问题一", relevant_chunk_ids=["b#chunk_002"])
     monkeypatch.setattr(
         "app.service.retrieve_question",
@@ -199,6 +214,7 @@ def test_run_scores_labelled_questions(monkeypatch) -> None:
 
 
 def test_show_hits_prints_the_chunks(monkeypatch) -> None:
+    stub_anchoring(monkeypatch)
     upsert_question("问题一")
     monkeypatch.setattr(
         "app.service.retrieve_question",
