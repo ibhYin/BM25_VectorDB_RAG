@@ -42,6 +42,20 @@ export function emit(event, payload) {
   for (const handler of listeners.get(event) || []) handler(payload);
 }
 
+/**
+ * 把事件派发给**已挂载**视图的同名钩子。
+ *
+ * 路由只负责 mount / show / hide；onStatus / onIdentity / onDocuments 这类钩子是给
+ * 事件用的。此前漏了这一环，于是各视图都实现过、却从没人调用——等于死代码：
+ * 问答页「按服务端默认值回填检索参数」、知识库页「文档变了重渲染」、审计与评估页
+ * 「切换身份时清掉本地状态」都一直没生效。
+ */
+function notifyViews(hook, payload) {
+  for (const [name, view] of views) {
+    if (mounted.has(name)) view[hook]?.(payload);
+  }
+}
+
 // --- DOM helpers ----------------------------------------------------------
 
 export function createSpinner() {
@@ -210,6 +224,7 @@ export async function loadIdentity() {
   renderUserSwitcher();
   renderNavGating();
   emit("identity", state.identity);
+  notifyViews("onIdentity", state.identity);
 }
 
 // 仅管理员可见的页面。加新页时只改这一处——此前导航显隐和「离开无权页面」是
@@ -292,6 +307,7 @@ export async function refreshStatus() {
     el.modelStatus.classList.toggle("ok", status.has_openai_api_key);
     renderIndexWarning(status);
     emit("status", status);
+    notifyViews("onStatus", status);
   } catch (_) {
     state.status = null;
     el.serviceSummary.textContent = "服务连接失败";
@@ -299,6 +315,7 @@ export async function refreshStatus() {
     el.modelStatus.textContent = "服务不可用";
     el.indexWarning.hidden = true;
     emit("status", null);
+    notifyViews("onStatus", null);
   } finally {
     setStatusLoading(false);
     el.refreshButton.disabled = false;
@@ -324,6 +341,7 @@ export async function refreshDocuments() {
     state.documents = payload.documents || [];
     state.access = payload.access || { enabled: false, manageable: false, groups: [] };
     emit("documents", state.documents);
+    notifyViews("onDocuments", state.documents);
   } catch (error) {
     emit("documents:error", error.message);
   }
