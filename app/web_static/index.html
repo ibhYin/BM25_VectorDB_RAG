@@ -74,7 +74,10 @@
               <select id="ask-llm-model" class="ask-model-select" aria-label="对话模型（改动保存在服务器上）" hidden></select>
               <input id="ask-llm-model-custom" class="ask-model-custom" type="text" placeholder="输入模型名" autocomplete="off" spellcheck="false" hidden />
               <span class="ask-model-hint" id="ask-llm-hint" role="status" aria-live="polite"></span>
-              <span class="kb-status" id="kb-status"></span>
+              <div class="kb-picker">
+                <button id="kb-status" class="kb-status" type="button" aria-haspopup="menu" aria-expanded="false">—</button>
+                <div id="kb-menu" class="kb-menu" role="menu" hidden></div>
+              </div>
               <span class="kb-note" id="kb-others" hidden></span>
               <button id="clear-chat-button" class="icon-button" type="button" title="清空当前对话" aria-label="清空当前对话">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>

@@ -30,7 +30,9 @@ const el = {
   similarityThresholdValue: document.querySelector("#similarity-threshold-value"),
   processList: document.querySelector("#process-list"),
   contextList: document.querySelector("#context-list"),
+  kbPicker: document.querySelector(".kb-picker"),
   kbStatus: document.querySelector("#kb-status"),
+  kbMenu: document.querySelector("#kb-menu"),
   kbOthers: document.querySelector("#kb-others"),
   newConversation: document.querySelector("#new-conversation"),
   conversationList: document.querySelector("#conversation-list"),
@@ -578,6 +580,60 @@ async function ensureConversation() {
 
 // --- knowledge base status ------------------------------------------------
 
+// 点知识库 chip 展开这一库里有哪些文档。数据就是 state.documents——它对非管理员
+// 已经按访问组过滤过了，所以这里不会漏出看不到的文档。
+function renderKnowledgeBaseMenu() {
+  const documents = state.documents || [];
+  el.kbMenu.replaceChildren();
+
+  const title = document.createElement("div");
+  title.className = "menu-title";
+  title.textContent = documents.length
+    ? `${documents.length} 个文档 · 点击打开`
+    : "这个知识库里还没有文档";
+  el.kbMenu.append(title);
+
+  if (!documents.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-list";
+    empty.textContent = "去「知识库」页上传文档后就能在这里看到";
+    el.kbMenu.append(empty);
+    return;
+  }
+
+  for (const doc of documents) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "menu-item";
+    item.setAttribute("role", "menuitem");
+    item.title = doc.source || doc.doc_id || "";
+    const name = document.createElement("span");
+    name.textContent = doc.title || doc.doc_id || "未命名文档";
+    const chunks = document.createElement("span");
+    chunks.className = "kb-chunks";
+    chunks.textContent = `${doc.chunk_count || 0} 片`;
+    item.append(name, chunks);
+    item.addEventListener("click", () => {
+      closeKnowledgeBaseMenu();
+      // 与引用标签走同一条路：跳到知识库页并原地打开该文档
+      router.navigate("library", { docId: doc.doc_id });
+    });
+    el.kbMenu.append(item);
+  }
+}
+
+function toggleKnowledgeBaseMenu() {
+  const open = el.kbMenu.hidden;
+  if (open) renderKnowledgeBaseMenu();
+  el.kbMenu.hidden = !open;
+  el.kbStatus.setAttribute("aria-expanded", String(open));
+}
+
+function closeKnowledgeBaseMenu() {
+  el.kbMenu.hidden = true;
+  el.kbStatus.setAttribute("aria-expanded", "false");
+}
+
 function renderKnowledgeBaseStatus() {
   const documents = state.documents.length;
   const chunks = state.documents.reduce(
@@ -608,6 +664,9 @@ function renderKnowledgeBaseStatus() {
   }
   el.kbStatus.className = "kb-status";
   el.kbStatus.textContent = `${label} · ${documents} 个文档 · ${chunks} 个切片`;
+
+  // 菜单开着的时候文档变了（比如刚上传完），跟着刷新，免得看到过期列表
+  if (el.kbMenu && !el.kbMenu.hidden) renderKnowledgeBaseMenu();
 }
 
 // --- view contract --------------------------------------------------------
@@ -769,6 +828,16 @@ export default {
     setupResizers();
     bindModelSwitcher();
     loadKnowledgeBases();
+
+    el.kbStatus.addEventListener("click", toggleKnowledgeBaseMenu);
+    document.addEventListener("click", (event) => {
+      if (!el.kbMenu.hidden && !el.kbPicker.contains(event.target)) {
+        closeKnowledgeBaseMenu();
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !el.kbMenu.hidden) closeKnowledgeBaseMenu();
+    });
 
     // Empty states for the evidence rail before the first question.
     renderProcess();
