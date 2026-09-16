@@ -24,6 +24,7 @@
         </a>
         <a class="nav-link" id="nav-settings" href="#/settings" data-route="settings">设置</a>
         <a class="nav-link" id="nav-audit" href="#/audit" data-route="audit" hidden>审计</a>
+        <a class="nav-link" id="nav-eval" href="#/eval" data-route="eval" hidden>评估</a>
       </nav>
 
       <div class="header-actions">
@@ -357,6 +358,55 @@
           <button id="audit-refresh" class="ghost-button" type="button">刷新</button>
         </div>
         <div class="item-list audit-list" id="audit-list" aria-live="polite"></div>
+      </section>
+    </section>
+
+    <!-- ============================ 评估 ============================ -->
+    <section class="page" id="page-eval" hidden aria-label="检索评估">
+      <div class="page-head">
+        <h2>评估</h2>
+        <p>给问题标出「本该被召回的切片」，再用指标判断检索改动到底有没有用</p>
+        <p class="config-hint">
+          标注是人工的，必然标不全，所以以 Hit@K 与 MRR 为准；Recall@K 只是下界。
+        </p>
+      </div>
+
+      <section class="panel">
+        <div class="audit-toolbar">
+          <label class="mini-field">
+            <span>方法</span>
+            <select id="eval-method" class="config-select">
+              <option value="">跟随配置</option>
+              <option value="vector">vector</option>
+              <option value="bm25">bm25</option>
+              <option value="hybrid">hybrid</option>
+            </select>
+          </label>
+          <label class="mini-field">
+            <span>Top-K</span>
+            <input id="eval-top-k" type="number" min="1" max="100" step="1" value="10" />
+          </label>
+          <label class="mini-field">
+            <span>K</span>
+            <input id="eval-ks" type="text" value="1,3,5" autocomplete="off" spellcheck="false" />
+          </label>
+          <span class="config-status" id="eval-status" role="status" aria-live="polite"></span>
+          <button id="eval-import" class="ghost-button" type="button">从对话记录导入</button>
+          <button id="eval-run" class="ghost-button" type="button">跑一遍看指标</button>
+          <button id="eval-refresh" class="ghost-button" type="button">刷新</button>
+        </div>
+        <div id="eval-summary" class="eval-summary" aria-live="polite"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-head">
+          <h3>问题集与标注</h3>
+          <p class="section-hint">
+            展开一道题看它召回了什么，勾出本该被召回的那些切片再保存。
+            召回是按**你当前的身份**过滤的，换身份看到的可能不同。
+          </p>
+        </div>
+        <div class="item-list" id="eval-list" aria-live="polite"></div>
       </section>
     </section>
 

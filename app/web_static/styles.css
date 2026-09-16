@@ -2019,3 +2019,122 @@ svg {
 
   .doc-table.with-access .doc-access-select { grid-area: access; }
 }
+
+/* ============================ 评估页 ============================ */
+
+.eval-summary {
+  padding: 2px;
+}
+
+.eval-summary-table {
+  border-collapse: collapse;
+  margin-bottom: 6px;
+}
+
+.eval-summary-table th,
+.eval-summary-table td {
+  padding: 3px 18px 3px 0;
+  text-align: left;
+  font-size: 12.5px;
+}
+
+.eval-summary-table th {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.eval-summary-table td:last-child {
+  font-family: var(--mono);
+}
+
+/* section-hint 默认右对齐（是给工具栏用的），这里要左对齐 */
+.eval-summary .section-hint,
+.eval-actions .section-hint {
+  text-align: left;
+}
+
+.eval-card {
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin-bottom: 6px;
+  background: var(--surface);
+}
+
+.eval-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.eval-card-head strong {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.eval-badge {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+.eval-badge.warning {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+  cursor: help;
+}
+
+.eval-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+/* 勾选框放在召回卡片**外面**：卡片本身是要读的，包进 label 会让点正文也误勾 */
+.eval-hit {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.eval-hit > input[type="checkbox"] {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 12px;
+  cursor: pointer;
+}
+
+.eval-hit .vector-hit {
+  flex: 1;
+  min-width: 0;
+}
+
+.eval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.eval-actions .section-hint {
+  flex: 1;
+  min-width: 220px;
+}
+
+/* 评估页的问题列表会很长，限高免得把页面撑开 */
+#eval-list {
+  max-height: 60vh;
+  overflow-y: auto;
+}

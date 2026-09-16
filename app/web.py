@@ -29,6 +29,34 @@ def _actor_name(user: UserContext | None) -> str:
     return owner_of(user)
 
 
+DEFAULT_KS = (1, 3, 5)
+
+
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item).strip()]
+
+
+def _read_k_list(value: object) -> list[int]:
+    """评估用的 K 列表。
+
+    非法值直接报 400，而不是悄悄退回默认——那样两次跑批的 cutoff 不同，快照对比
+    就没意义了，而且从输出上看不出来。
+    """
+
+    if value is None:
+        return list(DEFAULT_KS)
+    if not isinstance(value, list):
+        raise RequestError(HTTPStatus.BAD_REQUEST, "ks must be a list of integers")
+    ks: list[int] = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, int) or item <= 0:
+            raise RequestError(HTTPStatus.BAD_REQUEST, "ks must be positive integers")
+        ks.append(item)
+    return sorted(set(ks)) or list(DEFAULT_KS)
+
+
 class RequestError(Exception):
     def __init__(self, status: HTTPStatus, message: str) -> None:
         super().__init__(message)
@@ -74,6 +102,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._handle_get_config()
         elif parsed.path == "/api/audit":
             self._handle_audit_log(parsed.query)
+        elif parsed.path == "/api/eval":
+            self._handle_eval()
         elif parsed.path == "/api/staging":
             self._handle_staging_list()
         elif parsed.path == "/api/conversations":
@@ -126,6 +156,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._handle_create_answer_job()
         elif parsed.path == "/api/conversations":
             self._handle_create_conversation()
+        elif parsed.path.startswith("/api/eval/"):
+            self._handle_eval_action(parsed.path.removeprefix("/api/eval/"))
         else:
             raise RequestError(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -355,6 +387,138 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             {
                 "path": str(audit_log_path()),
                 "entries": read_entries(limit),
+            }
+        )
+
+    # --- 评估（全部仅管理员）-------------------------------------------------
+
+    def _handle_eval(self) -> None:
+        """问题集与标注。标注已经重新锚定到当前索引，失效的会标出来。"""
+
+        from app.eval_store import read_questions
+        from app.service import anchor_eval_labels
+
+        self._require_admin()
+        settings = get_settings()
+        questions = read_questions()
+        anchored = anchor_eval_labels(settings, questions) if questions else []
+        self._send_json({"questions": anchored, "total": len(anchored)})
+
+    def _handle_eval_action(self, action: str) -> None:
+        handlers = {
+            "import": self._eval_import,
+            "label": self._eval_label,
+            "retrieve": self._eval_retrieve,
+            "run": self._eval_run,
+        }
+        handler = handlers.get(action)
+        if handler is None:
+            raise RequestError(HTTPStatus.NOT_FOUND, "Not found")
+        handler()
+
+    def _eval_import(self) -> None:
+        from app.eval_store import import_first_turn_questions, read_questions
+
+        self._require_admin()
+        self._send_json(
+            {
+                "imported": import_first_turn_questions(),
+                "total": len(read_questions()),
+            }
+        )
+
+    def _eval_label(self) -> None:
+        from app.eval_store import fingerprints_for, upsert_question
+        from app.service import resolve_chunks
+
+        self._require_admin()
+        payload = self._read_json()
+        question = payload.get("question")
+        if not isinstance(question, str) or not question.strip():
+            raise RequestError(HTTPStatus.BAD_REQUEST, "question is required")
+
+        chunk_ids = _string_list(payload.get("relevant_chunk_ids"))
+        doc_ids = _string_list(payload.get("relevant_doc_ids"))
+        resolved = resolve_chunks(get_settings(), chunk_ids)
+        kept = list(resolved)
+        entry = upsert_question(
+            question,
+            relevant_chunk_ids=kept,
+            relevant_doc_ids=doc_ids,
+            fingerprints=fingerprints_for(list(resolved.values()), kept),
+            note=str(payload.get("note") or ""),
+        )
+        # 取不到的 id 要回给前端：是拼错了、还是索引重建过导致编号变了，
+        # 标注的人得当场知道，而不是让标注静悄悄地少一块。
+        self._send_json(
+            {
+                "id": entry["id"],
+                "relevant_chunk_ids": kept,
+                "unresolved": [c for c in chunk_ids if c not in resolved],
+            }
+        )
+
+    def _eval_retrieve(self) -> None:
+        from app.service import retrieve_question
+
+        user = self._require_admin()
+        payload = self._read_json()
+        question = payload.get("question")
+        if not isinstance(question, str) or not question.strip():
+            raise RequestError(HTTPStatus.BAD_REQUEST, "question is required")
+
+        top_k, threshold, method, pool = self._read_retrieval_params(payload)
+        hits = retrieve_question(
+            question,
+            get_settings(),
+            retrieval_method=method,
+            top_k=top_k,
+            similarity_threshold=threshold,
+            candidate_pool=pool,
+            user=user,
+        )
+        self._send_json({"hits": hits})
+
+    def _eval_run(self) -> None:
+        from app.eval_runner import run_batch
+        from app.eval_store import read_questions
+        from app.service import anchor_eval_labels
+
+        user = self._require_admin()
+        payload = self._read_json()
+        ks = _read_k_list(payload.get("ks"))
+        top_k, threshold, method, pool = self._read_retrieval_params(payload)
+
+        settings = get_settings()
+        batch = run_batch(
+            settings,
+            anchor_eval_labels(settings, read_questions()),
+            ks=ks,
+            method=method,
+            top_k=top_k,
+            threshold=threshold,
+            pool=pool,
+            user=user,
+        )
+        # 只回检索结果 id，不回 hit 正文：那些按题去 /api/eval/retrieve 取，
+        # 一次跑批塞进几十道题的正文会让响应白白变大。
+        self._send_json(
+            {
+                "summary": batch["summary"],
+                "labelled": batch["labelled"],
+                "total": batch["total"],
+                "stale_total": batch["stale_total"],
+                "questions": [
+                    {
+                        "id": row["id"],
+                        "question": row["question"],
+                        "retrieved": row["retrieved"],
+                        "relevant": row["relevant"],
+                        "stale": row["stale"],
+                        "elapsed_ms": round(row["elapsed"] * 1000, 1),
+                    }
+                    for row in batch["rows"]
+                ],
             }
         )
 

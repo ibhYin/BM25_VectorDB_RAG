@@ -155,3 +155,28 @@ def read_questions() -> list[dict]:
         latest[entry_id] = payload
 
     return [latest[entry_id] for entry_id in order]
+
+
+def import_first_turn_questions(owner: str = "") -> int:
+    """把对话记录里的**首轮**问题导进问题集，返回新增数量。
+
+    只取首轮：追问依赖对话上下文，而改写后的独立问题不落盘，原样导入等于拿一个
+    断章问题去评估。
+
+    **幂等**：已存在的题跳过。这条不只是省事——`upsert_question` 会追加一条新记录
+    并在读时覆盖旧记录，不判重的话第二次导入就把辛苦标的题全清空了，而且从输出上
+    看不出异常。
+    """
+
+    from app.conversations import get_conversation_store
+
+    existing = {str(entry.get("id")) for entry in read_questions()}
+    imported = 0
+    for item in get_conversation_store().first_turn_questions():
+        if owner and item["owner"] != owner:
+            continue
+        if question_id(item["question"]) in existing:
+            continue
+        upsert_question(item["question"], source="conversation")
+        imported += 1
+    return imported

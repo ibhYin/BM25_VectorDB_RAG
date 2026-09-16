@@ -18,6 +18,7 @@ export const el = {
   refreshButton: document.querySelector("#refresh-button"),
   indexWarning: document.querySelector("#index-warning"),
   navAudit: document.querySelector("#nav-audit"),
+  navEval: document.querySelector("#nav-eval"),
   navSettings: document.querySelector("#nav-settings"),
   navLibraryBadge: document.querySelector("#nav-library-badge"),
   userSwitcher: document.querySelector("#user-switcher"),
@@ -211,12 +212,23 @@ export async function loadIdentity() {
   emit("identity", state.identity);
 }
 
+// 仅管理员可见的页面。加新页时只改这一处——此前导航显隐和「离开无权页面」是
+// 两份各自维护的名单，加页时很容易只改一个。
+const ADMIN_PAGES = ["settings", "audit", "eval"];
+
 function renderNavGating() {
   const allowed = canConfigure();
-  if (el.navSettings) el.navSettings.hidden = !allowed;
-  if (el.navAudit) el.navAudit.hidden = !allowed;
+  const links = {
+    settings: el.navSettings,
+    audit: el.navAudit,
+    eval: el.navEval,
+  };
+  for (const name of ADMIN_PAGES) {
+    const link = links[name];
+    if (link) link.hidden = !allowed;
+  }
   // Leaving a now-forbidden page (user switched to non-admin).
-  if (!allowed && ["settings", "audit"].includes(currentName)) {
+  if (!allowed && ADMIN_PAGES.includes(currentName)) {
     router.navigate("ask");
   }
 }

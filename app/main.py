@@ -1,6 +1,5 @@
 from pathlib import Path
 import sys
-from time import perf_counter
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -210,18 +209,9 @@ def eval_import_conversations(
     已存在的题目会跳过，**不会覆盖已有标注**——重复导入是安全的。
     """
 
-    from app.conversations import get_conversation_store
-    from app.eval_store import question_id, read_questions, upsert_question
+    from app.eval_store import import_first_turn_questions, read_questions
 
-    existing = {str(entry.get("id")) for entry in read_questions()}
-    imported = 0
-    for item in get_conversation_store().first_turn_questions():
-        if owner and item["owner"] != owner:
-            continue
-        if question_id(item["question"]) in existing:
-            continue
-        upsert_question(item["question"], source="conversation")
-        imported += 1
+    imported = import_first_turn_questions(owner)
 
     console.print(
         f"新增 [bold]{imported}[/bold] 道题（已存在的不重复添加、不覆盖标注）。"
@@ -302,9 +292,10 @@ def eval_run(
     """
 
     from app.access import load_access_policy
-    from app.eval_metrics import hit_at_k, mean_over_labeled, mrr, recall_at_k
+    from app.eval_metrics import hit_at_k, mrr, recall_at_k
+    from app.eval_runner import run_batch
     from app.eval_store import read_questions
-    from app.service import anchor_eval_labels, retrieve_question
+    from app.service import anchor_eval_labels
 
     try:
         ks = sorted({int(part) for part in k.split(",") if part.strip()})
@@ -331,37 +322,22 @@ def eval_run(
     # 「没召回」，否则索引一变指标就凭空变差，还看不出原因。
     anchored = anchor_eval_labels(settings, questions)
 
-    rows: list[dict] = []
-    for entry in anchored:
-        started = perf_counter()
-        try:
-            hits = retrieve_question(
-                str(entry.get("question") or ""),
-                settings,
-                retrieval_method=method,
-                top_k=top_k,
-                similarity_threshold=threshold,
-                candidate_pool=pool,
-                user=user,
-            )
-        except Exception as exc:
-            console.print(f"[red]检索失败：[/red]{entry.get('question')} — {exc}")
-            raise typer.Exit(code=1) from exc
-        rows.append(
-            {
-                "id": entry.get("id"),
-                "question": str(entry.get("question") or ""),
-                "retrieved": [str(hit.get("chunk_id") or "") for hit in hits],
-                # 文档级也记一份：切片方式变了之后 chunk 编号不可比，但「有没有找到
-                # 对的文档」还是能看的。
-                "retrieved_docs": [str(hit.get("doc_id") or "") for hit in hits],
-                "relevant": list(entry.get("relevant_chunk_ids") or []),
-                "relevant_docs": list(entry.get("relevant_doc_ids") or []),
-                "stale": list(entry.get("stale_chunk_ids") or []),
-                "elapsed": perf_counter() - started,
-                "hits": hits,
-            }
+    try:
+        # 跑批逻辑与网页共用一份（app/eval_runner.py），免得两边各写一套、日后分叉
+        batch = run_batch(
+            settings,
+            anchored,
+            ks=ks,
+            method=method,
+            top_k=top_k,
+            threshold=threshold,
+            pool=pool,
+            user=user,
         )
+    except Exception as exc:
+        console.print(f"[red]检索失败：[/red]{exc}")
+        raise typer.Exit(code=1) from exc
+    rows = batch["rows"]
 
     last_k = ks[-1]
     table = Table(box=None, pad_edge=False)
@@ -448,32 +424,14 @@ def eval_run(
     summary = Table(box=None, pad_edge=False, show_header=False)
     summary.add_column()
     summary.add_column(justify="right")
-    for value in ks:
-        summary.add_row(
-            f"Hit@{value}",
-            _fmt_number(
-                mean_over_labeled(
-                    hit_at_k(row["retrieved"], row["relevant"], value) for row in labelled
-                ),
-                3,
-            ),
-        )
-    summary.add_row(
-        "MRR",
-        _fmt_number(
-            mean_over_labeled(mrr(row["retrieved"], row["relevant"]) for row in labelled),
-            3,
-        ),
-    )
-    summary.add_row(
-        f"Recall@{last_k}（下界）",
-        _fmt_number(
-            mean_over_labeled(
-                recall_at_k(row["retrieved"], row["relevant"], last_k) for row in labelled
-            ),
-            3,
-        ),
-    )
+    for name, value in batch["summary"].items():
+        if name == "mrr":
+            label = "MRR"
+        elif name.startswith("hit@"):
+            label = f"Hit@{name.split('@')[1]}"
+        else:
+            label = f"Recall@{name.split('@')[1]}（下界）"
+        summary.add_row(label, _fmt_number(value))
     console.print(summary)
 
 
