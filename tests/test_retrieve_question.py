@@ -125,6 +125,20 @@ def test_retrieve_question_returns_scores_unlike_the_llm_context(indexed, stubs)
     assert {"chunk_id", "doc_id", "section_path", "text"} <= set(hits[0])
 
 
+def test_hybrid_hits_are_numbered_by_their_returned_order(indexed, stubs) -> None:
+    """hybrid 按融合分重排之后，名次必须跟着重排。
+
+    `build_vector_hits` 给的 `rank` 是**向量候选里的**名次，融合排序之后就对不上了
+    ——界面上会出现「第一张卡片写着 #4」。评估页正是靠这个名次判断检索好坏的。
+    """
+
+    hits = retrieve_question("注意力", settings_for(indexed), retrieval_method="hybrid")
+
+    assert [hit["rank"] for hit in hits] == list(range(1, len(hits) + 1))
+    scores = [hit["rrf_score"] for hit in hits]
+    assert scores == sorted(scores, reverse=True)
+
+
 def test_retrieve_question_rejects_a_blank_question(indexed) -> None:
     with pytest.raises(ValueError, match="Question is required"):
         retrieve_question("   ", settings_for(indexed))

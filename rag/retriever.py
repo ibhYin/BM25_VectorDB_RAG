@@ -192,7 +192,13 @@ def rrf_fuse(
         fused.append((score, index, merged))
 
     fused.sort(key=lambda item: (-item[0], item[1]))
-    return [hit for _, _, hit in fused]
+    # 重新编号。排序变了，而 `build_vector_hits` 给的 `rank` 还是**向量候选里的**
+    # 名次——直接用会让界面上第一张卡片写着「#4」。评估页正是靠这个名次判断检索
+    # 好坏的，糊弄不得。
+    return [
+        {**hit, "rank": position}
+        for position, (_, _, hit) in enumerate(fused, start=1)
+    ]
 
 
 def format_vector_hits(hits: list[dict[str, object]]) -> list[str]:
