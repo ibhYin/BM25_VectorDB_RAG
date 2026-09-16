@@ -68,6 +68,9 @@
                  而不是下面那排「按请求」的检索参数里 —— 放那里会被当成只影响这一次。
                  非管理员看不到它（由 canConfigure() 决定）。 -->
             <div class="ask-head-right">
+              <!-- 不能改的人也看得到当前用的是哪个模型：它直接决定答案质量，
+                   藏起来只会让人不知道自己在跟哪个模型说话。 -->
+              <span class="chip ask-model-readonly" id="ask-llm-readonly" hidden></span>
               <select id="ask-llm-model" class="ask-model-select" aria-label="对话模型（改动保存在服务器上）" hidden></select>
               <input id="ask-llm-model-custom" class="ask-model-custom" type="text" placeholder="输入模型名" autocomplete="off" spellcheck="false" hidden />
               <span class="ask-model-hint" id="ask-llm-hint" role="status" aria-live="polite"></span>

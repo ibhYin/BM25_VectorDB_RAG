@@ -36,6 +36,7 @@ const el = {
   conversationList: document.querySelector("#conversation-list"),
 
   llmModel: document.querySelector("#ask-llm-model"),
+  llmReadonly: document.querySelector("#ask-llm-readonly"),
   llmModelCustom: document.querySelector("#ask-llm-model-custom"),
   llmHint: document.querySelector("#ask-llm-hint"),
 
@@ -698,12 +699,17 @@ const llmPicker = createModelPicker({
 let modelSwitcherReady = false;
 
 async function setupModelSwitcher(status = state.status) {
+  const model = status?.llm_model || "";
   // 开机时身份还没到（state.identity.user 为 null），canConfigure() 按开放模式算成
   // 允许，于是选择器会先显示出来；等拿到身份发现其实是普通用户，靠 onIdentity 收回。
   const allowed = canConfigure();
   el.llmModel.hidden = !allowed;
+  // 不能改的人也要知道现在用的是哪个模型——它直接决定答案质量。所以给一个只读的
+  // chip，而不是干脆什么都不显示。
+  el.llmReadonly.hidden = allowed;
+  el.llmReadonly.textContent = model ? `模型 ${model}` : "";
+  el.llmReadonly.title = model ? `当前对话模型：${model}（由管理员配置）` : "";
   if (!allowed) return;
-  const model = status?.llm_model || "";
   llmPicker.setValue(model);
   if (modelSwitcherReady) {
     reflectModel(model);
