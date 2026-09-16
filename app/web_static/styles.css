@@ -370,10 +370,10 @@ svg {
   height: 100%;
   min-height: 0;
   display: grid;
-  grid-template-columns: var(--rail-conv) minmax(0, 1fr) 6px var(--rail-right);
+  grid-template-columns: var(--rail-conv) 6px minmax(0, 1fr) 6px var(--rail-right);
 }
 
-/* 对话记录栏：固定宽度，只让右侧证据栏可拖拽，避免三条分隔线。 */
+/* 两条侧栏各有一条分隔边框：分隔条被隐藏时（窄屏）它就是唯一的分界线。 */
 .conv-rail {
   min-height: 0;
   display: flex;
@@ -1925,7 +1925,8 @@ svg {
     grid-template-rows: minmax(0, 1fr) auto;
   }
 
-  .ask-layout .resizer {
+  .ask-layout .resizer,
+  .resizer-row {
     display: none;
   }
 
@@ -2137,4 +2138,112 @@ svg {
 #eval-list {
   max-height: 60vh;
   overflow-y: auto;
+}
+
+/* ==================== 问答页：分隔条与头部控件 ==================== */
+
+/* 行方向的分隔条镜像是 .resizer，但**隐藏时机不同**：列方向在 1200px 就该收
+   （列太挤），行方向要到 980px 布局堆叠之后才收。所以用两个类而不是同一个。
+
+   高度必须显式给：列方向那条是靠 grid 的 6px 轨道撑开的，而行方向这条是
+   .ask-main 里的 flex 项，没有内容也没有高度，不写就塌成 0 —— 看不见也拖不动。 */
+.resizer-row {
+  position: relative;
+  flex: none;
+  height: 6px;
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.resizer-row::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  transform: translateY(-50%);
+  background: var(--line);
+  transition: background-color 120ms ease, height 120ms ease;
+}
+
+.resizer-row:hover::after,
+.resizer-row:focus-visible::after,
+.resizer-row.dragging::after {
+  height: 2px;
+  background: var(--accent);
+}
+
+/* 头部这一行加了模型选择器之后窄窗会挤，允许换行 */
+.ask-head {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+.ask-head-right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* 比 .config-select（34px）紧凑一档，才塞得进头部这一行 */
+.ask-model-select,
+.ask-model-custom {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--bg);
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.ask-model-select {
+  max-width: 220px;
+  cursor: pointer;
+}
+
+.ask-model-hint {
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
+.ask-model-hint:empty {
+  display: none;
+}
+
+.ask-model-hint.error {
+  color: var(--danger);
+}
+
+/* 策略里定义了、但本实例不服务的知识库。用虚线且不抢眼：它是说明，不是告警。 */
+.kb-note {
+  padding: 3px 9px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 999px;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+/* 竖向拖出来的高度。min-height: min-content 兜住内容——检索参数栏在窄窗会换行，
+   拖得比内容还矮就会被裁掉。 */
+.settings-bar {
+  height: var(--bar-height, auto);
+  min-height: min-content;
+}
+
+.ask-form {
+  height: var(--form-height, auto);
+  min-height: min-content;
+}
+
+/* 输入区加高时文本框要真的跟着变高；发送按钮仍由容器的 align-items: flex-end
+   保持底部对齐。表单没有显式高度时，行的交叉尺寸就等于文本框的自然高度，
+   所以这条不影响现状。 */
+#question {
+  align-self: stretch;
 }

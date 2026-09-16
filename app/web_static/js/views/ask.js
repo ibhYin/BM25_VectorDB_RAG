@@ -1,9 +1,11 @@
 // 问答页：对话流、检索参数、过程与命中证据。
 
 import {
+  canConfigure,
   createSpinner,
   formatTime,
   on,
+  refreshStatus,
   requestJson,
   router,
   shortDocLabel,
@@ -11,6 +13,8 @@ import {
   state,
 } from "../core.js";
 import { createVectorHitCard } from "../hits.js";
+import { CUSTOM_MODEL, createModelPicker } from "../model-picker.js";
+import { enableResize } from "../resizer.js";
 
 const el = {
   chatStream: document.querySelector("#chat-stream"),
@@ -27,8 +31,18 @@ const el = {
   processList: document.querySelector("#process-list"),
   contextList: document.querySelector("#context-list"),
   kbStatus: document.querySelector("#kb-status"),
+  kbOthers: document.querySelector("#kb-others"),
   newConversation: document.querySelector("#new-conversation"),
   conversationList: document.querySelector("#conversation-list"),
+
+  llmModel: document.querySelector("#ask-llm-model"),
+  llmModelCustom: document.querySelector("#ask-llm-model-custom"),
+  llmHint: document.querySelector("#ask-llm-hint"),
+
+  resizerLeft: document.querySelector("#resizer-left"),
+  resizerRight: document.querySelector("#resizer-right"),
+  resizerBar: document.querySelector("#resizer-bar"),
+  resizerForm: document.querySelector("#resizer-form"),
 };
 
 let mounted = false;
@@ -569,98 +583,173 @@ function renderKnowledgeBaseStatus() {
     (total, item) => total + Number(item.chunk_count || 0),
     0,
   );
+  const current = knowledgeBases ? String(knowledgeBases.current || "") : "";
+  const label = current ? `知识库 ${current}` : "知识库";
+
+  // 策略里定义了、但本实例不服务的库。用一个虚线 chip 明说，而不是列成「可用」——
+  // 一个实例只服务一个知识库，切过去是查不到东西的。
+  const others = (knowledgeBases && knowledgeBases.other_knowledge_bases) || [];
+  el.kbOthers.hidden = !others.length;
+  el.kbOthers.textContent = others.length
+    ? `策略另有 ${others.length} 个库（${others.join("、")}），本实例只服务 ${current}`
+    : "";
+
+  if (knowledgeBases && knowledgeBases.accessible === false) {
+    // 访问组对不上时检索会返回空。这是策略配错，不能让表现成「莫名其妙搜不到」。
+    el.kbStatus.className = "kb-status warn";
+    el.kbStatus.textContent = `${label}：你不属于它的访问组，检索会返回空`;
+    return;
+  }
   if (!documents) {
     el.kbStatus.className = "kb-status warn";
-    el.kbStatus.textContent = "知识库还没有文档，答案会缺少依据";
+    el.kbStatus.textContent = `${label} 还没有文档，答案会缺少依据`;
     return;
   }
   el.kbStatus.className = "kb-status";
-  el.kbStatus.textContent = `知识库 ${documents} 个文档 · ${chunks} 个切片`;
+  el.kbStatus.textContent = `${label} · ${documents} 个文档 · ${chunks} 个切片`;
 }
 
 // --- view contract --------------------------------------------------------
 
-// Evidence rail width, persisted so the layout survives a reload.
-const RAIL_STORAGE_KEY = "rag-rail-widths";
-const RAIL_LIMITS = { min: 260, max: 620, default: 360 };
-const layout = document.querySelector(".ask-layout");
-const resizer = document.querySelector("#resizer-right");
+// --- 面板尺寸 --------------------------------------------------------------
 
-function setRailWidth(width) {
-  const clamped = Math.round(
-    Math.min(RAIL_LIMITS.max, Math.max(RAIL_LIMITS.min, width)),
-  );
-  layout.style.setProperty("--rail-right", `${clamped}px`);
-  return clamped;
-}
+// 四个手柄：左栏、右栏、检索参数栏、输入区。拖动、双击复位、方向键、持久化都在
+// js/resizer.js 里 —— 四处交互一样，写四份迟早分叉（尤其方向键的符号：右栏往右
+// 按是变窄，左栏往右按是变宽）。
+const CONV_LIMITS = { min: 180, max: 460, default: 232 };
+const RIGHT_LIMITS = { min: 260, max: 620, default: 360 };
 
-function currentRailWidth() {
-  const rail = document.querySelector(".ask-rail");
-  return rail.getBoundingClientRect().width || RAIL_LIMITS.default;
-}
+function setupResizers() {
+  const layout = document.querySelector(".ask-layout");
+  const measure = (selector, prop) => () =>
+    document.querySelector(selector)?.getBoundingClientRect()[prop] || 0;
 
-function saveRailWidth() {
-  try {
-    localStorage.setItem(
-      RAIL_STORAGE_KEY,
-      JSON.stringify({ right: Math.round(currentRailWidth()) }),
-    );
-  } catch (_) {
-    /* localStorage unavailable (private mode); width stays session-only */
+  enableResize({
+    handle: el.resizerLeft,
+    axis: "x",
+    growsWithDrag: 1, // 左栏在左边：往右拖变宽
+    limits: CONV_LIMITS,
+    read: measure(".conv-rail", "width"),
+    apply: (px) => layout.style.setProperty("--rail-conv", `${px}px`),
+    field: "conv",
+  });
+
+  enableResize({
+    handle: el.resizerRight,
+    axis: "x",
+    growsWithDrag: -1, // 右栏在右边：往右拖变窄
+    limits: RIGHT_LIMITS,
+    read: measure(".ask-rail", "width"),
+    apply: (px) => layout.style.setProperty("--rail-right", `${px}px`),
+    field: "right",
+  });
+
+  // 竖向手柄拖的是「下方那个区块」的高度，对话区继续用 flex:1 吸收剩余空间——
+  // 这样怎么拖都不会在底部留出空隙。复位值取装手柄前量到的自然高度：那才是
+  // 「没有被调过」的样子，猜一个像素数只会让复位看起来没反应。
+  const vertical = [
+    [el.resizerBar, ".settings-bar", "--bar-height", 44, 240, "bar"],
+    [el.resizerForm, ".ask-form", "--form-height", 64, 320, "form"],
+  ];
+  for (const [handle, selector, variable, min, max, field] of vertical) {
+    const element = document.querySelector(selector);
+    const natural = element.getBoundingClientRect().height;
+    enableResize({
+      handle,
+      axis: "y",
+      growsWithDrag: -1, // 往上拖变高
+      limits: { min, max, default: Math.max(min, Math.round(natural)) },
+      read: measure(selector, "height"),
+      apply: (px) => layout.style.setProperty(variable, `${px}px`),
+      field,
+    });
   }
 }
 
-function restoreRailWidth() {
+// --- 知识库 ---------------------------------------------------------------
+// --- 知识库 ---------------------------------------------------------------
+
+// **一个实例只服务一个知识库**（knowledge_base_id 是进程级设置，检索时当 where
+// 过滤）。所以策略里的其它库只能如实说成「定义了、但本实例不服务」——列成
+// 「可用知识库」会让人以为切过去就能查到东西。
+let knowledgeBases = null;
+
+async function loadKnowledgeBases() {
   try {
-    const saved = JSON.parse(localStorage.getItem(RAIL_STORAGE_KEY) || "{}");
-    if (Number.isFinite(saved.right)) setRailWidth(saved.right);
+    knowledgeBases = await requestJson("/api/knowledge-bases");
   } catch (_) {
-    /* ignore malformed storage */
+    knowledgeBases = null;
+  }
+  renderKnowledgeBaseStatus();
+}
+
+// --- 对话模型 -------------------------------------------------------------
+
+// 门禁用 canConfigure() 而不是 state.identity.isAdmin：本地直连后端（不经过
+// scripts/dev_proxy.py）时没有 /api/me，isAdmin 会是 false，而开放模式下后端是
+// 允许改配置的 —— 用 isAdmin 会让这个选择器永远不显示。
+const llmPicker = createModelPicker({
+  select: el.llmModel,
+  custom: el.llmModelCustom,
+  hint: el.llmHint,
+  target: "llm",
+});
+
+let modelSwitcherReady = false;
+
+async function setupModelSwitcher(status = state.status) {
+  // 开机时身份还没到（state.identity.user 为 null），canConfigure() 按开放模式算成
+  // 允许，于是选择器会先显示出来；等拿到身份发现其实是普通用户，靠 onIdentity 收回。
+  const allowed = canConfigure();
+  el.llmModel.hidden = !allowed;
+  if (!allowed) return;
+  const model = status?.llm_model || "";
+  llmPicker.setValue(model);
+  if (modelSwitcherReady) {
+    reflectModel(model);
+    return;
+  }
+  modelSwitcherReady = true;
+  await llmPicker.load();
+  reflectModel(model);
+}
+
+/** 把下拉同步到某个模型：列表里有就选中，没有就保持自定义输入。 */
+function reflectModel(model) {
+  if (!model) return;
+  const known = [...el.llmModel.options].some((option) => option.value === model);
+  if (!known) return;
+  el.llmModel.value = model;
+  llmPicker.syncFromSelect();
+}
+
+async function switchModel() {
+  const model = llmPicker.value();
+  if (!model) return;
+  try {
+    await requestJson("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ llm_model: model }),
+    });
+    // 说「保存在服务器上」而不是「对后续问答生效」：answer_question 是在生成那一
+    // 步才读 llm_model 的，正在跑的问答也可能用上新模型。
+    showToast(`已切换到 ${model}，保存在服务器上，对所有人生效`);
+    refreshStatus();
+  } catch (error) {
+    showToast(error.message, "error");
   }
 }
 
-function enableRailResize() {
-  let startX = 0;
-  let startWidth = 0;
-  let dragging = false;
-
-  resizer.addEventListener("pointerdown", (event) => {
-    dragging = true;
-    startX = event.clientX;
-    startWidth = currentRailWidth();
-    resizer.classList.add("dragging");
-    resizer.setPointerCapture(event.pointerId);
+function bindModelSwitcher() {
+  el.llmModel.addEventListener("change", () => {
+    llmPicker.syncFromSelect();
+    if (el.llmModel.value !== CUSTOM_MODEL) switchModel();
+  });
+  el.llmModelCustom.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
     event.preventDefault();
-  });
-
-  resizer.addEventListener("pointermove", (event) => {
-    if (!dragging) return;
-    setRailWidth(startWidth - (event.clientX - startX));
-  });
-
-  const stop = (event) => {
-    if (!dragging) return;
-    dragging = false;
-    resizer.classList.remove("dragging");
-    if (resizer.hasPointerCapture(event.pointerId)) {
-      resizer.releasePointerCapture(event.pointerId);
-    }
-    saveRailWidth();
-  };
-  resizer.addEventListener("pointerup", stop);
-  resizer.addEventListener("pointercancel", stop);
-
-  resizer.addEventListener("dblclick", () => {
-    setRailWidth(RAIL_LIMITS.default);
-    saveRailWidth();
-  });
-
-  resizer.addEventListener("keydown", (event) => {
-    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-    event.preventDefault();
-    const step = (event.shiftKey ? 40 : 12) * (event.key === "ArrowRight" ? -1 : 1);
-    setRailWidth(currentRailWidth() + step);
-    saveRailWidth();
+    switchModel();
   });
 }
 
@@ -671,8 +760,9 @@ export default {
     if (mounted) return;
     mounted = true;
 
-    restoreRailWidth();
-    enableRailResize();
+    setupResizers();
+    bindModelSwitcher();
+    loadKnowledgeBases();
 
     // Empty states for the evidence rail before the first question.
     renderProcess();
@@ -693,6 +783,8 @@ export default {
       // Conversations are per-owner, so switching user means a different list.
       newConversation();
       loadConversations();
+      // 知识库的可见性随身份而变，也要重取
+      loadKnowledgeBases();
     });
 
     for (const element of [el.retrievalTopK, el.similarityThreshold]) {
@@ -711,6 +803,7 @@ export default {
 
   show() {
     renderKnowledgeBaseStatus();
+    setupModelSwitcher(state.status);
     loadConversations();
     el.chatStream.scrollTop = el.chatStream.scrollHeight;
     el.question.focus();
@@ -718,6 +811,11 @@ export default {
 
   // Retrieval defaults come from the server, but only until the user touches
   // them — re-entering the page must not clobber their edits.
+  onIdentity() {
+    // 身份到了才谈得上判断该不该显示模型选择器（开机时它按开放模式先显示了出来）。
+    setupModelSwitcher();
+  },
+
   onStatus(status) {
     if (!status || state.retrievalInitialized) return;
     setRetrievalMethod(status.retrieval_method || "vector");
@@ -726,5 +824,7 @@ export default {
     el.similarityThreshold.value = status.similarity_threshold ?? 0.35;
     state.retrievalInitialized = true;
     updateRetrievalControls();
+    // 模型名来自 status，所以选择器要等它到了再装
+    setupModelSwitcher(status);
   },
 };

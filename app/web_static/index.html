@@ -56,16 +56,27 @@
           </div>
         </aside>
 
+        <div class="resizer" id="resizer-left" role="separator" aria-orientation="vertical" aria-label="调整对话记录栏宽度" tabindex="0"></div>
+
         <div class="ask-main">
           <div class="ask-head">
             <div class="ask-head-text">
               <h2>问答</h2>
               <p id="run-status" role="status" aria-live="polite">就绪</p>
             </div>
-            <span class="kb-status" id="kb-status"></span>
-            <button id="clear-chat-button" class="icon-button" type="button" title="清空当前对话" aria-label="清空当前对话">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-            </button>
+            <!-- 改动会写进服务器配置、对所有人生效，所以放在会话信息这一侧，
+                 而不是下面那排「按请求」的检索参数里 —— 放那里会被当成只影响这一次。
+                 非管理员看不到它（由 canConfigure() 决定）。 -->
+            <div class="ask-head-right">
+              <select id="ask-llm-model" class="ask-model-select" aria-label="对话模型（改动保存在服务器上）" hidden></select>
+              <input id="ask-llm-model-custom" class="ask-model-custom" type="text" placeholder="输入模型名" autocomplete="off" spellcheck="false" hidden />
+              <span class="ask-model-hint" id="ask-llm-hint" role="status" aria-live="polite"></span>
+              <span class="kb-status" id="kb-status"></span>
+              <span class="kb-note" id="kb-others" hidden></span>
+              <button id="clear-chat-button" class="icon-button" type="button" title="清空当前对话" aria-label="清空当前对话">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              </button>
+            </div>
           </div>
 
           <div class="chat-stream" id="chat-stream" aria-live="polite">
@@ -75,6 +86,8 @@
               <span>答案将引用知识库中的 chunk_id</span>
             </div>
           </div>
+
+          <div class="resizer-row" id="resizer-bar" role="separator" aria-orientation="horizontal" aria-label="调整检索参数栏高度" tabindex="0"></div>
 
           <div class="settings-bar" role="group" aria-label="检索参数">
             <div class="segmented" id="retrieval-method" role="radiogroup" aria-label="检索方式">
@@ -96,6 +109,8 @@
               <output id="similarity-threshold-value" for="similarity-threshold">0.35</output>
             </label>
           </div>
+
+          <div class="resizer-row" id="resizer-form" role="separator" aria-orientation="horizontal" aria-label="调整输入区高度" tabindex="0"></div>
 
           <form id="ask-form" class="ask-form">
             <label class="visually-hidden" for="question">问题</label>

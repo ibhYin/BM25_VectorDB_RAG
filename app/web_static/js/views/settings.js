@@ -1,6 +1,7 @@
 // 设置页：模型接入配置（LLM / Embedding / MinerU）与索引状态。
 
 import { formatBytes, on, refreshStatus, requestJson, showToast, state } from "../core.js";
+import { createModelPicker } from "../model-picker.js";
 
 const el = {
   form: document.querySelector("#config-form"),
@@ -42,7 +43,27 @@ const el = {
 
 let mounted = false;
 const configState = { loaded: null, models: { llm: "", embedding: "" }, clearMineruToken: false };
-const CUSTOM_MODEL = "__custom__";
+
+// 模型选择控件（下拉 + 自定义输入）交给共享模块。字段与提交仍归本页管，
+// picker 只负责展示——它已经被问答页复用，所以不能耦合本页的 configState。
+const pickers = {
+  llm: createModelPicker({
+    select: el.llmModel,
+    custom: el.llmModelCustom,
+    hint: el.llmModelsHint,
+    scopeBadge: el.llmScope,
+    target: "llm",
+    requireBaseUrl: true,
+  }),
+  embedding: createModelPicker({
+    select: el.embeddingModel,
+    custom: el.embeddingModelCustom,
+    hint: el.embeddingModelsHint,
+    scopeBadge: el.embeddingScope,
+    target: "embedding",
+    requireBaseUrl: true,
+  }),
+};
 
 // --- helpers --------------------------------------------------------------
 
@@ -51,129 +72,24 @@ function setConfigStatus(message, variant = "") {
   el.status.className = `config-status${variant ? ` ${variant}` : ""}`;
 }
 
-// Mirrors app/model_catalog.is_local_endpoint: loopback is "this machine's own
-// model server" (Ollama), anything else is treated as a remote gateway.
-function isLocalEndpoint(baseUrl) {
-  let host = "";
-  try {
-    host = new URL(baseUrl).hostname.toLowerCase();
-  } catch (_) {
-    return false;
-  }
-  if (!host) return false;
-  return (
-    ["localhost", "127.0.0.1", "::1", "0.0.0.0"].includes(host) ||
-    host.endsWith(".local") ||
-    /^127\./.test(host)
-  );
-}
-
+// 模型下拉/自定义框/徽章已经归 picker 管，这里只剩提交与拉列表要用的地址和密钥。
 function configTarget(target) {
   const llm = target === "llm";
   return {
     baseUrl: llm ? el.openaiBaseUrl : el.embeddingBaseUrl,
     apiKey: llm ? el.openaiApiKey : el.embeddingApiKey,
-    select: llm ? el.llmModel : el.embeddingModel,
-    custom: llm ? el.llmModelCustom : el.embeddingModelCustom,
-    scope: llm ? el.llmScope : el.embeddingScope,
-    hint: llm ? el.llmModelsHint : el.embeddingModelsHint,
   };
 }
 
-function renderScope(target) {
-  const { baseUrl, scope } = configTarget(target);
-  const value = baseUrl.value.trim();
-  if (!value) {
-    scope.textContent = "未配置地址";
-    scope.className = "scope-badge empty";
-    return;
-  }
-  const local = isLocalEndpoint(value);
-  scope.textContent = local ? "本地" : "云端";
-  scope.className = `scope-badge ${local ? "local" : "cloud"}`;
-}
-
-// A <select> keeps every option visible; a datalist would filter them down to
-// whatever the input already contains, hiding the other candidates.
-function renderModelSelect(target, models) {
-  const { select } = configTarget(target);
-  const desired = configState.models[target] || "";
-  select.replaceChildren();
-
-  const listed = new Set();
-  for (const model of models) {
-    if (!model.id || listed.has(model.id)) continue;
-    listed.add(model.id);
-    select.append(
-      new Option(model.size_label ? `${model.id} · ${model.size_label}` : model.id, model.id),
-    );
-  }
-  if (desired && !listed.has(desired)) {
-    select.append(new Option(`${desired}（当前）`, desired));
-  }
-  select.append(new Option("自定义…", CUSTOM_MODEL));
-
-  if (listed.size > 0) {
-    select.value = desired || CUSTOM_MODEL;
-    syncCustomModel(target, "");
-  } else {
-    // No catalogue to pick from: hand over a free-text field with the current
-    // model prefilled rather than a one-item list.
-    select.value = CUSTOM_MODEL;
-    syncCustomModel(target, desired);
-  }
-  if (select.value !== CUSTOM_MODEL) select.dataset.previous = select.value;
-}
-
-function syncCustomModel(target, prefill = "") {
-  const { select, custom } = configTarget(target);
-  const isCustom = select.value === CUSTOM_MODEL;
-  custom.hidden = !isCustom;
-  if (isCustom) {
-    custom.value = prefill || custom.value || configState.models[target] || "";
-  }
-}
-
-function modelValue(target) {
-  const { select, custom } = configTarget(target);
-  return (select.value === CUSTOM_MODEL ? custom.value : select.value).trim();
+/** 把「当前保存的模型」告诉 picker：它不读 configState（已被问答页复用）。 */
+function syncPickers() {
+  pickers.llm.setValue(configState.models.llm);
+  pickers.embedding.setValue(configState.models.embedding);
 }
 
 async function loadModels(target) {
-  const { baseUrl, apiKey, hint } = configTarget(target);
-  const value = baseUrl.value.trim();
-  hint.className = "config-model-hint";
-  if (!value) {
-    hint.textContent = "填写请求地址后可读取模型列表";
-    renderModelSelect(target, []);
-    renderEmbeddingStatuses();
-    return;
-  }
-
-  hint.textContent = "正在读取模型列表...";
-  try {
-    const payload = await requestJson("/api/models", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target, base_url: value, api_key: apiKey.value.trim() }),
-    });
-    const models = payload.models || [];
-    renderModelSelect(target, models);
-    if (payload.error) {
-      hint.textContent = `${payload.error}；可在「自定义…」里手动输入模型名`;
-      hint.classList.add("error");
-    } else {
-      const scopeText = payload.scope === "local" ? "本地" : "云端";
-      hint.textContent = models.length
-        ? `${scopeText}模型 ${models.length} 个`
-        : "该端点未提供模型列表，可在「自定义…」里手动输入";
-    }
-    renderScope(target);
-  } catch (error) {
-    renderModelSelect(target, []);
-    hint.textContent = `${error.message}；可在「自定义…」里手动输入模型名`;
-    hint.classList.add("error");
-  }
+  const { baseUrl, apiKey } = configTarget(target);
+  await pickers[target].load({ baseUrl: baseUrl.value, apiKey: apiKey.value });
   renderEmbeddingStatuses();
 }
 
@@ -184,7 +100,7 @@ function renderEmbeddingStatuses() {
   const saved = loaded.embedding_model || "";
   el.embeddingWarning.classList.toggle(
     "warning",
-    Boolean(saved) && modelValue("embedding") !== saved,
+    Boolean(saved) && pickers.embedding.value() !== saved,
   );
 
   const indexModel = loaded.index_embedding_model || "";
@@ -194,7 +110,7 @@ function renderEmbeddingStatuses() {
     return;
   }
   el.indexModel.textContent = `当前索引由 ${indexModel} 建立。`;
-  if (indexModel !== modelValue("embedding")) el.indexModel.classList.add("warning");
+  if (indexModel !== pickers.embedding.value()) el.indexModel.classList.add("warning");
 }
 
 function renderMineruScope(configured) {
@@ -236,6 +152,7 @@ async function loadConfig() {
       llm: config.llm_model || "",
       embedding: config.embedding_model || "",
     };
+    syncPickers();
     el.openaiApiKey.placeholder = config.openai_api_key_set
       ? `已配置 ${config.openai_api_key_hint} · 留空保持不变`
       : "留空则保持不变";
@@ -256,10 +173,10 @@ async function loadConfig() {
     el.save.disabled = false;
   }
 
-  renderModelSelect("llm", []);
-  renderModelSelect("embedding", []);
-  renderScope("llm");
-  renderScope("embedding");
+  pickers.llm.renderEmpty();
+  pickers.embedding.renderEmpty();
+  pickers.llm.renderScope();
+  pickers.embedding.renderScope();
   renderEmbeddingStatuses();
   await Promise.all([loadModels("llm"), loadModels("embedding")]);
 }
@@ -276,9 +193,9 @@ function collectConfigChanges() {
   if (embeddingBaseUrl !== (loaded.embedding_base_url || "")) {
     changes.embedding_base_url = embeddingBaseUrl;
   }
-  const llmModel = modelValue("llm");
+  const llmModel = pickers.llm.value();
   if (llmModel !== (loaded.llm_model || "")) changes.llm_model = llmModel;
-  const embeddingModel = modelValue("embedding");
+  const embeddingModel = pickers.embedding.value();
   if (embeddingModel !== (loaded.embedding_model || "")) {
     changes.embedding_model = embeddingModel;
   }
@@ -335,6 +252,7 @@ async function submitConfig(event) {
       llm: config.llm_model || "",
       embedding: config.embedding_model || "",
     };
+    syncPickers();
     el.openaiApiKey.value = "";
     el.embeddingApiKey.value = "";
     el.mineruToken.value = "";
@@ -380,21 +298,15 @@ export default {
     });
 
     for (const target of ["llm", "embedding"]) {
-      const { baseUrl, select, custom } = configTarget(target);
-      baseUrl.addEventListener("input", () => renderScope(target));
+      const { baseUrl } = configTarget(target);
+      const picker = pickers[target];
+      baseUrl.addEventListener("input", () => picker.renderScope());
       baseUrl.addEventListener("change", () => loadModels(target));
-      select.addEventListener("change", () => {
-        const isCustom = select.value === CUSTOM_MODEL;
-        custom.hidden = !isCustom;
-        if (isCustom) {
-          custom.value = select.dataset.previous || configState.models[target] || "";
-          custom.focus();
-        } else {
-          select.dataset.previous = select.value;
-        }
+      picker.select.addEventListener("change", () => {
+        picker.syncFromSelect({ focus: true });
         renderEmbeddingStatuses();
       });
-      custom.addEventListener("input", renderEmbeddingStatuses);
+      picker.custom.addEventListener("input", renderEmbeddingStatuses);
     }
 
     on("status", renderIndexStatus);

@@ -9,7 +9,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from app.access import UserContext, known_groups, load_access_policy
+from app.access import (
+    PUBLIC_GROUP,
+    UserContext,
+    known_groups,
+    load_access_policy,
+)
 from app.config import get_settings
 from app.uploads import parse_multipart
 from rag.constants import SUPPORTED_SUFFIXES
@@ -98,6 +103,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._send_static_file(STATIC_DIR / "index.html", "text/html; charset=utf-8")
         elif parsed.path == "/api/status":
             self._send_json(self._status_payload())
+        elif parsed.path == "/api/knowledge-bases":
+            self._handle_knowledge_bases()
         elif parsed.path == "/api/config":
             self._handle_get_config()
         elif parsed.path == "/api/audit":
@@ -387,6 +394,49 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             {
                 "path": str(audit_log_path()),
                 "entries": read_entries(limit),
+            }
+        )
+
+    def _handle_knowledge_bases(self) -> None:
+        """当前知识库，以及策略里定义了但本实例不服务的其它知识库。
+
+        **一个实例只服务一个知识库**：`knowledge_base_id` 是进程级设置，检索时拿它
+        当 where 过滤条件。所以策略里的其它 kb 只能如实说成「定义了、但本实例不
+        服务」——把它们列成「可用知识库」会让人以为切过去就能查到东西。
+
+        需要已认证身份（列表随身份而变）；开放模式下 `_current_user` 返回 None 且
+        不报错，所以不会 500。
+        """
+
+        settings = get_settings()
+        user = self._current_user(settings)
+        current = settings.knowledge_base_id
+        policy = load_access_policy(settings.access_policy_file)
+
+        if policy is None:
+            self._send_json(
+                {
+                    "current": current,
+                    "group": PUBLIC_GROUP,
+                    "accessible": True,
+                    "policy_enabled": False,
+                    "other_knowledge_bases": [],
+                }
+            )
+            return
+
+        group = policy.knowledge_base_group(current)
+        self._send_json(
+            {
+                "current": current,
+                "group": group,
+                # 调用者不属于这个库的访问组时，检索会返回空——值得明说，否则
+                # 表现出来就是「莫名其妙什么都搜不到」
+                "accessible": user is not None and group in user.groups,
+                "policy_enabled": True,
+                "other_knowledge_bases": sorted(
+                    kb_id for kb_id in policy.knowledge_bases if kb_id != current
+                ),
             }
         )
 
