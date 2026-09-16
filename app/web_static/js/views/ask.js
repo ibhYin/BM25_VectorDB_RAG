@@ -768,7 +768,16 @@ async function setupModelSwitcher(status = state.status) {
   el.llmReadonly.hidden = allowed;
   el.llmReadonly.textContent = model ? `模型 ${model}` : "";
   el.llmReadonly.title = model ? `当前对话模型：${model}（由管理员配置）` : "";
-  if (!allowed) return;
+  if (!allowed) {
+    // 下拉、自定义输入框、提示都是「能改」才该出现的东西，一个都不能留。此前只收
+    // 了下拉：开机时身份还没到，canConfigure() 按开放模式算成允许，于是去拉模型
+    // 列表（非管理员必然 403），而错误分支会把自定义框显示出来——等身份到了就
+    // 留下一个没人能用的输入框和一句「可在自定义里手动输入」。
+    el.llmModelCustom.hidden = true;
+    el.llmHint.textContent = "";
+    el.llmHint.classList.remove("error");
+    return;
+  }
   llmPicker.setValue(model);
   if (modelSwitcherReady) {
     reflectModel(model);
@@ -878,7 +887,9 @@ export default {
 
   show() {
     renderKnowledgeBaseStatus();
-    setupModelSwitcher(state.status);
+    // 状态还没到就别装：此时身份也未知，初始化只会拿着空模型去拉一次列表
+    // （非管理员必被 403），等 onStatus / onIdentity 到了自然会装。
+    if (state.status) setupModelSwitcher(state.status);
     loadConversations();
     el.chatStream.scrollTop = el.chatStream.scrollHeight;
     el.question.focus();
