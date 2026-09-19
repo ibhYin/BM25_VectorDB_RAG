@@ -333,14 +333,61 @@ def test_delete_records_an_audit_entry(
     from app import audit
     from app.service import delete_indexed_documents
 
-    monkeypatch.setattr("app.service.delete_documents", lambda *a, **k: 3)
+    class FakeVectorStore:
+        def get(self, where, include):
+            assert where == {
+                "$and": [
+                    {"doc_id": {"$in": ["note"]}},
+                    {"knowledge_base_id": "default"},
+                ]
+            }
+            assert include == ["metadatas"]
+            return {
+                "metadatas": [
+                    {
+                        "doc_id": "note",
+                        "title": "会议纪要",
+                        "source": "data/raw/note.md",
+                    },
+                    {
+                        "doc_id": "note",
+                        "title": "会议纪要",
+                        "source": "data/raw/note.md",
+                    },
+                    {
+                        "doc_id": "note",
+                        "title": "会议纪要",
+                        "source": "data/raw/note.md",
+                    },
+                ]
+            }
+
+    deleted_ids = []
+    monkeypatch.setattr(
+        "app.service.get_vector_store", lambda *a, **k: FakeVectorStore()
+    )
+    monkeypatch.setattr(
+        "app.service.delete_documents",
+        lambda doc_ids, *a, **k: deleted_ids.extend(doc_ids) or 3,
+    )
     settings = Settings(_env_file=None, chroma_persist_dir=tmp_path / "chroma")
 
-    deleted = delete_indexed_documents(settings, ["note"], "alice")
+    deleted = delete_indexed_documents(
+        settings, [" note ", "", "note"], "alice"
+    )
 
     assert deleted == 3
+    assert deleted_ids == ["note"]
     entries = audit.read_entries()
     assert entries[0]["event"] == "delete.documents"
     assert entries[0]["actor"] == "alice"
     assert entries[0]["doc_ids"] == ["note"]
+    assert entries[0]["deleted_documents"] == [
+        {
+            "doc_id": "note",
+            "title": "会议纪要",
+            "source": "data/raw/note.md",
+            "chunks": 3,
+        }
+    ]
     assert entries[0]["deleted_chunks"] == 3

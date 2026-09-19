@@ -257,12 +257,52 @@ def delete_indexed_documents(
 ) -> int:
     """Delete every chunk of the given documents from the configured knowledge base."""
 
-    if not any(doc_id.strip() for doc_id in doc_ids):
+    clean_doc_ids = list(
+        dict.fromkeys(doc_id.strip() for doc_id in doc_ids if doc_id.strip())
+    )
+    if not clean_doc_ids:
         raise ValueError("At least one doc_id is required")
 
     with knowledge_base_lock.write():
+        # 标题/来源必须在删除前快照：删完后向量库里只剩 doc_id 的审计记录，已经
+        # 没地方再还原「到底删了哪篇文档」。这份快照与删除放在同一把写锁里，
+        # 避免查询完元数据、真正删除之前又有一次同名文档替换进来。
+        metadata_result = get_vector_store(
+            settings.chroma_persist_dir,
+            settings.embedding_model,
+            settings.embedding_api_key,
+            settings.embedding_base_url,
+        ).get(
+            where={
+                "$and": [
+                    {"doc_id": {"$in": clean_doc_ids}},
+                    {"knowledge_base_id": settings.knowledge_base_id},
+                ]
+            },
+            include=["metadatas"],
+        )
+        summaries: dict[str, dict[str, object]] = {}
+        for raw_metadata in metadata_result.get("metadatas", []) or []:
+            metadata = raw_metadata or {}
+            doc_id = str(metadata.get("doc_id") or "")
+            if not doc_id:
+                continue
+            source = str(metadata.get("source") or "")
+            summary = summaries.setdefault(
+                doc_id,
+                {
+                    "doc_id": doc_id,
+                    "title": str(
+                        metadata.get("title") or Path(source).stem or doc_id
+                    ),
+                    "source": source,
+                    "chunks": 0,
+                },
+            )
+            summary["chunks"] = int(summary["chunks"]) + 1
+
         deleted = delete_documents(
-            doc_ids,
+            clean_doc_ids,
             persist_dir=settings.chroma_persist_dir,
             embedding_model=settings.embedding_model,
             embedding_api_key=settings.embedding_api_key,
@@ -274,7 +314,11 @@ def delete_indexed_documents(
         "delete.documents",
         actor=actor,
         knowledge_base_id=settings.knowledge_base_id,
-        doc_ids=[doc_id for doc_id in doc_ids if doc_id.strip()],
+        doc_ids=clean_doc_ids,
+        # 新记录给审计页人能看懂的标题；旧记录没有这个字段，前端回退到 doc_ids。
+        deleted_documents=[
+            summaries[doc_id] for doc_id in clean_doc_ids if doc_id in summaries
+        ],
         deleted_chunks=deleted,
         embedding_model=settings.embedding_model,
     )

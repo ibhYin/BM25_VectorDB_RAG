@@ -45,6 +45,19 @@ function renderEntries() {
   el.status.textContent = `显示 ${visible.length} / ${entries.length} 条`;
 }
 
+function deletedDocumentLabels(entry) {
+  if (Array.isArray(entry.deleted_documents) && entry.deleted_documents.length) {
+    return entry.deleted_documents.map((document) => {
+      const docId = String(document.doc_id || "");
+      const title = String(document.title || "");
+      return title && title !== docId ? `${title}（${docId}）` : docId;
+    }).filter(Boolean);
+  }
+  // 老日志只记了 doc_ids；文档已经删掉，无法再补回标题。至少把真实 id 展示出来，
+  // 不伪造一份看似完整的历史。
+  return Array.isArray(entry.doc_ids) ? entry.doc_ids.filter(Boolean) : [];
+}
+
 function createRow(entry) {
   const row = document.createElement("article");
   row.className = "audit-row";
@@ -60,8 +73,12 @@ function createRow(entry) {
 
   const meta = document.createElement("div");
   meta.className = "audit-meta";
+  const deleted = entry.event === "delete.documents"
+    ? deletedDocumentLabels(entry)
+    : [];
   meta.textContent = [
     `操作者 ${entry.actor}`,
+    deleted.length ? `文档 ${deleted.join("、")}` : "",
     Array.isArray(entry.files) && entry.files.length ? entry.files.join("、") : "",
   ]
     .filter(Boolean)
