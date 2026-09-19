@@ -358,14 +358,27 @@ PDF 只携带视觉排版，不含「这是二级标题」这类语义信息，�
 
 ```json
 {"timestamp": "2026-09-12T15:37:01.630276+08:00", "event": "ingest.files",
- "actor": "alice", "knowledge_base_id": "default",
+ "status": "success", "actor": "alice", "knowledge_base_id": "default",
  "files": ["xxx.pdf"], "doc_ids": ["xxx_edcb415d"],
  "documents": 1, "chunks": 61, "structurize": true,
  "structurize_provider": "mineru", "embedding_model": "bge-small-zh:q8_0"}
 ```
 
-日志是**只追加**的，从不清空重写；写入失败只会记一条 warning，不会让入库失败。读取时
-会跳过崩溃造成的半行（torn line）。
+新记录的 `status` 是 `success` / `failed`；历史日志没有该字段，按成功兼容。上传或删除
+失败时还记录 `failure_stage`、异常类型与经过**安全清洗**的失败原因：不含 traceback，
+并会遮掉 Bearer、API Key、Token、Secret 与预签名 URL 查询参数，避免把凭据写进永久
+只追加的日志。原异常仍按原路径返回给上传任务/网页，审计不会吞掉它。
+
+审计页同时区分两个维度：**上传蓝色、删除橙色；成功绿色徽章、失败红色徽章**，旁边
+显示失败阶段与原因，并保留文字标签，不只靠颜色传达信息。
+
+能记录的是**请求已经到达服务器**后的失败（请求过大、文件类型不支持、队列满、
+MinerU/OCR/切片/向量写入失败、文档不存在、Chroma 删除异常等）。浏览器在请求到达
+服务器之前就断网，后端根本没收到操作，无法写服务端审计——这种情况仍只在前端显示
+「网络中断」。
+
+日志是**只追加**的，从不清空重写；审计文件本身写入失败只会记一条 warning，不会反过来
+让原本成功的入库/删除失败。读取时会跳过崩溃造成的半行（torn line）。
 
 操作者来自 Web 请求的 `X-User-ID`；CLI 入库记为 `cli`；未启用权限策略时记为 `open-mode`。
 

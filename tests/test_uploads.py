@@ -228,6 +228,10 @@ def test_list_indexed_documents_attributes_ingest_to_the_audit_trail(
                 # a 重新入库：应取这条
                 '{"timestamp": "2026-09-14T15:39:23.933703+08:00", "event": "ingest.files",'
                 ' "actor": "carol", "doc_ids": ["a"]}',
+                # 之后 dave 又尝试入库，但失败了：不能覆盖最近一次成功归属
+                '{"timestamp": "2026-09-15T08:00:00.000000+08:00", "event": "ingest.files",'
+                ' "status": "failed", "actor": "dave", "doc_ids": ["a"],'
+                ' "error": "向量写入失败"}',
             ]
         )
         + "\n",
@@ -325,6 +329,125 @@ def test_ingest_files_records_an_audit_entry(
     assert entries[0]["actor"] == "alice"
     assert entries[0]["doc_ids"] == ["note"]
     assert entries[0]["chunks"] == 1
+
+
+def test_ingest_files_records_load_failure_and_reraises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app import audit
+    from app.service import ingest_files
+
+    def fail_load(*args, **kwargs):
+        raise RuntimeError("MinerU 解析失败：服务暂不可用")
+
+    monkeypatch.setattr("app.service.load_document_file", fail_load)
+    settings = Settings(_env_file=None, chroma_persist_dir=tmp_path / "chroma")
+    source = tmp_path / "broken.pdf"
+
+    with pytest.raises(RuntimeError, match="服务暂不可用"):
+        ingest_files(settings, [source], structurize=True, actor="alice")
+
+    entry = audit.read_entries()[0]
+    assert entry["event"] == "ingest.files"
+    assert entry["status"] == "failed"
+    assert entry["actor"] == "alice"
+    assert entry["files"] == ["broken.pdf"]
+    assert entry["failure_stage"] == "load"
+    assert entry["error_type"] == "RuntimeError"
+    assert entry["error"] == "MinerU 解析失败：服务暂不可用"
+    assert entry["structurize"] is True
+
+
+def test_ingest_files_records_vector_write_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app import audit
+    from app.service import ingest_files
+
+    document = Document(page_content="page", metadata={"source": "note.md"})
+    chunk = Document(
+        page_content="chunk",
+        metadata={"doc_id": "note", "chunk_id": "note#chunk_001"},
+    )
+    monkeypatch.setattr("app.service.load_document_file", lambda *a, **k: [document])
+    monkeypatch.setattr("app.service.split_documents", lambda *a, **k: [chunk])
+    monkeypatch.setattr(
+        "app.service.replace_documents",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("向量服务不可用")),
+    )
+    settings = Settings(_env_file=None, chroma_persist_dir=tmp_path / "chroma")
+
+    with pytest.raises(RuntimeError, match="向量服务不可用"):
+        ingest_files(settings, [tmp_path / "note.md"], actor="alice")
+
+    entry = audit.read_entries()[0]
+    assert entry["status"] == "failed"
+    assert entry["failure_stage"] == "vector_write"
+    assert entry["doc_ids"] == ["note"]
+
+
+def test_delete_records_failure_and_reraises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app import audit
+    from app.service import delete_indexed_documents
+
+    class FakeVectorStore:
+        def get(self, where, include):
+            return {
+                "metadatas": [
+                    {
+                        "doc_id": "note",
+                        "title": "会议纪要",
+                        "source": "data/raw/note.md",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(
+        "app.service.get_vector_store", lambda *a, **k: FakeVectorStore()
+    )
+    monkeypatch.setattr(
+        "app.service.delete_documents",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("Chroma 删除失败")),
+    )
+    settings = Settings(_env_file=None, chroma_persist_dir=tmp_path / "chroma")
+
+    with pytest.raises(RuntimeError, match="Chroma 删除失败"):
+        delete_indexed_documents(settings, ["note"], "alice")
+
+    entry = audit.read_entries()[0]
+    assert entry["event"] == "delete.documents"
+    assert entry["status"] == "failed"
+    assert entry["failure_stage"] == "vector_delete"
+    assert entry["deleted_documents"][0]["title"] == "会议纪要"
+    assert entry["error"] == "Chroma 删除失败"
+
+
+def test_delete_not_found_is_a_failed_audit_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app import audit
+    from app.service import delete_indexed_documents
+
+    class EmptyVectorStore:
+        def get(self, where, include):
+            return {"metadatas": []}
+
+    monkeypatch.setattr(
+        "app.service.get_vector_store", lambda *a, **k: EmptyVectorStore()
+    )
+    monkeypatch.setattr("app.service.delete_documents", lambda *a, **k: 0)
+    settings = Settings(_env_file=None, chroma_persist_dir=tmp_path / "chroma")
+
+    assert delete_indexed_documents(settings, ["missing"], "alice") == 0
+
+    entry = audit.read_entries()[0]
+    assert entry["status"] == "failed"
+    assert entry["error_type"] == "NotFound"
+    assert entry["error"] == "Document not found"
+    assert entry["deleted_chunks"] == 0
+    assert entry["doc_ids"] == ["missing"]
 
 
 def test_delete_records_an_audit_entry(

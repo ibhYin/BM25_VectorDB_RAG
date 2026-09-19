@@ -23,9 +23,47 @@ def test_record_appends_one_json_line(log_path: Path) -> None:
     assert len(lines) == 1
     entry = json.loads(lines[0])
     assert entry["event"] == "ingest.files"
+    assert entry["status"] == "success"
     assert entry["actor"] == "alice"
     assert entry["files"] == ["a.pdf"]
     assert entry["chunks"] == 7
+
+
+def test_explicit_failed_status_overrides_the_default(log_path: Path) -> None:
+    audit.record(
+        "ingest.files",
+        actor="alice",
+        **audit.failure_fields(RuntimeError("向量服务不可用"), "vector_write"),
+    )
+
+    entry = audit.read_entries()[0]
+    assert entry["status"] == "failed"
+    assert entry["error_type"] == "RuntimeError"
+    assert entry["error"] == "向量服务不可用"
+    assert entry["failure_stage"] == "vector_write"
+
+
+def test_safe_error_redacts_credentials_and_signed_url_queries() -> None:
+    raw = (
+        "上传失败 https://oss.example/upload?X-Amz-Signature=very-secret&token=query-secret "
+        "Authorization=Bearer bearer-secret API Key=sk-secret token=plain-secret"
+    )
+
+    cleaned = audit.safe_error(RuntimeError(raw))
+
+    for secret in ("very-secret", "query-secret", "bearer-secret", "sk-secret", "plain-secret"):
+        assert secret not in cleaned
+    assert "https://oss.example/upload?[REDACTED]" in cleaned
+    assert "[REDACTED]" in cleaned
+    assert len(cleaned) <= audit.MAX_ERROR_CHARS
+
+
+def test_safe_error_collapses_whitespace_and_limits_length() -> None:
+    cleaned = audit.safe_error("第一行\n  第二行 " + "x" * 1000)
+
+    assert cleaned.startswith("第一行 第二行 ")
+    assert "\n" not in cleaned
+    assert len(cleaned) == audit.MAX_ERROR_CHARS
 
 
 def test_timestamp_is_iso_with_an_offset(log_path: Path) -> None:

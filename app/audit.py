@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
@@ -25,6 +26,39 @@ AUDIT_LOG_ENV = "VECTOR_AUDIT_LOG"
 _append_lock = Lock()
 logger = logging.getLogger(__name__)
 
+# 审计日志可能被管理员直接查看，异常原文里又可能带预签名 URL、Bearer token 或
+# `api_key=...`。保留可读原因，但不能把凭据顺手写进永久只追加的日志。
+_SENSITIVE_PAIRS = re.compile(
+    r"(?i)(authorization|api[\s_-]?key|token|secret|signature|credential)"
+    r"(\s*[:=]\s*)([^\s,;&]+)"
+)
+_URL_QUERY = re.compile(r"(https?://[^\s?]+)\?[^\s]+", re.IGNORECASE)
+_BEARER = re.compile(r"(?i)\bBearer\s+[^\s,;]+")
+MAX_ERROR_CHARS = 600
+
+
+def safe_error(exc: BaseException | str) -> str:
+    """适合永久写入审计日志的错误原因（不含 traceback 与常见凭据）。"""
+
+    message = " ".join(str(exc).split()) or exc.__class__.__name__
+    message = _BEARER.sub("Bearer [REDACTED]", message)
+    message = _SENSITIVE_PAIRS.sub(r"\1\2[REDACTED]", message)
+    message = _URL_QUERY.sub(r"\1?[REDACTED]", message)
+    return message[:MAX_ERROR_CHARS]
+
+
+def failure_fields(exc: BaseException | str, stage: str = "") -> dict[str, str]:
+    """失败记录共用字段。字符串错误没有可靠类型，记为 Error。"""
+
+    fields = {
+        "status": "failed",
+        "error_type": exc.__class__.__name__ if isinstance(exc, BaseException) else "Error",
+        "error": safe_error(exc),
+    }
+    if stage:
+        fields["failure_stage"] = stage
+    return fields
+
 
 def audit_log_path() -> Path:
     return Path(os.environ.get(AUDIT_LOG_ENV, str(DEFAULT_AUDIT_LOG)))
@@ -36,6 +70,7 @@ def record(event: str, actor: str = "", **fields: object) -> None:
     entry: dict[str, object] = {
         "timestamp": datetime.now().astimezone().isoformat(),
         "event": event,
+        "status": "success",
         "actor": actor or "unknown",
     }
     entry.update(fields)

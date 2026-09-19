@@ -1755,9 +1755,67 @@ svg {
   gap: 2px;
   padding: 8px 10px;
   border: 1px solid var(--line);
+  border-left-width: 3px;
   border-radius: var(--radius);
   margin-bottom: 6px;
   background: var(--surface);
+}
+
+/* 操作类型与结果状态是两个维度：上传蓝、删除橙；成功绿、失败红。
+   文字徽章一起出现，不只靠颜色传递信息。 */
+.audit-row.operation-upload {
+  border-left-color: #397aa8;
+}
+
+.audit-row.operation-delete {
+  border-left-color: #a9691d;
+}
+
+.audit-row.operation-upload .audit-event {
+  color: #397aa8;
+}
+
+.audit-row.operation-delete .audit-event {
+  color: #a9691d;
+}
+
+.audit-head-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.audit-result {
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.audit-result.success {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.audit-result.failed {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.audit-error {
+  margin-top: 4px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
 }
 
 .audit-head {

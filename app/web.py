@@ -674,54 +674,108 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         return user, user is not None and policy.is_admin(user)
 
     def _handle_document_upload(self) -> None:
+        from app import audit
         from app.uploads import get_upload_store
 
         settings = get_settings()
+        # 认证/权限失败不算一次文档写入尝试，不写进向量库审计。拿到身份之后发生的
+        # 请求解析、入队、暂存错误才是「上传失败」。
         user, is_admin = self._upload_permission(settings)
-        try:
-            content_length = int(self.headers.get("Content-Length", "0"))
-        except ValueError as exc:
-            raise RequestError(HTTPStatus.BAD_REQUEST, "Invalid Content-Length") from exc
-        if content_length <= 0:
-            raise RequestError(HTTPStatus.BAD_REQUEST, "Upload body is required")
-        if content_length > settings.max_upload_bytes:
-            self.close_connection = True
-            raise RequestError(
-                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
-                "Upload body is too large",
-            )
+        actor = _actor_name(user)
+        filenames: list[str] = []
+        structurize = False
+        stage = "request"
 
-        body = self.rfile.read(content_length)
         try:
+            try:
+                content_length = int(self.headers.get("Content-Length", "0"))
+            except ValueError as exc:
+                raise RequestError(
+                    HTTPStatus.BAD_REQUEST, "Invalid Content-Length"
+                ) from exc
+            if content_length <= 0:
+                raise RequestError(HTTPStatus.BAD_REQUEST, "Upload body is required")
+            if content_length > settings.max_upload_bytes:
+                self.close_connection = True
+                raise RequestError(
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                    "Upload body is too large",
+                )
+
+            body = self.rfile.read(content_length)
+            stage = "multipart_parse"
             files, fields = parse_multipart(
                 self.headers.get("Content-Type", ""),
                 body,
                 supported_suffixes=SUPPORTED_SUFFIXES,
                 max_files=settings.max_upload_files,
             )
+            filenames = [filename for filename, _ in files]
             structurize = fields.get("structurize") == "on"
             if is_admin:
+                stage = "queue"
                 job = get_upload_store().create_uploaded(
-                    files, settings.data_dir, structurize, _actor_name(user)
+                    files, settings.data_dir, structurize, actor
                 )
             else:
                 # No write access: park it for an admin to approve.
-                from app import audit
                 from app.staging import get_staging_store
 
-                job = get_staging_store().add(files, _actor_name(user), structurize)
+                stage = "staging"
+                job = get_staging_store().add(files, actor, structurize)
                 job["staged"] = True
                 audit.record(
                     "staging.submitted",
-                    actor=_actor_name(user),
+                    actor=actor,
                     item_id=job["id"],
                     files=job["filenames"],
                     structurize=structurize,
                 )
+        except RequestError as exc:
+            audit.record(
+                "ingest.files",
+                actor=actor,
+                knowledge_base_id=settings.knowledge_base_id,
+                files=filenames,
+                structurize=structurize,
+                embedding_model=settings.embedding_model,
+                **audit.failure_fields(exc, stage),
+            )
+            raise
         except ValueError as exc:
+            audit.record(
+                "ingest.files",
+                actor=actor,
+                knowledge_base_id=settings.knowledge_base_id,
+                files=filenames,
+                structurize=structurize,
+                embedding_model=settings.embedding_model,
+                **audit.failure_fields(exc, stage),
+            )
             raise RequestError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
         except RuntimeError as exc:
+            audit.record(
+                "ingest.files",
+                actor=actor,
+                knowledge_base_id=settings.knowledge_base_id,
+                files=filenames,
+                structurize=structurize,
+                embedding_model=settings.embedding_model,
+                **audit.failure_fields(exc, stage),
+            )
             raise RequestError(HTTPStatus.SERVICE_UNAVAILABLE, str(exc)) from exc
+        except Exception as exc:
+            # 未预期的磁盘/解析异常仍交给 _run_request 统一变成 500，但先留下失败审计。
+            audit.record(
+                "ingest.files",
+                actor=actor,
+                knowledge_base_id=settings.knowledge_base_id,
+                files=filenames,
+                structurize=structurize,
+                embedding_model=settings.embedding_model,
+                **audit.failure_fields(exc, stage),
+            )
+            raise
 
         self._send_json(job, status=HTTPStatus.ACCEPTED)
 

@@ -21,6 +21,19 @@ const EVENT_LABELS = {
   "staging.rejected": "审核拒绝",
 };
 
+const FAILURE_STAGE_LABELS = {
+  request: "请求校验",
+  multipart_parse: "解析上传请求",
+  queue: "加入上传队列",
+  staging: "暂存待审",
+  load: "文档解析",
+  ocr: "OCR",
+  split: "切片",
+  vector_write: "向量写入",
+  metadata_lookup: "读取文档元数据",
+  vector_delete: "向量删除",
+};
+
 let mounted = false;
 let entries = [];
 
@@ -58,18 +71,39 @@ function deletedDocumentLabels(entry) {
   return Array.isArray(entry.doc_ids) ? entry.doc_ids.filter(Boolean) : [];
 }
 
+function operationType(entry) {
+  if (entry.event === "delete.documents") return "delete";
+  if (String(entry.event || "").startsWith("ingest.")
+      || String(entry.event || "").startsWith("staging.")) return "upload";
+  return "other";
+}
+
+function entryStatus(entry) {
+  // 历史日志没有 status，按成功兼容；只有显式 failed 才算失败。
+  return entry.status === "failed" ? "failed" : "success";
+}
+
 function createRow(entry) {
+  const status = entryStatus(entry);
+  const operation = operationType(entry);
   const row = document.createElement("article");
-  row.className = "audit-row";
+  row.className = `audit-row operation-${operation} status-${status}`;
 
   const head = document.createElement("div");
   head.className = "audit-head";
+  const headMain = document.createElement("div");
+  headMain.className = "audit-head-main";
   const event = document.createElement("strong");
+  event.className = "audit-event";
   event.textContent = EVENT_LABELS[entry.event] || String(entry.event || "");
+  const result = document.createElement("span");
+  result.className = `audit-result ${status}`;
+  result.textContent = status === "failed" ? "失败" : "成功";
+  headMain.append(event, result);
   const time = document.createElement("span");
   time.className = "audit-time";
   time.textContent = formatTime(entry.timestamp);
-  head.append(event, time);
+  head.append(headMain, time);
 
   const meta = document.createElement("div");
   meta.className = "audit-meta";
@@ -97,6 +131,18 @@ function createRow(entry) {
   stats.textContent = bits.join(" · ");
 
   row.append(head, meta, stats);
+  if (status === "failed") {
+    const failure = document.createElement("div");
+    failure.className = "audit-error";
+    const stage = FAILURE_STAGE_LABELS[entry.failure_stage] || entry.failure_stage || "";
+    failure.textContent = [
+      stage ? `失败阶段 ${stage}` : "",
+      `原因 ${entry.error || "未记录原因"}`,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    row.append(failure);
+  }
   return row;
 }
 

@@ -167,65 +167,94 @@ def ingest_files(
     if not paths:
         raise ValueError("At least one file is required")
 
-    with knowledge_base_lock.write():
-        documents: list = []
-        for path in paths:
-            documents.extend(
-                load_document_file(
-                    path,
-                    openai_api_key=settings.openai_api_key,
-                    openai_base_url=settings.openai_base_url,
-                    ocr_model=settings.ocr_model,
-                    ocr_max_pages=settings.ocr_max_pages,
-                    structurize=structurize,
-                    structurize_provider=settings.structurize_provider,
-                    mineru_token=settings.mineru_api_token,
-                    mineru_model_version=settings.mineru_model_version,
+    filenames = [Path(path).name for path in paths]
+    documents: list = []
+    chunks: list = []
+    stage = "load"
+    try:
+        with knowledge_base_lock.write():
+            for path in paths:
+                documents.extend(
+                    load_document_file(
+                        path,
+                        openai_api_key=settings.openai_api_key,
+                        openai_base_url=settings.openai_base_url,
+                        ocr_model=settings.ocr_model,
+                        ocr_max_pages=settings.ocr_max_pages,
+                        structurize=structurize,
+                        structurize_provider=settings.structurize_provider,
+                        mineru_token=settings.mineru_api_token,
+                        mineru_model_version=settings.mineru_model_version,
+                    )
                 )
-            )
 
-        ocr_required = {
-            str(document.metadata.get("source", "unknown"))
-            for document in documents
-            if document.metadata.get("ocr_required")
-        }
-        if ocr_required:
-            raise ValueError(
-                "OCR is required for uploaded files: "
-                + ", ".join(sorted(ocr_required))
-            )
-        ocr_errors = {
-            str(document.metadata.get("source", "unknown")): str(
-                document.metadata["ocr_error"]
-            )
-            for document in documents
-            if document.metadata.get("ocr_error")
-        }
-        if ocr_errors:
-            details = "; ".join(
-                f"{source}: {error}" for source, error in ocr_errors.items()
-            )
-            raise RuntimeError(f"OCR failed: {details}")
+            stage = "ocr"
+            ocr_required = {
+                str(document.metadata.get("source", "unknown"))
+                for document in documents
+                if document.metadata.get("ocr_required")
+            }
+            if ocr_required:
+                raise ValueError(
+                    "OCR is required for uploaded files: "
+                    + ", ".join(sorted(ocr_required))
+                )
+            ocr_errors = {
+                str(document.metadata.get("source", "unknown")): str(
+                    document.metadata["ocr_error"]
+                )
+                for document in documents
+                if document.metadata.get("ocr_error")
+            }
+            if ocr_errors:
+                details = "; ".join(
+                    f"{source}: {error}" for source, error in ocr_errors.items()
+                )
+                raise RuntimeError(f"OCR failed: {details}")
 
-        chunks = split_documents(
-            documents,
-            chunk_size=settings.chunk_size,
-            chunk_overlap=settings.chunk_overlap,
-            knowledge_base_id=settings.knowledge_base_id,
-            access_policy=load_access_policy(settings.access_policy_file),
+            stage = "split"
+            chunks = split_documents(
+                documents,
+                chunk_size=settings.chunk_size,
+                chunk_overlap=settings.chunk_overlap,
+                knowledge_base_id=settings.knowledge_base_id,
+                access_policy=load_access_policy(settings.access_policy_file),
+            )
+            if not chunks:
+                raise ValueError("Uploaded documents contained no indexable text")
+
+            stage = "vector_write"
+            replace_documents(
+                documents=chunks,
+                persist_dir=settings.chroma_persist_dir,
+                embedding_model=settings.embedding_model,
+                embedding_api_key=settings.embedding_api_key,
+                embedding_base_url=settings.embedding_base_url,
+                knowledge_base_id=settings.knowledge_base_id,
+            )
+            write_index_manifest(settings.chroma_persist_dir, settings.embedding_model)
+    except Exception as exc:
+        # 原异常仍原样抛给上传任务（任务页继续显示失败）；审计只写清洗后的原因，
+        # 不含 traceback / Token / 预签名 URL。
+        doc_ids = sorted(
+            {
+                str(chunk.metadata.get("doc_id", ""))
+                for chunk in chunks
+                if chunk.metadata.get("doc_id")
+            }
         )
-        if not chunks:
-            raise ValueError("Uploaded documents contained no indexable text")
-
-        replace_documents(
-            documents=chunks,
-            persist_dir=settings.chroma_persist_dir,
+        audit.record(
+            "ingest.files",
+            actor=actor,
+            knowledge_base_id=settings.knowledge_base_id,
+            files=filenames,
+            doc_ids=doc_ids,
+            structurize=structurize,
+            structurize_provider=settings.structurize_provider if structurize else "",
             embedding_model=settings.embedding_model,
-            embedding_api_key=settings.embedding_api_key,
-            embedding_base_url=settings.embedding_base_url,
-            knowledge_base_id=settings.knowledge_base_id,
+            **audit.failure_fields(exc, stage),
         )
-        write_index_manifest(settings.chroma_persist_dir, settings.embedding_model)
+        raise
 
     result = FileIngestResult(len(paths), len(documents), len(chunks))
     # Chunks carry the doc_id that split_documents assigned; the log uses it to
@@ -241,7 +270,7 @@ def ingest_files(
         "ingest.files",
         actor=actor,
         knowledge_base_id=settings.knowledge_base_id,
-        files=[Path(path).name for path in paths],
+        files=filenames,
         doc_ids=doc_ids,
         documents=result.documents,
         chunks=result.chunks,
@@ -263,52 +292,88 @@ def delete_indexed_documents(
     if not clean_doc_ids:
         raise ValueError("At least one doc_id is required")
 
-    with knowledge_base_lock.write():
-        # 标题/来源必须在删除前快照：删完后向量库里只剩 doc_id 的审计记录，已经
-        # 没地方再还原「到底删了哪篇文档」。这份快照与删除放在同一把写锁里，
-        # 避免查询完元数据、真正删除之前又有一次同名文档替换进来。
-        metadata_result = get_vector_store(
-            settings.chroma_persist_dir,
-            settings.embedding_model,
-            settings.embedding_api_key,
-            settings.embedding_base_url,
-        ).get(
-            where={
-                "$and": [
-                    {"doc_id": {"$in": clean_doc_ids}},
-                    {"knowledge_base_id": settings.knowledge_base_id},
-                ]
-            },
-            include=["metadatas"],
-        )
-        summaries: dict[str, dict[str, object]] = {}
-        for raw_metadata in metadata_result.get("metadatas", []) or []:
-            metadata = raw_metadata or {}
-            doc_id = str(metadata.get("doc_id") or "")
-            if not doc_id:
-                continue
-            source = str(metadata.get("source") or "")
-            summary = summaries.setdefault(
-                doc_id,
-                {
-                    "doc_id": doc_id,
-                    "title": str(
-                        metadata.get("title") or Path(source).stem or doc_id
-                    ),
-                    "source": source,
-                    "chunks": 0,
+    summaries: dict[str, dict[str, object]] = {}
+    stage = "metadata_lookup"
+    try:
+        with knowledge_base_lock.write():
+            # 标题/来源必须在删除前快照：删完后向量库里只剩 doc_id 的审计记录，已经
+            # 没地方再还原「到底删了哪篇文档」。这份快照与删除放在同一把写锁里，
+            # 避免查询完元数据、真正删除之前又有一次同名文档替换进来。
+            metadata_result = get_vector_store(
+                settings.chroma_persist_dir,
+                settings.embedding_model,
+                settings.embedding_api_key,
+                settings.embedding_base_url,
+            ).get(
+                where={
+                    "$and": [
+                        {"doc_id": {"$in": clean_doc_ids}},
+                        {"knowledge_base_id": settings.knowledge_base_id},
+                    ]
                 },
+                include=["metadatas"],
             )
-            summary["chunks"] = int(summary["chunks"]) + 1
+            for raw_metadata in metadata_result.get("metadatas", []) or []:
+                metadata = raw_metadata or {}
+                doc_id = str(metadata.get("doc_id") or "")
+                if not doc_id:
+                    continue
+                source = str(metadata.get("source") or "")
+                summary = summaries.setdefault(
+                    doc_id,
+                    {
+                        "doc_id": doc_id,
+                        "title": str(
+                            metadata.get("title") or Path(source).stem or doc_id
+                        ),
+                        "source": source,
+                        "chunks": 0,
+                    },
+                )
+                summary["chunks"] = int(summary["chunks"]) + 1
 
-        deleted = delete_documents(
-            clean_doc_ids,
-            persist_dir=settings.chroma_persist_dir,
-            embedding_model=settings.embedding_model,
-            embedding_api_key=settings.embedding_api_key,
-            embedding_base_url=settings.embedding_base_url,
+            stage = "vector_delete"
+            deleted = delete_documents(
+                clean_doc_ids,
+                persist_dir=settings.chroma_persist_dir,
+                embedding_model=settings.embedding_model,
+                embedding_api_key=settings.embedding_api_key,
+                embedding_base_url=settings.embedding_base_url,
+                knowledge_base_id=settings.knowledge_base_id,
+            )
+    except Exception as exc:
+        audit.record(
+            "delete.documents",
+            actor=actor,
             knowledge_base_id=settings.knowledge_base_id,
+            doc_ids=clean_doc_ids,
+            deleted_documents=[
+                summaries[doc_id] for doc_id in clean_doc_ids if doc_id in summaries
+            ],
+            embedding_model=settings.embedding_model,
+            **audit.failure_fields(exc, stage),
         )
+        raise
+
+    if not deleted:
+        # 底层「删了 0 片」不是异常，但对用户来说就是删除失败（文档不存在）。
+        # 只记失败，不再先记一条看似成功的 0 切片记录。
+        audit.record(
+            "delete.documents",
+            actor=actor,
+            knowledge_base_id=settings.knowledge_base_id,
+            doc_ids=clean_doc_ids,
+            deleted_documents=[
+                summaries[doc_id] for doc_id in clean_doc_ids if doc_id in summaries
+            ],
+            deleted_chunks=0,
+            embedding_model=settings.embedding_model,
+            status="failed",
+            error_type="NotFound",
+            error="Document not found",
+            failure_stage="vector_delete",
+        )
+        return 0
 
     audit.record(
         "delete.documents",
@@ -548,6 +613,10 @@ def _ingest_attribution() -> dict[str, dict[str, str]]:
     attribution: dict[str, dict[str, str]] = {}
     for entry in audit.read_entries(limit=None):
         if not str(entry.get("event", "")).startswith("ingest."):
+            continue
+        # 失败的入库尝试也用 ingest.* 事件名；它不能把「最近一次成功入库」覆盖掉。
+        # 旧日志没有 status，按 success 兼容。
+        if str(entry.get("status") or "success") != "success":
             continue
         for doc_id in entry.get("doc_ids") or []:
             # read_entries yields newest first, so re-ingesting a document
