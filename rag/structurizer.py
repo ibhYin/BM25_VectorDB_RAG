@@ -10,9 +10,8 @@ Two backends, chosen explicitly by the caller (``structurize_provider``):
   PyMuPDF path, so it is not a good default for PDF-heavy corpora.
 """
 
+from functools import lru_cache
 from pathlib import Path
-
-from markitdown import MarkItDown
 
 from rag import markdown_cache
 from rag.mineru_client import MineruError, convert_file as convert_with_mineru
@@ -22,7 +21,11 @@ MARKITDOWN = "markitdown"
 MINERU = "mineru"
 STRUCTURIZE_PROVIDERS = (MARKITDOWN, MINERU)
 
-_converter = MarkItDown()
+@lru_cache(maxsize=1)
+def _markitdown_converter():
+    from markitdown import MarkItDown
+
+    return MarkItDown()
 
 
 def convert_to_markdown(
@@ -65,8 +68,12 @@ def convert_with_markitdown(file_path: Path) -> str:
     """Local markitdown conversion; "" on failure so callers can fall back."""
 
     try:
-        result = _converter.convert(str(file_path))
+        result = _markitdown_converter().convert(str(file_path))
         return result.text_content or ""
+    except ImportError as exc:
+        raise RuntimeError(
+            "markitdown 未安装；请安装完整依赖或改用 MinerU 结构化提取"
+        ) from exc
     except Exception:
         # Conversion failed; caller should fall back to raw extraction.
         return ""
