@@ -101,6 +101,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/":
             self._send_static_file(STATIC_DIR / "index.html", "text/html; charset=utf-8")
+        elif parsed.path == "/api/me":
+            self._handle_me()
         elif parsed.path == "/api/status":
             self._send_json(self._status_payload())
         elif parsed.path == "/api/knowledge-bases":
@@ -897,6 +899,33 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             "markdown_cache": markdown_cache.info(),
             **self._index_model_info(settings),
         }
+
+    def _handle_me(self) -> None:
+        """Expose the identity supplied by the authenticating reverse proxy."""
+
+        settings = get_settings()
+        policy = load_access_policy(settings.access_policy_file)
+        if policy is None:
+            self._send_json({"user": None, "users": [], "is_admin": False})
+            return
+
+        user_id = self.headers.get("X-User-ID", "").strip()
+        if not user_id:
+            raise RequestError(HTTPStatus.UNAUTHORIZED, "Authenticated user is required")
+        try:
+            user = policy.user_context(user_id)
+        except PermissionError as exc:
+            raise RequestError(HTTPStatus.UNAUTHORIZED, str(exc)) from exc
+
+        # Basic Auth identities are managed by the proxy; do not offer in-app
+        # switching between accounts. The frontend only needs the current user.
+        self._send_json(
+            {
+                "user": user.user_id,
+                "users": [{"id": user.user_id, "groups": sorted(user.groups)}],
+                "is_admin": policy.is_admin(user),
+            }
+        )
 
     def _read_json(self) -> dict[str, object]:
         content_type = self.headers.get("Content-Type", "")
