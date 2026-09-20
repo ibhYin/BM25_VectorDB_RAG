@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     max_upload_jobs: int = 5
     knowledge_base_id: str = "default"
     access_policy_file: Path = Path("config/access_policy.json")
+    web_auth_file: Path = Path("config/web_auth.json")
 
     data_dir: Path = Path("data/raw")
     chroma_persist_dir: Path = Path(".chroma")

@@ -18,6 +18,7 @@ data/pending/
 .playwright-cli/
 config/access_policy.json
 config/runtime_config.json
+config/web_auth.json
 
 # Local documents and reproducible generated data.
 data/raw/*

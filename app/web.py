@@ -5,6 +5,7 @@ import logging
 import re
 from collections.abc import Callable
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
@@ -14,6 +15,14 @@ from app.access import (
     UserContext,
     known_groups,
     load_access_policy,
+)
+from app.web_auth import (
+    DEFAULT_AUTH_FILE,
+    DEFAULT_SESSION_TTL,
+    create_session,
+    load_auth_config,
+    verify_password,
+    verify_session,
 )
 from app.config import get_settings
 from app.uploads import parse_multipart
@@ -100,7 +109,18 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
 
         if parsed.path == "/":
+            settings = get_settings()
+            policy = load_access_policy(settings.access_policy_file)
+            if policy is not None and not self._session_user_id(settings):
+                self._send_redirect("/login")
+                return
             self._send_static_file(STATIC_DIR / "index.html", "text/html; charset=utf-8")
+        elif parsed.path == "/login":
+            self._send_static_file(
+                STATIC_DIR / "login.html", "text/html; charset=utf-8"
+            )
+        elif parsed.path == "/logout":
+            self._handle_logout_redirect()
         elif parsed.path == "/api/me":
             self._handle_me()
         elif parsed.path == "/api/status":
@@ -901,7 +921,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         }
 
     def _handle_me(self) -> None:
-        """Expose the identity supplied by the authenticating reverse proxy."""
+        """Expose the current session identity and its policy groups."""
 
         settings = get_settings()
         policy = load_access_policy(settings.access_policy_file)
@@ -909,7 +929,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"user": None, "users": [], "is_admin": False})
             return
 
-        user_id = self.headers.get("X-User-ID", "").strip()
+        user_id = self._session_user_id(settings)
         if not user_id:
             raise RequestError(HTTPStatus.UNAUTHORIZED, "Authenticated user is required")
         try:
@@ -952,17 +972,83 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             raise RequestError(HTTPStatus.BAD_REQUEST, "JSON body must be an object")
         return payload
 
+    def _session_user_id(self, settings) -> str:
+        auth = load_auth_config(Path(settings.web_auth_file))
+        secret = str(auth.get("secret", ""))
+        cookie = SimpleCookie(self.headers.get("Cookie", ""))
+        token = cookie["rag_session"].value if "rag_session" in cookie else ""
+        return verify_session(token, secret) if token and secret else ""
+
     def _current_user(self, settings) -> UserContext | None:
         policy = load_access_policy(settings.access_policy_file)
         if policy is None:
             return None
-        user_id = self.headers.get("X-User-ID", "").strip()
+        user_id = self._session_user_id(settings)
         if not user_id:
             raise RequestError(HTTPStatus.UNAUTHORIZED, "Authenticated user is required")
         try:
             return policy.user_context(user_id)
         except PermissionError as exc:
             raise RequestError(HTTPStatus.UNAUTHORIZED, str(exc)) from exc
+
+    def _handle_login(self) -> None:
+        settings = get_settings()
+        payload = self._read_json()
+        username = payload.get("username", "")
+        password = payload.get("password", "")
+        if not isinstance(username, str) or not isinstance(password, str):
+            raise RequestError(HTTPStatus.BAD_REQUEST, "username and password are required")
+
+        auth = load_auth_config(Path(settings.web_auth_file))
+        users = auth.get("users") if isinstance(auth.get("users"), dict) else {}
+        record = users.get(username) if isinstance(users.get(username), dict) else None
+        encoded = str(record.get("password_hash", "")) if record else ""
+        if not encoded or not verify_password(password, encoded):
+            raise RequestError(HTTPStatus.UNAUTHORIZED, "用户名或密码错误")
+
+        policy = load_access_policy(settings.access_policy_file)
+        if policy is None or username not in policy.users:
+            raise RequestError(HTTPStatus.FORBIDDEN, "该账号未配置网页权限")
+
+        ttl = int(auth.get("session_ttl_seconds", DEFAULT_SESSION_TTL))
+        token = create_session(username, str(auth.get("secret", "")), ttl)
+        secure = self.headers.get("X-Forwarded-Proto", "").lower() == "https"
+        cookie = (
+            f"rag_session={token}; Path=/; HttpOnly; SameSite=Lax; "
+            f"Max-Age={ttl}" + ("; Secure" if secure else "")
+        )
+        user = policy.user_context(username)
+        self._send_json(
+            {
+                "user": user.user_id,
+                "users": [{"id": user.user_id, "groups": sorted(user.groups)}],
+                "is_admin": policy.is_admin(user),
+            },
+            headers={"Set-Cookie": cookie},
+        )
+
+    def _handle_logout(self) -> None:
+        expired = "rag_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+        self._send_json(
+            {"ok": True},
+            headers={"Set-Cookie": expired, "Clear-Site-Data": '"cookies", "storage"'},
+        )
+
+    def _handle_logout_redirect(self) -> None:
+        expired = "rag_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+        self.send_response(HTTPStatus.SEE_OTHER)
+        self.send_header("Location", "/login")
+        self.send_header("Set-Cookie", expired)
+        self.send_header("Clear-Site-Data", '"cookies", "storage"')
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _send_redirect(self, location: str) -> None:
+        self.send_response(HTTPStatus.SEE_OTHER)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _require_admin(self) -> UserContext | None:
         settings = get_settings()
@@ -1107,11 +1193,18 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 )
         return top_k, similarity_threshold, retrieval_method, candidate_pool
 
-    def _send_json(self, payload: dict[str, object], status: int = HTTPStatus.OK) -> None:
+    def _send_json(
+        self,
+        payload: dict[str, object],
+        status: int = HTTPStatus.OK,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         self._send_security_headers()
         self.send_header("Cache-Control", "no-store")
         self.end_headers()

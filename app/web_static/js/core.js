@@ -122,6 +122,10 @@ export async function requestJson(url, options = {}) {
     ? await response.json()
     : { error: await response.text() };
 
+  if (response.status === 401 && !url.startsWith("/api/login")) {
+    location.replace("/login");
+    throw new Error("请重新登录");
+  }
   if (!response.ok) {
     throw new Error(payload.error || "请求失败");
   }
@@ -280,10 +284,12 @@ function renderUserSwitcher() {
   logout.className = "menu-item logout";
   logout.setAttribute("role", "menuitem");
   logout.textContent = "退出 / 切换账号";
-  logout.addEventListener("click", () => {
+  logout.addEventListener("click", async () => {
+    logout.disabled = true;
     el.userMenu.hidden = true;
     el.userButton.setAttribute("aria-expanded", "false");
-    location.href = "/logout";
+    await fetch("/api/logout", { method: "POST" });
+    location.replace("/login");
   });
   el.userMenu.append(logout);
 }

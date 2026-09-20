@@ -4,6 +4,7 @@
 """
 
 import json
+import tempfile
 from email.message import Message
 from http import HTTPStatus
 from pathlib import Path
@@ -13,6 +14,7 @@ import pytest
 from app.config import Settings
 from app.eval_store import read_questions
 from app.web import RequestError, WebRequestHandler, _read_k_list, _string_list
+from app.web_auth import create_session
 
 
 @pytest.fixture
@@ -33,15 +35,27 @@ def policy_file(tmp_path: Path) -> Path:
 
 
 def make_handler(*, user_id="alice", payload=None, monkeypatch=None, settings=None):
-    if monkeypatch is not None:
-        monkeypatch.setattr(
-            "app.web.get_settings", lambda: settings or Settings(_env_file=None)
-        )
     handler = object.__new__(WebRequestHandler)
     captured: dict = {}
     handler.headers = Message()
+    resolved_settings = settings
     if user_id is not None:
-        handler.headers["X-User-ID"] = user_id
+        auth_path = Path(tempfile.gettempdir()) / f"rag-test-auth-{user_id}.json"
+        auth_path.write_text('{"secret": "test-secret"}', encoding="utf-8")
+        if resolved_settings is not None:
+            resolved_settings = resolved_settings.model_copy(
+                update={"web_auth_file": auth_path}
+            )
+        else:
+            resolved_settings = Settings(
+                _env_file=None, web_auth_file=auth_path
+            )
+        handler.headers["Cookie"] = f"rag_session={create_session(user_id, 'test-secret')}"
+    if monkeypatch is not None:
+        monkeypatch.setattr(
+            "app.web.get_settings",
+            lambda: resolved_settings or Settings(_env_file=None),
+        )
     handler._read_json = lambda: payload if payload is not None else {}
     handler._send_json = lambda body, status=HTTPStatus.OK: captured.update(
         body=body, status=int(status)
