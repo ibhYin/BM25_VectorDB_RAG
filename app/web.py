@@ -38,7 +38,6 @@ logger = logging.getLogger(__name__)
 
 LOGIN_FAILURE_WINDOW = 15 * 60
 LOGIN_FAILURE_LIMIT = 8
-LOGIN_LOCKOUT_SECONDS = 5 * 60
 _login_failures: dict[str, list[float]] = {}
 _login_failures_lock = Lock()
 
@@ -1021,7 +1020,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             ]
             _login_failures[attempt_key] = failures
             if len(failures) >= LOGIN_FAILURE_LIMIT:
-                retry_after = max(1, int(LOGIN_LOCKOUT_SECONDS - (now - failures[0])))
+                retry_after = max(1, int(LOGIN_FAILURE_WINDOW - (now - failures[0])))
                 raise RequestError(
                     HTTPStatus.TOO_MANY_REQUESTS,
                     f"尝试次数过多，请 {retry_after} 秒后再试",
