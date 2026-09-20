@@ -252,6 +252,27 @@ svg {
   font-family: var(--mono);
 }
 
+.user-menu .menu-item .groups {
+  font-size: 11px;
+  color: var(--ink-faint);
+  font-family: var(--mono);
+}
+
+.user-menu .menu-divider {
+  height: 1px;
+  margin: 5px 4px;
+  background: var(--line);
+}
+
+.user-menu .menu-item.logout {
+  color: var(--danger);
+  justify-content: center;
+}
+
+.user-menu .menu-item.logout:hover {
+  background: var(--danger-soft);
+}
+
 /* ============================ 页面骨架 ============================ */
 
 .page {

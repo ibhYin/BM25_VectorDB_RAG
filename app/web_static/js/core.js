@@ -256,28 +256,36 @@ function renderUserSwitcher() {
   el.userMenu.replaceChildren();
   const title = document.createElement("div");
   title.className = "menu-title";
-  title.textContent = "切换身份（开发模式）";
+  title.textContent = "当前账号";
   el.userMenu.append(title);
-  for (const item of users) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `menu-item${item.id === user ? " current" : ""}`;
-    button.setAttribute("role", "menuitem");
-    const name = document.createElement("span");
-    name.textContent = item.id === user ? `✓ ${item.id}` : item.id;
-    const groups = document.createElement("span");
-    groups.className = "groups";
-    groups.textContent = (item.groups || []).join(", ") || "无组";
-    button.append(name, groups);
-    button.addEventListener("click", () => {
-      el.userMenu.hidden = true;
-      el.userButton.setAttribute("aria-expanded", "false");
-      if (item.id !== user) {
-        location.href = `/login?user=${encodeURIComponent(item.id)}`;
-      }
-    });
-    el.userMenu.append(button);
-  }
+
+  const current = users.find((item) => item.id === user) || { id: user, groups: [] };
+  const identity = document.createElement("div");
+  identity.className = "menu-item current";
+  identity.setAttribute("role", "menuitem");
+  const name = document.createElement("span");
+  name.textContent = `✓ ${current.id}`;
+  const groups = document.createElement("span");
+  groups.className = "groups";
+  groups.textContent = (current.groups || []).join(", ") || "无组";
+  identity.append(name, groups);
+  el.userMenu.append(identity);
+
+  const divider = document.createElement("div");
+  divider.className = "menu-divider";
+  el.userMenu.append(divider);
+
+  const logout = document.createElement("button");
+  logout.type = "button";
+  logout.className = "menu-item logout";
+  logout.setAttribute("role", "menuitem");
+  logout.textContent = "退出 / 切换账号";
+  logout.addEventListener("click", () => {
+    el.userMenu.hidden = true;
+    el.userButton.setAttribute("aria-expanded", "false");
+    location.href = "/logout";
+  });
+  el.userMenu.append(logout);
 }
 
 // --- status ---------------------------------------------------------------
