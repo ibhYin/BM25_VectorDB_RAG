@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from collections.abc import Callable
 from http import HTTPStatus
+from threading import Lock
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -33,6 +35,12 @@ from rag.index_manifest import read_index_embedding_model
 
 STATIC_DIR = Path(__file__).resolve().parent / "web_static"
 logger = logging.getLogger(__name__)
+
+LOGIN_FAILURE_WINDOW = 15 * 60
+LOGIN_FAILURE_LIMIT = 8
+LOGIN_LOCKOUT_SECONDS = 5 * 60
+_login_failures: dict[str, list[float]] = {}
+_login_failures_lock = Lock()
 
 
 def _actor_name(user: UserContext | None) -> str:
@@ -1003,11 +1011,29 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         if not isinstance(username, str) or not isinstance(password, str):
             raise RequestError(HTTPStatus.BAD_REQUEST, "username and password are required")
 
+        client_ip = getattr(self, "client_address", ("unknown", 0))[0]
+        attempt_key = f"{client_ip}:{username}"
+        now = time.monotonic()
+        with _login_failures_lock:
+            failures = [
+                stamp for stamp in _login_failures.get(attempt_key, [])
+                if now - stamp < LOGIN_FAILURE_WINDOW
+            ]
+            _login_failures[attempt_key] = failures
+            if len(failures) >= LOGIN_FAILURE_LIMIT:
+                retry_after = max(1, int(LOGIN_LOCKOUT_SECONDS - (now - failures[0])))
+                raise RequestError(
+                    HTTPStatus.TOO_MANY_REQUESTS,
+                    f"尝试次数过多，请 {retry_after} 秒后再试",
+                )
+
         auth = load_auth_config(Path(settings.web_auth_file))
         users = auth.get("users") if isinstance(auth.get("users"), dict) else {}
         record = users.get(username) if isinstance(users.get(username), dict) else None
         encoded = str(record.get("password_hash", "")) if record else ""
         if not encoded or not verify_password(password, encoded):
+            with _login_failures_lock:
+                _login_failures.setdefault(attempt_key, []).append(time.monotonic())
             raise RequestError(HTTPStatus.UNAUTHORIZED, "用户名或密码错误")
 
         policy = load_access_policy(settings.access_policy_file)
@@ -1022,6 +1048,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             f"Max-Age={ttl}" + ("; Secure" if secure else "")
         )
         user = policy.user_context(username)
+        with _login_failures_lock:
+            _login_failures.pop(attempt_key, None)
         self._send_json(
             {
                 "user": user.user_id,
