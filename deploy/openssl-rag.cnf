@@ -1,0 +1,16 @@
+[req]
+prompt = no
+distinguished_name = dn
+x509_extensions = v3_req
+
+[dn]
+CN = rag.121.41.82.207.nip.io
+
+[v3_req]
+subjectAltName = @alt_names
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+
+[alt_names]
+DNS.1 = rag.121.41.82.207.nip.io
+IP.1 = 121.41.82.207
