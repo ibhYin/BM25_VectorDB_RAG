@@ -1400,6 +1400,38 @@ svg {
     min-height: 100%;
   }
 
+  .app-header {
+    height: auto;
+    min-height: 58px;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    padding: 8px 12px;
+  }
+
+  .brand {
+    flex: 1 1 auto;
+  }
+
+  .header-actions {
+    margin-left: auto;
+  }
+
+  .app-nav {
+    order: 3;
+    width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .app-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .nav-link {
+    padding: 5px 10px;
+    white-space: nowrap;
+  }
+
   .rail,
   .chat {
     border: none;
