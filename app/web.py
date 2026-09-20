@@ -165,6 +165,10 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/ask":
             self._handle_ask()
+        elif parsed.path == "/api/login":
+            self._handle_login()
+        elif parsed.path == "/api/logout":
+            self._handle_logout()
         elif parsed.path == "/api/config":
             self._handle_update_config()
         elif parsed.path == "/api/models":
