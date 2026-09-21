@@ -2421,3 +2421,172 @@ svg {
 #question {
   align-self: stretch;
 }
+
+/* ============================ 用户管理页 ============================ */
+
+.users-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin-bottom: 6px;
+  background: var(--surface);
+}
+
+.users-main {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.users-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.users-name {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.users-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.users-badge {
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--ink-soft);
+}
+
+.users-badge.admin {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.users-badge.self {
+  border-color: var(--line);
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.users-badge.no-login,
+.users-badge.warn {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.users-badge.label {
+  border: 0;
+  background: none;
+  color: var(--ink-faint);
+  font-weight: 500;
+  padding-right: 0;
+}
+
+.users-badge.group {
+  border-color: var(--line);
+  background: var(--bg);
+  color: var(--ink-soft);
+}
+
+.users-groups {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.users-actions {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+
+.users-actions .danger {
+  color: var(--danger);
+}
+
+.users-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.users-field > span {
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.users-field input {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--bg);
+  font: inherit;
+  color: var(--ink);
+}
+
+.users-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.users-check input {
+  height: auto;
+  padding: 0;
+  border: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.users-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.users-toggle input {
+  height: auto;
+  padding: 0;
+  border: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.users-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius);
+  margin-bottom: 6px;
+  background: var(--surface);
+}

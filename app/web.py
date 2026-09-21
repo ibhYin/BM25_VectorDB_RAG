@@ -142,6 +142,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._handle_eval()
         elif parsed.path == "/api/staging":
             self._handle_staging_list()
+        elif parsed.path == "/api/users":
+            self._handle_users_list()
         elif parsed.path == "/api/conversations":
             self._handle_conversations()
         elif parsed.path.startswith("/api/conversations/"):
@@ -196,6 +198,10 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._handle_create_answer_job()
         elif parsed.path == "/api/conversations":
             self._handle_create_conversation()
+        elif parsed.path == "/api/users":
+            self._handle_users_create()
+        elif parsed.path.startswith("/api/users/"):
+            self._handle_users_update(parsed.path.removeprefix("/api/users/"))
         elif parsed.path.startswith("/api/eval/"):
             self._handle_eval_action(parsed.path.removeprefix("/api/eval/"))
         else:
@@ -204,7 +210,9 @@ class WebRequestHandler(BaseHTTPRequestHandler):
     def _dispatch_delete(self) -> None:
         parsed = urlparse(self.path)
 
-        if parsed.path.startswith("/api/documents/"):
+        if parsed.path.startswith("/api/users/"):
+            self._handle_users_delete(parsed.path.removeprefix("/api/users/"))
+        elif parsed.path.startswith("/api/documents/"):
             self._handle_document_delete(parsed.path.removeprefix("/api/documents/"))
         elif parsed.path.startswith("/api/conversations/"):
             self._handle_conversation_delete(
@@ -414,6 +422,59 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 "updated_chunks": updated,
             }
         )
+
+    def _handle_users_list(self) -> None:
+        from app.accounts import list_users
+
+        self._require_admin()
+        self._send_json({"users": list_users(get_settings())})
+
+    def _handle_users_create(self) -> None:
+        from app.accounts import create_user
+
+        user = self._require_admin()
+        payload = self._read_json()
+        try:
+            created = create_user(
+                get_settings(),
+                payload.get("username", ""),
+                groups=payload.get("groups", []),
+                is_admin=bool(payload.get("is_admin", False)),
+                password=payload.get("password", ""),
+                actor=_actor_name(user),
+            )
+        except ValueError as exc:
+            raise RequestError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+        self._send_json(created)
+
+    def _handle_users_update(self, raw_username: str) -> None:
+        from app.accounts import update_user
+
+        user = self._require_admin()
+        payload = self._read_json()
+        try:
+            updated = update_user(
+                get_settings(),
+                unquote(raw_username),
+                groups=payload.get("groups"),
+                is_admin=payload.get("is_admin"),
+                password=payload.get("password"),
+                clear_password=bool(payload.get("clear_password", False)),
+                actor=_actor_name(user),
+            )
+        except ValueError as exc:
+            raise RequestError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+        self._send_json(updated)
+
+    def _handle_users_delete(self, raw_username: str) -> None:
+        from app.accounts import delete_user
+
+        user = self._require_admin()
+        try:
+            delete_user(get_settings(), unquote(raw_username), actor=_actor_name(user))
+        except ValueError as exc:
+            raise RequestError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+        self._send_json({"deleted": unquote(raw_username)})
 
     def _handle_audit_log(self, query: str) -> None:
         from app.audit import audit_log_path, read_entries

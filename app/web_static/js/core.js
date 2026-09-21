@@ -20,6 +20,7 @@ export const el = {
   navAudit: document.querySelector("#nav-audit"),
   navEval: document.querySelector("#nav-eval"),
   navSettings: document.querySelector("#nav-settings"),
+  navUsers: document.querySelector("#nav-users"),
   navLibraryBadge: document.querySelector("#nav-library-badge"),
   userSwitcher: document.querySelector("#user-switcher"),
   userButton: document.querySelector("#user-button"),
@@ -233,7 +234,7 @@ export async function loadIdentity() {
 
 // 仅管理员可见的页面。加新页时只改这一处——此前导航显隐和「离开无权页面」是
 // 两份各自维护的名单，加页时很容易只改一个。
-const ADMIN_PAGES = ["settings", "audit", "eval"];
+const ADMIN_PAGES = ["settings", "audit", "eval", "users"];
 
 function renderNavGating() {
   const allowed = canConfigure();
@@ -241,6 +242,7 @@ function renderNavGating() {
     settings: el.navSettings,
     audit: el.navAudit,
     eval: el.navEval,
+    users: el.navUsers,
   };
   for (const name of ADMIN_PAGES) {
     const link = links[name];

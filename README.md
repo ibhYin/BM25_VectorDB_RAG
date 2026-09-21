@@ -122,6 +122,12 @@ Chat 端点指向 `opencode.ai` 时，程序会自动附加该网关要求的 `x
 集合，但生产环境还需要在认证层提供知识库选择/列表接口，并在服务层把选择值校验为该用户
 有权访问的知识库。
 
+账号能否登录由 `config/web_auth.json` 决定：顶层 `secret` 用于签发会话，`users` 里每个
+用户名对应一个 `password_hash`（pbkdf2_sha256，可用 `python -c "from app.web_auth import
+hash_password; print(hash_password('密码'))"` 生成）。一个账号要**同时**存在于
+`access_policy.json` 的 `users` 和 `web_auth.json` 的 `users` 才能登录。账号的创建、密码
+重置、所属组分配和删除都在网页「用户」页完成（仅管理员）；账号与密码由部署者自行配置，仓库不提供预置凭据。
+
 切换 Embedding 模型后必须使用新的 Chroma 目录重新建库，不要混用不同模型的向量。
 
 ## 使用
@@ -167,8 +173,9 @@ python -m app.main web
 | `#/settings` | 模型接入配置（LLM / Embedding / MinerU）与索引状态、运行目录 |
 | `#/audit` | 向量库写入记录，可按事件类型与操作者筛选（仅管理员） |
 | `#/eval` | 检索评估：给问题标出「本该被召回的切片」（仅管理员） |
+| `#/users` | 用户管理：建号、改密码、分配所属组、授予/收回管理员权限、删除（仅管理员） |
 
-导航在顶栏，`知识库` 上会显示待审数量角标；`设置`、`审计`、`评估` 对非管理员隐藏。
+导航在顶栏，`知识库` 上会显示待审数量角标；`设置`、`审计`、`评估`、`用户` 对非管理员隐藏。
 
 在问答页点答案里的引用会**跳到知识库页**并打开对应文档、定位并高亮那个切片——文档
 查看器不再占据问答区。
@@ -271,7 +278,8 @@ PDF 只携带视觉排版，不含「这是二级标题」这类语义信息，�
 - 需要启用访问控制（存在策略文件）；开放模式下没有过滤，谈不上分组
 - 管理员 id **不会**出现在可选组里——它是身份不是组，`user_context` 从不把用户自己的 id
   放进 groups，指派过去会让文档对所有人隐形
-- 管理员的文档列表会显示全部文档（便于管理），但检索与文档查看仍按组过滤
+- 管理员的文档列表会显示全部文档（便于管理），检索与文档查看也**绕过组过滤**（管理员
+  是最高的权限身份）；非管理员仍严格按组过滤。
 
 ## 切片策略
 
@@ -434,6 +442,15 @@ metadata，事后改策略需要重新索引。所以「通过」的动作顺序
 - `GET /api/staging`：待审提交列表和可用的访问组。仅管理员。
 - `POST /api/staging/:id/approve`：批准入库，`group` 指定访问组（须是策略里已有的组）。仅管理员。
 - `POST /api/staging/:id/reject`：拒绝并删除暂存文件。仅管理员。
+- `GET /api/users`：用户列表（策略用户 ∪ 认证用户），每项含 `username` / `groups` /
+  `is_admin` / `has_password` / `in_policy`。仅管理员。
+- `POST /api/users`：创建账号 `{username, password, groups[], is_admin}`，同时写入
+  `access_policy.json` 与 `web_auth.json`；`web_auth.json` 缺失时自动生成 `secret`。仅管理员。
+- `POST /api/users/:username`：更新 `{groups?, is_admin?, password?}`（按出现的键部分更新），
+  或 `{clear_password: true}` 清除密码禁止登录；不能取消自己的管理员权限、不能移除最后一位
+  管理员。仅管理员。
+- `DELETE /api/users/:username`：删除账号（两个文件里同时移除）；不能删除自己、不能删除最后
+  一位管理员。仅管理员。
 - `GET /api/config`：当前模型接入配置（API Key 不回显，只给 `••••` 加尾 4 位）和索引建库
   模型。仅管理员。
 - `POST /api/config`：更新 LLM / Embedding 的请求地址、API Key 与模型名，以及 MinerU 的

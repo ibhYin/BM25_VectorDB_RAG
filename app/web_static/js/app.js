@@ -12,12 +12,14 @@ import audit from "./views/audit.js";
 import evaluation from "./views/eval.js";
 import library from "./views/library.js";
 import settings from "./views/settings.js";
+import users from "./views/users.js";
 
 router.register("ask", ask);
 router.register("library", library);
 router.register("settings", settings);
 router.register("audit", audit);
 router.register("eval", evaluation);
+router.register("users", users);
 
 // --- shell controls -------------------------------------------------------
 

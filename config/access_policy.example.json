@@ -1,6 +1,8 @@
 {
-  "admins": ["alice"],
+  "admins": ["demo-admin", "demo-reader"],
   "users": {
+    "demo-admin": {"groups": []},
+    "demo-reader": {"groups": []},
     "alice": {"groups": ["hr", "engineering"]},
     "bob": {"groups": ["engineering"]},
     "carol": {"groups": ["finance"]}

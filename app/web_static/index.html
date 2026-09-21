@@ -25,6 +25,7 @@
         <a class="nav-link" id="nav-settings" href="#/settings" data-route="settings">设置</a>
         <a class="nav-link" id="nav-audit" href="#/audit" data-route="audit" hidden>审计</a>
         <a class="nav-link" id="nav-eval" href="#/eval" data-route="eval" hidden>评估</a>
+        <a class="nav-link" id="nav-users" href="#/users" data-route="users" hidden>用户</a>
       </nav>
 
       <div class="header-actions">
@@ -428,6 +429,53 @@
           </p>
         </div>
         <div class="item-list" id="eval-list" aria-live="polite"></div>
+      </section>
+    </section>
+
+    <!-- ============================ 用户管理 ============================ -->
+    <section class="page" id="page-users" hidden aria-label="用户管理">
+      <div class="page-head">
+        <h2>用户管理</h2>
+        <p>开发人员维护系统账号：建号、改密码、分配所属组、授予或收回管理员权限</p>
+        <p class="config-hint">改动立即生效，无需重启。不能删除自己的账号，也不能移除最后一位管理员。</p>
+      </div>
+
+      <section class="panel">
+        <form id="users-create-form" class="config-form" novalidate>
+          <fieldset class="config-group" aria-label="创建账号">
+            <div class="config-group-head">
+              <span class="config-group-title">创建账号</span>
+            </div>
+            <label class="config-field">
+              <span>用户名</span>
+              <input id="users-create-username" type="text" autocomplete="off" spellcheck="false" />
+            </label>
+            <label class="config-field">
+              <span>初始密码</span>
+              <input id="users-create-password" type="password" autocomplete="new-password" spellcheck="false" />
+            </label>
+            <div class="config-field">
+              <span>所属组</span>
+              <div class="users-groups" id="users-create-groups"></div>
+            </div>
+            <label class="config-field users-toggle">
+              <input id="users-create-admin" type="checkbox" />
+              <span>设为管理员（可检索全部文档并管理账号）</span>
+            </label>
+            <div class="config-input-row">
+              <button class="primary-button" type="submit">创建账号</button>
+              <span class="config-status" id="users-create-status" role="status" aria-live="polite"></span>
+            </div>
+          </fieldset>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="section-head">
+          <h3>账号列表</h3>
+          <p class="section-hint">改组与改密立即生效；「未设密码」的账号暂时无法登录</p>
+        </div>
+        <div class="item-list" id="users-list" aria-live="polite"></div>
       </section>
     </section>
 

@@ -29,18 +29,38 @@ def policy() -> AccessPolicy:
 
 def test_access_is_intersection_of_kb_and_document_groups() -> None:
     access = policy()
-    alice = access.user_context("alice")
+    bob = access.user_context("bob")  # finance，非管理员
 
     assert access.can_access(
         {
-            "knowledge_base_id": "engineering",
-            "knowledge_base_access_group": "engineering",
+            "knowledge_base_id": "finance",
+            "knowledge_base_access_group": "finance",
+            "document_access_group": "finance",
+        },
+        bob,
+        "finance",
+    )
+    # 文档组不匹配 → 拒（知识库组与文档组取交集）
+    assert not access.can_access(
+        {
+            "knowledge_base_id": "finance",
+            "knowledge_base_access_group": "finance",
             "document_access_group": "engineering",
         },
-        alice,
-        "engineering",
+        bob,
+        "finance",
     )
-    assert not access.can_access(
+    assert access.chroma_filter("finance", bob)["$and"][-1] == {
+        "document_access_group": {"$in": ["finance", "public"]}
+    }
+
+
+def test_admin_bypasses_group_filters_but_keeps_kb_constraint() -> None:
+    access = policy()
+    alice = access.user_context("alice")  # admin
+
+    # can_access：管理员只看 knowledge_base_id，跨组文档也放行
+    assert access.can_access(
         {
             "knowledge_base_id": "engineering",
             "knowledge_base_access_group": "engineering",
@@ -49,8 +69,37 @@ def test_access_is_intersection_of_kb_and_document_groups() -> None:
         alice,
         "engineering",
     )
-    assert access.chroma_filter("engineering", alice)["$and"][-1] == {
-        "document_access_group": {"$in": ["engineering", "public"]}
+    # 知识库约束仍然生效：别库的文档不放行
+    assert not access.can_access(
+        {
+            "knowledge_base_id": "engineering",
+            "knowledge_base_access_group": "engineering",
+            "document_access_group": "engineering",
+        },
+        alice,
+        "finance",
+    )
+    # chroma_filter：管理员只保留 kb 约束，不再夹组 $in 过滤
+    assert access.chroma_filter("engineering", alice) == {
+        "knowledge_base_id": "engineering"
+    }
+
+
+def test_non_admin_still_filtered_by_groups() -> None:
+    access = policy()
+    bob = access.user_context("bob")  # finance，非管理员
+
+    assert not access.can_access(
+        {
+            "knowledge_base_id": "engineering",
+            "knowledge_base_access_group": "engineering",
+            "document_access_group": "finance",
+        },
+        bob,
+        "engineering",
+    )
+    assert access.chroma_filter("engineering", bob)["$and"][-1] == {
+        "document_access_group": {"$in": ["finance", "public"]}
     }
 
 
@@ -78,15 +127,16 @@ def test_bm25_filters_unauthorized_chunks(tmp_path: Path) -> None:
     )
     collection.add(
         ids=["allowed", "denied"],
-        documents=["工程秘密", "财务秘密"],
+        documents=["财务秘密A", "财务秘密B"],
         metadatas=[
-            {"knowledge_base_id": "engineering", "knowledge_base_access_group": "engineering", "document_access_group": "engineering", "chunk_id": "allowed"},
-            {"knowledge_base_id": "engineering", "knowledge_base_access_group": "engineering", "document_access_group": "finance", "chunk_id": "denied"},
+            {"knowledge_base_id": "finance", "knowledge_base_access_group": "finance", "document_access_group": "finance", "chunk_id": "allowed"},
+            {"knowledge_base_id": "finance", "knowledge_base_access_group": "finance", "document_access_group": "engineering", "chunk_id": "denied"},
         ],
         embeddings=[[1.0], [1.0]],
     )
 
-    hits = search_bm25("秘密", tmp_path, 20, "engineering", policy().user_context("alice"), policy())
+    # bob（finance 组）能召回 allowed，denied 的文档组不在其组内。
+    hits = search_bm25("秘密", tmp_path, 20, "finance", policy().user_context("bob"), policy())
     assert [hit["chunk_id"] for hit in hits] == ["allowed"]
 
 

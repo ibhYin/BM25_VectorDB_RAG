@@ -64,6 +64,8 @@ class AccessPolicy:
         return self.documents.get(doc_id, PUBLIC_GROUP)
 
     def can_access(self, metadata: dict[str, Any], user: UserContext, knowledge_base_id: str) -> bool:
+        if self.is_admin(user):
+            return metadata.get("knowledge_base_id") == knowledge_base_id
         return (
             metadata.get("knowledge_base_id") == knowledge_base_id
             and metadata.get("knowledge_base_access_group") in user.groups
@@ -71,6 +73,10 @@ class AccessPolicy:
         )
 
     def chroma_filter(self, knowledge_base_id: str, user: UserContext) -> dict[str, Any] | None:
+        # 管理员绕过组过滤，但保留知识库约束——返回 None 是「全放行」语义，会丢掉
+        # knowledge_base_id 过滤，所以这里显式返回只含 kb 约束的过滤器。
+        if self.is_admin(user):
+            return {"knowledge_base_id": knowledge_base_id}
         if not user.groups:
             return None
         groups = sorted(user.groups)
