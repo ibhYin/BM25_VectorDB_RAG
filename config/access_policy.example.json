@@ -3,13 +3,12 @@
   "users": {
     "demo-admin": {"groups": []},
     "demo-reader": {"groups": []},
-    "alice": {"groups": ["hr", "engineering"]},
-    "bob": {"groups": ["engineering"]},
+    "alice": {"groups": ["hr"]},
+    "bob": {"groups": []},
     "carol": {"groups": ["finance"]}
   },
   "knowledge_bases": {
     "default": {"group": "public"},
-    "engineering": {"group": "engineering"},
     "finance": {"group": "finance"}
   },
   "documents": {
