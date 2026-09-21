@@ -388,7 +388,7 @@ MinerU/OCR/切片/向量写入失败、文档不存在、Chroma 删除异常等�
 日志是**只追加**的，从不清空重写；审计文件本身写入失败只会记一条 warning，不会反过来
 让原本成功的入库/删除失败。读取时会跳过崩溃造成的半行（torn line）。
 
-操作者来自 Web 请求的 `X-User-ID`；CLI 入库记为 `cli`；未启用权限策略时记为 `open-mode`。
+操作者来自 Web 会话的登录用户名；CLI 入库记为 `cli`；未启用权限策略时记为 `open-mode`。
 
 日志文件路径可用 `VECTOR_AUDIT_LOG` 覆盖。
 
@@ -476,9 +476,6 @@ metadata，事后改策略需要重新索引。所以「通过」的动作顺序
 - `GET /api/answer-jobs/:id`：查看编码、检索、生成进度和向量命中。
 - `POST /api/ask`：同步问答兼容接口。
 
-开发用的 `scripts/dev_proxy.py` 另外提供 `GET /api/me`、`GET /login?user=ID` 和
-`GET /logout`，用于在浏览器里切换身份并注入 `X-User-ID`。
-
 三个检索方式：
 
 - `vector`：Chroma 向量检索，直接取 Top-K，应用相似度阈值。
@@ -492,10 +489,10 @@ BM25 使用 jieba 中文分词和 SQLite FTS5 内置评分，直接读取 Chroma
 当前每次 BM25 查询都会从最新切片构建临时全文索引，避免文档更新后命中旧内容；大规模知识库应改为持久化全文索引。
 
 上传限制由 `MAX_UPLOAD_BYTES`、`MAX_UPLOAD_FILES`、`MAX_UPLOAD_JOBS` 控制。没有
-`ACCESS_POLICY_FILE` 时保持单用户开发模式；启用策略后，Web API 从上游认证层提供的
-`X-User-ID` 读取身份，问答、命中文档列表和异步任务都会做权限校验，上传只允许策略中的
-管理员。`X-User-ID` 不是认证机制，暴露到网络前必须由可信反向代理覆盖该请求头，并增加
-TLS、真实认证和限流。
+`ACCESS_POLICY_FILE` 时保持单用户开发模式；启用策略后，Web 登录走 `rag_session` 会话
+cookie（`config/web_auth.json` 校验密码并签发，12 小时有效），问答、命中文档列表和异步
+任务都以会话里的登录用户做权限校验，上传只允许管理员。生产部署应由反向代理（见
+`deploy/nginx-rag.conf`）终止 TLS 后再转发给本服务，账号和密码由「用户」页管理。
 
 ## 检索评估
 

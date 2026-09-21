@@ -6,13 +6,9 @@ SCRIPT_DIR="${0:A:h}"
 PROJECT_DIR="${SCRIPT_DIR:h}"
 HOST="127.0.0.1"
 PORT="8000"
-PROXY_PORT="8010"
 BACKEND_URL="http://${HOST}:${PORT}"
-UI_URL="http://${HOST}:${PROXY_PORT}"
 LOG_FILE="/tmp/documind-web.log"
 PID_FILE="/tmp/documind-web.pid"
-PROXY_LOG_FILE="/tmp/documind-proxy.log"
-PROXY_PID_FILE="/tmp/documind-proxy.pid"
 
 cd "$PROJECT_DIR" || exit 1
 
@@ -46,18 +42,9 @@ if ! curl --max-time 2 --silent --fail "$BACKEND_URL/" >/dev/null 2>&1; then
   printf '%s\n' "$server_pid" >"$PID_FILE"
 fi
 
-# Ensure the identity proxy is up; the browser only talks to this one.
-if ! curl --max-time 2 --silent --fail "$UI_URL/" >/dev/null 2>&1; then
-  rm -f "$PROXY_PID_FILE"
-  nohup "$PYTHON" scripts/dev_proxy.py >"$PROXY_LOG_FILE" 2>&1 &
-  proxy_pid=$!
-  printf '%s\n' "$proxy_pid" >"$PROXY_PID_FILE"
-fi
-
 for _ in {1..30}; do
-  if curl --max-time 2 --silent --fail "$BACKEND_URL/" >/dev/null 2>&1 && \
-    curl --max-time 2 --silent --fail "$UI_URL/" >/dev/null 2>&1; then
-    open -a "Google Chrome" "$UI_URL"
+  if curl --max-time 2 --silent --fail "$BACKEND_URL/" >/dev/null 2>&1; then
+    open -a "Google Chrome" "$BACKEND_URL"
     exit 0
   fi
   sleep 1

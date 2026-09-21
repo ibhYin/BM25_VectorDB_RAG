@@ -38,12 +38,10 @@ def policy_file(tmp_path: Path) -> Path:
     return path
 
 
-def make_handler(*, user, settings: Settings, monkeypatch, user_id=None):
+def make_handler(*, user, settings: Settings, monkeypatch):
     monkeypatch.setattr("app.web.get_settings", lambda: settings)
     handler = object.__new__(WebRequestHandler)
     handler.headers = Message()
-    if user_id is not None:
-        handler.headers["X-User-ID"] = user_id
     captured: dict = {}
     if user is not Ellipsis:
         handler._current_user = lambda *args, **kwargs: user
@@ -153,7 +151,6 @@ def test_anonymous_caller_is_rejected_in_policy_mode(policy_file, monkeypatch) -
         user=Ellipsis,  # 用真的 _current_user
         settings=Settings(_env_file=None),
         monkeypatch=monkeypatch,
-        user_id=None,
     )
 
     with pytest.raises(RequestError) as error:
