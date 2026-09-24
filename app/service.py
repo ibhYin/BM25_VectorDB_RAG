@@ -1185,6 +1185,31 @@ def answer_question(
         if progress is not None:
             progress(stage, status, detail)
 
+    # 系统本身的问题（支持什么格式/当前模型/版本/知识库清单）答案在实时状态里，
+    # 走向量检索会答错。识别命中就直接拼答案短路，不占 LLM 信号量、不占读锁。
+    from app.system_qa import answer_system_intent, detect_system_intent
+
+    intent = detect_system_intent(question)
+    if intent is not None:
+        report("system", "running", intent=intent)
+        started = perf_counter()
+        answer = answer_system_intent(intent, settings, user)
+        report(
+            "system",
+            "completed",
+            intent=intent,
+            duration_ms=round((perf_counter() - started) * 1000),
+        )
+        for stage in ("condense", "encode", "vector_search", "answer"):
+            report(stage, "skipped")
+        return {
+            "question": question,
+            "retrieval_method": "system",
+            "vector_context": [],
+            "vector_hits": [],
+            "answer": answer,
+        }
+
     with answer_limiter:
         # 改写要在并发闸之内（它就是用来限制并发 LLM 调用的），但在读锁之外——
         # 占着读锁等一次慢的 LLM 调用会挡住等待中的写者。

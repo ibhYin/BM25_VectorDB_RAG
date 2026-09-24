@@ -246,6 +246,7 @@ function renderContextLoading() {
 
 const processDefinitions = [
   ["condense", "问题改写"],
+  ["system", "系统问答"],
   ["encode", "问题编码"],
   ["vector_search", "向量搜索"],
   ["answer", "生成答案"],

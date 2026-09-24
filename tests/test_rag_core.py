@@ -527,3 +527,31 @@ def test_a_section_path_keeps_a_root_that_is_not_the_document_title() -> None:
     chunks = split_documents([document], chunk_size=200, chunk_overlap=0)
 
     assert "另一本书 > 第 1 章" in [chunk.metadata["section_path"] for chunk in chunks]
+
+
+def test_system_question_short_circuits_retrieval_and_answer(monkeypatch) -> None:
+    """系统问题（支持什么格式等）不走向量检索和 LLM，直接由系统状态回答。"""
+
+    embedded: list[str] = []
+    answered: dict = {}
+    stages: list[tuple[str, str]] = []
+    _fake_retrieval(monkeypatch, embedded, answered)
+    monkeypatch.setattr(
+        "chains.answer_chain.condense_question",
+        lambda *args, **kwargs: pytest.fail("系统问题不应触发改写"),
+    )
+
+    result = answer_question(
+        "支持mp4格式的文档入库吗？",
+        Settings(_env_file=None),
+        progress=lambda stage, status, detail: stages.append((stage, status)),
+        retrieval_method="vector",
+    )
+
+    assert result["retrieval_method"] == "system"
+    assert "mp4" in result["answer"]
+    assert embedded == []  # 没有编码/检索
+    assert answered == {}  # 没有调用 LLM 生成
+    assert ("system", "completed") in stages
+    for stage in ("condense", "encode", "vector_search", "answer"):
+        assert (stage, "skipped") in stages

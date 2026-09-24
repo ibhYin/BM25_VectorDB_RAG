@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 
 # "condense" 排在最前：dict 顺序即前端渲染顺序。没有历史时后端会报 skipped，
 # 前端对 skipped 已有「已跳过 / -」的展示，不需要动态增删阶段。
-STAGES = ("condense", "encode", "vector_search", "answer")
+# "system" 是系统问答专用通道（格式/模型/版本/知识库清单），命中时其余阶段报 skipped。
+STAGES = ("condense", "system", "encode", "vector_search", "answer")
 
 
 def utc_now() -> str:
@@ -163,6 +164,7 @@ class AnswerJobStore:
             job = self._jobs[job_id]
             job.update(
                 status="completed",
+                retrieval_method=result.get("retrieval_method", retrieval_method),
                 answer=result.get("answer", ""),
                 vector_hits=result.get("vector_hits", []),
                 finished_at=utc_now(),
@@ -177,7 +179,7 @@ class AnswerJobStore:
                     owner,
                     question,
                     result.get("answer", ""),
-                    retrieval_method=retrieval_method,
+                    retrieval_method=result.get("retrieval_method", retrieval_method),
                     hits=result.get("vector_hits"),
                 )
             except Exception:
