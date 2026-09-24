@@ -2837,12 +2837,12 @@ svg {
 }
 
 
-/* 文档查看器「回到顶部」浮动按钮 */
+/* 文档查看器「回到顶部」浮动按钮：文档视图是整页滚动，按钮固定到视口右下角。 */
 .back-top {
-  position: absolute;
+  position: fixed;
   right: 18px;
-  bottom: 52px;
-  z-index: 5;
+  bottom: 24px;
+  z-index: 50;
   display: inline-flex;
   align-items: center;
   justify-content: center;

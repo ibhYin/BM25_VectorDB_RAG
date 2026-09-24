@@ -1039,12 +1039,20 @@ export default {
     el.docLoadMore.addEventListener("click", loadDocumentPage);
     el.docViewMode.addEventListener("change", renderDocumentView);
     el.docBody.addEventListener("scroll", () => {
-      el.docBackTop.hidden = el.docBody.scrollTop < 400;
       if (docState.done || docState.loading) return;
       const { scrollTop, clientHeight, scrollHeight } = el.docBody;
       if (scrollTop + clientHeight >= scrollHeight - 240) loadDocumentPage();
     });
+    // 文档视图没有约束高度时是整页滚动（#doc-body 只是 overflow-y:auto 但不滚），
+    // 所以「回到顶部」要监听 window 而非 doc-body，否则永远不出现。
+    const updateDocBackTop = () => {
+      const y = Math.max(window.scrollY || 0, el.docBody.scrollTop || 0);
+      el.docBackTop.hidden = y < 400;
+    };
+    window.addEventListener("scroll", updateDocBackTop, { passive: true });
+    el.docBody.addEventListener("scroll", updateDocBackTop);
     el.docBackTop.addEventListener("click", () => {
+      window.scrollTo({ top: 0, behavior: "smooth" });
       el.docBody.scrollTo({ top: 0, behavior: "smooth" });
     });
 
