@@ -20,12 +20,12 @@ from rag.transcriber import TranscriptionError, _run_ffmpeg
 
 logger = logging.getLogger(__name__)
 
-# 录音文件识别的动作名与 API 版本。极速版接口的动作名不同，若用真实 AK 核对后
-# 不对，只需改这一处。
+# 录音文件识别（经典 RPC 接口，2018-08-17 版）：提交用 SubmitTask（Task 参数带
+# 任务 JSON），查询用 GetTaskResult。版本/动作名已用真实 AK 实测确认。
 _ALIYUN = {
     "submit": "SubmitTask",
     "result": "GetTaskResult",
-    "version": "2020-08-17",
+    "version": "2018-08-17",
 }
 POLL_INTERVAL_SECONDS = 5
 POLL_TIMEOUT_SECONDS = 1800
@@ -107,10 +107,13 @@ def _submit_task(
     request.set_method("POST")
     request.set_protocol_type("https")
     request.set_accept_format("json")
-    request.add_query_param("Appkey", appkey)
-    request.add_query_param("FileLink", file_link)
-    request.add_query_param("Version", "4.0")
-    request.add_query_param("EnableWords", "false")
+    task = {
+        "appkey": appkey,
+        "file_link": file_link,
+        "version": "4.0",
+        "enable_words": False,
+    }
+    request.add_query_param("Task", json.dumps(task, ensure_ascii=False))
     response = json.loads(client.do_action_with_exception(request).decode("utf-8"))
     task_id = response.get("TaskId") or response.get("Taskid")
     if not task_id:
