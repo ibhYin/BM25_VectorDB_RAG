@@ -241,17 +241,39 @@ def group_segments(segments: list[dict[str, Any]], *, source: str) -> list[Docum
 def transcribe_media(
     path: Path,
     *,
-    base_url: str,
-    api_key: str,
-    model: str,
+    provider: str = "openai",
+    base_url: str = "",
+    api_key: str = "",
+    model: str = "",
+    aliyun_access_key_id: str = "",
+    aliyun_access_key_secret: str = "",
+    aliyun_appkey: str = "",
+    aliyun_region: str = "cn-shanghai",
+    aliyun_oss_bucket: str = "",
+    aliyun_oss_endpoint: str = "",
+    aliyun_oss_prefix: str = "",
 ) -> list[Document]:
     """Full media → timestamped Documents pipeline for the loaders."""
 
     wav_path = _extract_audio(path)
     try:
-        segments = transcribe_audio(
-            wav_path, base_url=base_url, api_key=api_key, model=model
-        )
+        if provider == "aliyun":
+            from rag.aliyun_transcriber import transcribe_aliyun
+
+            segments = transcribe_aliyun(
+                wav_path,
+                access_key_id=aliyun_access_key_id,
+                access_key_secret=aliyun_access_key_secret,
+                appkey=aliyun_appkey,
+                region=aliyun_region,
+                oss_bucket=aliyun_oss_bucket,
+                oss_endpoint=aliyun_oss_endpoint,
+                oss_prefix=aliyun_oss_prefix,
+            )
+        else:
+            segments = transcribe_audio(
+                wav_path, base_url=base_url, api_key=api_key, model=model
+            )
     finally:
         wav_path.unlink(missing_ok=True)
     return group_segments(segments, source=str(path))

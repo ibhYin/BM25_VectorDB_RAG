@@ -130,11 +130,17 @@ hash_password; print(hash_password('密码'))"` 生成）。一个账号要**同
 重置、所属组分配和删除都在网页「用户」页完成（仅管理员）；账号与密码由部署者自行配置，仓库不提供预置凭据。
 
 视频/音频文件（mp4/mkv/mov/webm/avi、mp3/wav/m4a/aac/flac/ogg）入库时先由 **ffmpeg**
-抽取音频，再调一个 OpenAI 兼容的 `audio/transcriptions` 接口（ASR）转写成文字，按时间戳
-分段后切片入库——答案引用会带出 `MM:SS` 时间范围。转写服务在网页「设置」页的「语音识别
-（视频/音频转写）」里配置（请求地址留空复用对话模型地址，填好「转写模型」即启用）；
-未配置模型时上传媒体文件会明确报「语音识别未配置」。转写依赖服务器已安装 `ffmpeg`
-（macOS：`brew install ffmpeg`；Linux：`apt install ffmpeg`）。
+抽取音频，再经 ASR 转写成文字，按时间戳分段后切片入库——答案引用会带出 `MM:SS` 时间
+范围。转写服务在网页「设置」页的「语音识别（视频/音频转写）」里配置，**两种后端可切换**：
+
+- **OpenAI 兼容 `audio/transcriptions`**：请求地址留空复用对话模型地址，填好「转写模型」
+  即启用；未配置模型时上传媒体会明确报「语音识别未配置」。
+- **阿里云录音文件识别**：需要 accessKeyId / accessKeySecret / 项目 Appkey，以及一个承载
+  音频文件的 **OSS bucket**（识别服务要求音频走公网 URL，私有 bucket 用签名 URL）。设置页
+  填好「转写服务=阿里云录音文件识别」+ 阿里子组各字段后启用；缺项上传时会指出缺哪个。
+  依赖：Python 包 `oss2`、`aliyun-python-sdk-core`，服务器需能访问阿里云 API。
+
+两种转写都依赖服务器已安装 `ffmpeg`（macOS：`brew install ffmpeg`；Linux：`apt install ffmpeg`）。
 
 切换 Embedding 模型后必须使用新的 Chroma 目录重新建库，不要混用不同模型的向量。
 

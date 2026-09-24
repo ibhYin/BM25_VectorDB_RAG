@@ -77,3 +77,23 @@ def test_audio_transcribe_can_override_openai() -> None:
         "https://asr.example.test/v1",
     )
     assert settings.audio_transcribe_model == "doubao-seed-asr-1"
+
+
+def test_asr_provider_defaults_to_openai_and_aliyun_fields_empty() -> None:
+    settings = Settings(_env_file=None)
+    assert settings.audio_transcribe_provider == "openai"
+    assert settings.aliyun_region == "cn-shanghai"
+    assert settings.aliyun_access_key_id == ""
+    assert settings.aliyun_oss_bucket == ""
+
+
+def test_asr_provider_can_switch_to_aliyun() -> None:
+    settings = Settings(
+        _env_file=None,
+        audio_transcribe_provider="aliyun",
+        aliyun_access_key_id="LTAI-test",
+        aliyun_oss_bucket="my-bucket",
+    )
+    assert settings.audio_transcribe_provider == "aliyun"
+    assert settings.aliyun_access_key_id == "LTAI-test"
+    assert settings.aliyun_oss_bucket == "my-bucket"

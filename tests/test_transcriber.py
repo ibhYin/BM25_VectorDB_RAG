@@ -163,3 +163,44 @@ def test_transcribe_slice_falls_back_to_text_without_segments(tmp_path, monkeypa
     wav.write_bytes(b"\x00" * 1000)
     out = _transcribe_slice(wav, base_url="", api_key="", model="m")
     assert out == [{"start": 0.0, "end": 42.0, "text": "只有整段文本"}]
+
+
+def test_transcribe_media_dispatches_by_provider(tmp_path, monkeypatch) -> None:
+    from rag import transcriber
+
+    media = tmp_path / "demo.mp4"
+    media.write_bytes(b"fake video")
+    captured: dict = {}
+
+    def fake_openai(path, **kwargs):
+        captured["provider"] = "openai"
+        return [{"start": 0.0, "end": 1.0, "text": "openai 路径"}]
+
+    monkeypatch.setattr(transcriber, "transcribe_audio", fake_openai)
+    monkeypatch.setattr(
+        transcriber, "_extract_audio", lambda path: tmp_path / "demo.wav"
+    )
+    # 默认 openai
+    docs = transcriber.transcribe_media(media, base_url="", api_key="", model="m")
+    assert captured["provider"] == "openai"
+    assert docs[0].metadata["section_path"] == "00:00~00:01"
+
+    # 切到 aliyun：懒导入的分支应命中 aliyun_transcriber
+    called = {}
+
+    def fake_aliyun(path, **kwargs):
+        called.update(kwargs)
+        return [{"start": 0.0, "end": 1.0, "text": "aliyun 路径"}]
+
+    monkeypatch.setattr("rag.aliyun_transcriber.transcribe_aliyun", fake_aliyun)
+    transcriber.transcribe_media(
+        media,
+        provider="aliyun",
+        aliyun_access_key_id="ak",
+        aliyun_access_key_secret="sk",
+        aliyun_appkey="app",
+        aliyun_region="cn-shanghai",
+        aliyun_oss_bucket="bucket",
+    )
+    assert called["access_key_id"] == "ak"
+    assert called["oss_bucket"] == "bucket"

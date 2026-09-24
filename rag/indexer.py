@@ -31,6 +31,14 @@ def build_vector_index(
     audio_transcribe_base_url: str = "",
     audio_transcribe_api_key: str = "",
     audio_transcribe_model: str = "",
+    audio_transcribe_provider: str = "openai",
+    aliyun_access_key_id: str = "",
+    aliyun_access_key_secret: str = "",
+    aliyun_appkey: str = "",
+    aliyun_region: str = "cn-shanghai",
+    aliyun_oss_bucket: str = "",
+    aliyun_oss_endpoint: str = "",
+    aliyun_oss_prefix: str = "",
 ) -> tuple[list[Document], list[Document]]:
     """Load, split and index one directory through the shared vector pipeline.
 
@@ -58,6 +66,14 @@ def build_vector_index(
         audio_transcribe_base_url=audio_transcribe_base_url,
         audio_transcribe_api_key=audio_transcribe_api_key,
         audio_transcribe_model=audio_transcribe_model,
+        audio_transcribe_provider=audio_transcribe_provider,
+        aliyun_access_key_id=aliyun_access_key_id,
+        aliyun_access_key_secret=aliyun_access_key_secret,
+        aliyun_appkey=aliyun_appkey,
+        aliyun_region=aliyun_region,
+        aliyun_oss_bucket=aliyun_oss_bucket,
+        aliyun_oss_endpoint=aliyun_oss_endpoint,
+        aliyun_oss_prefix=aliyun_oss_prefix,
     )
     if not documents:
         raise ValueError(f"No supported documents found in: {data_dir}")

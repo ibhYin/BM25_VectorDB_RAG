@@ -1263,6 +1263,47 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             updates["audio_transcribe_model"] = cls._clean_model_name(
                 payload["audio_transcribe_model"], "audio_transcribe_model"
             )
+        if "audio_transcribe_provider" in payload:
+            value = payload["audio_transcribe_provider"]
+            if value not in ("openai", "aliyun"):
+                raise RequestError(
+                    HTTPStatus.BAD_REQUEST,
+                    "audio_transcribe_provider must be openai or aliyun",
+                )
+            updates["audio_transcribe_provider"] = str(value)
+        for field in ("aliyun_access_key_id", "aliyun_access_key_secret", "aliyun_appkey"):
+            if field in payload:
+                value = payload[field]
+                if not isinstance(value, str):
+                    raise RequestError(HTTPStatus.BAD_REQUEST, f"{field} must be a string")
+                value = value.strip()
+                if value:
+                    updates[field] = value
+        if "aliyun_region" in payload:
+            value = payload["aliyun_region"]
+            if not isinstance(value, str) or not value.strip():
+                raise RequestError(
+                    HTTPStatus.BAD_REQUEST, "aliyun_region must be a string"
+                )
+            updates["aliyun_region"] = value.strip()
+        if "aliyun_oss_bucket" in payload:
+            value = payload["aliyun_oss_bucket"]
+            if not isinstance(value, str):
+                raise RequestError(
+                    HTTPStatus.BAD_REQUEST, "aliyun_oss_bucket must be a string"
+                )
+            updates["aliyun_oss_bucket"] = value.strip()
+        if "aliyun_oss_endpoint" in payload:
+            updates["aliyun_oss_endpoint"] = cls._clean_base_url(
+                payload["aliyun_oss_endpoint"], "aliyun_oss_endpoint"
+            )
+        if "aliyun_oss_prefix" in payload:
+            value = payload["aliyun_oss_prefix"]
+            if not isinstance(value, str):
+                raise RequestError(
+                    HTTPStatus.BAD_REQUEST, "aliyun_oss_prefix must be a string"
+                )
+            updates["aliyun_oss_prefix"] = value.strip()
         return updates
 
     @staticmethod

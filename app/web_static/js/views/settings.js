@@ -31,10 +31,21 @@ const el = {
   mineruVersion: document.querySelector("#config-mineru-model-version"),
   mineruScope: document.querySelector("#config-mineru-scope"),
 
+  asrProvider: document.querySelector("#config-asr-provider"),
+  asrOpenai: document.querySelector("#config-asr-openai"),
+  asrAliyun: document.querySelector("#config-asr-aliyun"),
   asrBaseUrl: document.querySelector("#config-asr-base-url"),
   asrApiKey: document.querySelector("#config-asr-api-key"),
   asrModel: document.querySelector("#config-asr-model"),
   asrScope: document.querySelector("#config-asr-scope"),
+
+  aliyunAkId: document.querySelector("#config-aliyun-ak-id"),
+  aliyunAkSecret: document.querySelector("#config-aliyun-ak-secret"),
+  aliyunAppkey: document.querySelector("#config-aliyun-appkey"),
+  aliyunRegion: document.querySelector("#config-aliyun-region"),
+  aliyunBucket: document.querySelector("#config-aliyun-bucket"),
+  aliyunEndpoint: document.querySelector("#config-aliyun-endpoint"),
+  aliyunPrefix: document.querySelector("#config-aliyun-prefix"),
 
   refreshModels: document.querySelector("#config-refresh-models"),
 
@@ -128,6 +139,20 @@ function renderAsrScope(configured) {
   el.asrScope.className = `scope-badge ${configured ? "cloud" : "empty"}`;
 }
 
+function asrConfigured(loaded) {
+  const provider = (loaded && loaded.audio_transcribe_provider) || el.asrProvider.value || "openai";
+  if (provider === "aliyun") {
+    return Boolean(loaded && loaded.aliyun_appkey_set && loaded.aliyun_oss_bucket);
+  }
+  return Boolean((loaded && loaded.audio_transcribe_model) || el.asrModel.value.trim());
+}
+
+function toggleAsrFields() {
+  const provider = el.asrProvider.value;
+  el.asrOpenai.hidden = provider !== "openai";
+  el.asrAliyun.hidden = provider !== "aliyun";
+}
+
 // --- load / save ----------------------------------------------------------
 
 function renderIndexStatus() {
@@ -176,12 +201,27 @@ async function loadConfig() {
       : "留空则保持不变";
     configState.clearMineruToken = false;
     renderMineruScope(Boolean(config.mineru_api_token_set));
+    el.asrProvider.value = config.audio_transcribe_provider || "openai";
     el.asrBaseUrl.value = config.audio_transcribe_base_url || "";
     el.asrModel.value = config.audio_transcribe_model || "";
     el.asrApiKey.placeholder = config.audio_transcribe_api_key_set
       ? `已配置 ${config.audio_transcribe_api_key_hint} · 留空保持不变`
       : "留空则保持不变";
-    renderAsrScope(Boolean(config.audio_transcribe_model));
+    el.aliyunAkId.placeholder = config.aliyun_access_key_id_set
+      ? `已配置 ${config.aliyun_access_key_id_hint} · 留空保持不变`
+      : "留空则保持不变";
+    el.aliyunAkSecret.placeholder = config.aliyun_access_key_secret_set
+      ? `已配置 ${config.aliyun_access_key_secret_hint} · 留空保持不变`
+      : "留空则保持不变";
+    el.aliyunAppkey.placeholder = config.aliyun_appkey_set
+      ? `已配置 ${config.aliyun_appkey_hint} · 留空保持不变`
+      : "留空则保持不变";
+    el.aliyunRegion.value = config.aliyun_region || "cn-shanghai";
+    el.aliyunBucket.value = config.aliyun_oss_bucket || "";
+    el.aliyunEndpoint.value = config.aliyun_oss_endpoint || "";
+    el.aliyunPrefix.value = config.aliyun_oss_prefix || "";
+    toggleAsrFields();
+    renderAsrScope(asrConfigured(config));
     setConfigStatus("");
   } catch (error) {
     setConfigStatus(error.message, "error");
@@ -238,6 +278,28 @@ function collectConfigChanges() {
   }
   const asrKey = el.asrApiKey.value.trim();
   if (asrKey) changes.audio_transcribe_api_key = asrKey;
+  const provider = el.asrProvider.value;
+  if (provider !== (loaded.audio_transcribe_provider || "openai")) {
+    changes.audio_transcribe_provider = provider;
+  }
+  const akId = el.aliyunAkId.value.trim();
+  if (akId) changes.aliyun_access_key_id = akId;
+  const akSecret = el.aliyunAkSecret.value.trim();
+  if (akSecret) changes.aliyun_access_key_secret = akSecret;
+  const appkey = el.aliyunAppkey.value.trim();
+  if (appkey) changes.aliyun_appkey = appkey;
+  const region = el.aliyunRegion.value.trim();
+  if (region && region !== (loaded.aliyun_region || "cn-shanghai")) {
+    changes.aliyun_region = region;
+  }
+  const bucket = el.aliyunBucket.value.trim();
+  if (bucket !== (loaded.aliyun_oss_bucket || "")) changes.aliyun_oss_bucket = bucket;
+  const endpoint = el.aliyunEndpoint.value.trim();
+  if (endpoint !== (loaded.aliyun_oss_endpoint || "")) {
+    changes.aliyun_oss_endpoint = endpoint;
+  }
+  const prefix = el.aliyunPrefix.value.trim();
+  if (prefix !== (loaded.aliyun_oss_prefix || "")) changes.aliyun_oss_prefix = prefix;
   return changes;
 }
 
@@ -283,9 +345,13 @@ async function submitConfig(event) {
     el.embeddingApiKey.value = "";
     el.mineruToken.value = "";
     el.asrApiKey.value = "";
+    el.aliyunAkId.value = "";
+    el.aliyunAkSecret.value = "";
+    el.aliyunAppkey.value = "";
     configState.clearMineruToken = false;
     renderMineruScope(Boolean(config.mineru_api_token_set));
-    renderAsrScope(Boolean(config.audio_transcribe_model));
+    renderAsrScope(asrConfigured(config));
+    toggleAsrFields();
     showToast(embeddingChanged ? "已更换向量模型，请重新入库文档" : "配置已保存");
     await refreshStatus();
     renderIndexStatus();
@@ -311,6 +377,10 @@ export default {
     el.refreshModels.addEventListener("click", () => {
       loadModels("llm");
       loadModels("embedding");
+    });
+    el.asrProvider.addEventListener("change", () => {
+      toggleAsrFields();
+      renderAsrScope(asrConfigured(configState.loaded));
     });
 
     el.mineruClear.addEventListener("click", () => {

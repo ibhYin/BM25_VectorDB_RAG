@@ -137,6 +137,14 @@ def ingest_knowledge_base(
             audio_transcribe_base_url=settings.audio_transcribe_base_url,
             audio_transcribe_api_key=settings.audio_transcribe_api_key,
             audio_transcribe_model=settings.audio_transcribe_model,
+            audio_transcribe_provider=settings.audio_transcribe_provider,
+            aliyun_access_key_id=settings.aliyun_access_key_id,
+            aliyun_access_key_secret=settings.aliyun_access_key_secret,
+            aliyun_appkey=settings.aliyun_appkey,
+            aliyun_region=settings.aliyun_region,
+            aliyun_oss_bucket=settings.aliyun_oss_bucket,
+            aliyun_oss_endpoint=settings.aliyun_oss_endpoint,
+            aliyun_oss_prefix=settings.aliyun_oss_prefix,
         )
 
     result = IngestResult(len(documents), len(chunks), rebuild, source_dir)
@@ -191,6 +199,14 @@ def ingest_files(
                         audio_transcribe_base_url=settings.audio_transcribe_base_url,
                         audio_transcribe_api_key=settings.audio_transcribe_api_key,
                         audio_transcribe_model=settings.audio_transcribe_model,
+                        audio_transcribe_provider=settings.audio_transcribe_provider,
+                        aliyun_access_key_id=settings.aliyun_access_key_id,
+                        aliyun_access_key_secret=settings.aliyun_access_key_secret,
+                        aliyun_appkey=settings.aliyun_appkey,
+                        aliyun_region=settings.aliyun_region,
+                        aliyun_oss_bucket=settings.aliyun_oss_bucket,
+                        aliyun_oss_endpoint=settings.aliyun_oss_endpoint,
+                        aliyun_oss_prefix=settings.aliyun_oss_prefix,
                     )
                 )
 

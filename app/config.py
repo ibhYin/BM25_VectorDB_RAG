@@ -29,6 +29,16 @@ class Settings(BaseSettings):
     audio_transcribe_base_url: str = ""
     audio_transcribe_api_key: str = ""
     audio_transcribe_model: str = ""
+    # ASR backend: "openai" (audio/transcriptions) or "aliyun" (录音文件识别).
+    audio_transcribe_provider: Literal["openai", "aliyun"] = "openai"
+    # 阿里云录音文件识别（需 OSS 承载音频 URL）配置。
+    aliyun_access_key_id: str = ""
+    aliyun_access_key_secret: str = ""
+    aliyun_appkey: str = ""
+    aliyun_region: str = "cn-shanghai"
+    aliyun_oss_bucket: str = ""
+    aliyun_oss_endpoint: str = ""
+    aliyun_oss_prefix: str = ""
     chunk_size: int = 800
     chunk_overlap: int = 120
     retrieval_top_k: int = 20
@@ -65,6 +75,14 @@ class Settings(BaseSettings):
         "audio_transcribe_base_url",
         "audio_transcribe_api_key",
         "audio_transcribe_model",
+        "audio_transcribe_provider",
+        "aliyun_access_key_id",
+        "aliyun_access_key_secret",
+        "aliyun_appkey",
+        "aliyun_region",
+        "aliyun_oss_bucket",
+        "aliyun_oss_endpoint",
+        "aliyun_oss_prefix",
         mode="before",
     )
     @classmethod
@@ -118,6 +136,14 @@ RUNTIME_CONFIG_FIELDS = (
     "audio_transcribe_base_url",
     "audio_transcribe_api_key",
     "audio_transcribe_model",
+    "audio_transcribe_provider",
+    "aliyun_access_key_id",
+    "aliyun_access_key_secret",
+    "aliyun_appkey",
+    "aliyun_region",
+    "aliyun_oss_bucket",
+    "aliyun_oss_endpoint",
+    "aliyun_oss_prefix",
 )
 # Empty means "keep what is already there": the UI never echoes secrets back,
 # and a blank model picker must not silently erase the configured model.
@@ -130,6 +156,9 @@ RUNTIME_CONFIG_KEEP_WHEN_EMPTY = (
     "mineru_model_version",
     "structurize_provider",
     "audio_transcribe_api_key",
+    "aliyun_access_key_id",
+    "aliyun_access_key_secret",
+    "aliyun_appkey",
 )
 
 
@@ -264,6 +293,17 @@ def runtime_config_view() -> dict[str, object]:
         "audio_transcribe_api_key_set": bool(settings.audio_transcribe_api_key),
         "audio_transcribe_api_key_hint": _mask_secret(settings.audio_transcribe_api_key),
         "audio_transcribe_model": settings.audio_transcribe_model,
+        "audio_transcribe_provider": settings.audio_transcribe_provider,
+        "aliyun_access_key_id_set": bool(settings.aliyun_access_key_id),
+        "aliyun_access_key_id_hint": _mask_secret(settings.aliyun_access_key_id),
+        "aliyun_access_key_secret_set": bool(settings.aliyun_access_key_secret),
+        "aliyun_access_key_secret_hint": _mask_secret(settings.aliyun_access_key_secret),
+        "aliyun_appkey_set": bool(settings.aliyun_appkey),
+        "aliyun_appkey_hint": _mask_secret(settings.aliyun_appkey),
+        "aliyun_region": settings.aliyun_region,
+        "aliyun_oss_bucket": settings.aliyun_oss_bucket,
+        "aliyun_oss_endpoint": settings.aliyun_oss_endpoint,
+        "aliyun_oss_prefix": settings.aliyun_oss_prefix,
         "runtime_config_file": str(runtime_config_path()),
     }
 
