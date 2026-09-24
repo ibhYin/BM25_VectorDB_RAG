@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from app.access import known_groups, load_access_policy, set_document_group
+from app.access import known_groups, load_access_policy, set_document_groups
 from app.staging import StagingStore
 
 
@@ -108,39 +108,46 @@ def test_state_survives_a_restart(tmp_path: Path) -> None:
 # --- access policy writes -------------------------------------------------
 
 
-def test_set_document_group_creates_the_entry(tmp_path: Path) -> None:
+def test_set_document_groups_creates_the_entry(tmp_path: Path) -> None:
     policy_file = tmp_path / "access_policy.json"
     policy_file.write_text(
         json.dumps({"admins": ["alice"], "users": {"alice": {"groups": ["hr"]}}}),
         encoding="utf-8",
     )
 
-    set_document_group(policy_file, "note_abc12345", "hr")
+    set_document_groups(policy_file, "note_abc12345", ["hr"])
 
     payload = json.loads(policy_file.read_text(encoding="utf-8"))
-    assert payload["documents"]["note_abc12345"] == {"group": "hr"}
+    assert payload["documents"]["note_abc12345"] == {"groups": ["hr"]}
     # The rest of the policy must survive the rewrite.
     assert payload["admins"] == ["alice"]
 
 
-def test_set_document_group_overwrites_an_existing_entry(tmp_path: Path) -> None:
+def test_set_document_groups_overwrites_an_existing_entry(tmp_path: Path) -> None:
     policy_file = tmp_path / "access_policy.json"
     policy_file.write_text(
         json.dumps({"documents": {"note_abc12345": {"group": "public"}}}),
         encoding="utf-8",
     )
 
-    set_document_group(policy_file, "note_abc12345", "finance")
+    set_document_groups(policy_file, "note_abc12345", ["finance", "hr"])
 
-    assert load_access_policy(policy_file).document_group("note_abc12345") == "finance"
+    assert load_access_policy(policy_file).document_groups("note_abc12345") == frozenset(
+        {"finance", "hr"}
+    )
+    # 旧格式的 `{"group": ...}` 条目被新格式覆盖。
+    payload = json.loads(policy_file.read_text(encoding="utf-8"))
+    assert payload["documents"]["note_abc12345"] == {"groups": ["finance", "hr"]}
 
 
-def test_set_document_group_rejects_blank_values(tmp_path: Path) -> None:
+def test_set_document_groups_rejects_blank_values(tmp_path: Path) -> None:
     policy_file = tmp_path / "access_policy.json"
     policy_file.write_text("{}", encoding="utf-8")
 
     with pytest.raises(ValueError):
-        set_document_group(policy_file, "note_abc", "  ")
+        set_document_groups(policy_file, "note_abc", ["  "])
+    with pytest.raises(ValueError):
+        set_document_groups(policy_file, "note_abc", [])
 
 
 def test_known_groups_collects_every_referenced_group(tmp_path: Path) -> None:
@@ -154,7 +161,7 @@ def test_known_groups_collects_every_referenced_group(tmp_path: Path) -> None:
                     "bob": {"groups": ["finance"]},
                 },
                 "knowledge_bases": {"default": {"group": "public"}},
-                "documents": {"doc": {"group": "legal"}},
+                "documents": {"doc": {"groups": ["legal", "hr"]}},
             }
         ),
         encoding="utf-8",
@@ -166,6 +173,15 @@ def test_known_groups_collects_every_referenced_group(tmp_path: Path) -> None:
     # Admin ids are identities, not groups: assigning a document to one would
     # make it visible to nobody, so they must not be offered as options.
     assert "alice" not in groups
+
+
+def test_known_groups_still_reads_legacy_scalar_group(tmp_path: Path) -> None:
+    policy_file = tmp_path / "access_policy.json"
+    policy_file.write_text(
+        json.dumps({"documents": {"doc": {"group": "legal"}}}), encoding="utf-8"
+    )
+
+    assert "legal" in known_groups(policy_file)
 
 
 def test_known_groups_on_a_missing_file_is_just_public(tmp_path: Path) -> None:

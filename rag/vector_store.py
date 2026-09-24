@@ -196,23 +196,35 @@ def delete_documents(
 
 def set_document_access_group(
     doc_ids: list[str],
-    group: str,
+    groups: list[str],
     persist_dir: Path,
     embedding_model: str,
     embedding_api_key: str = "",
     embedding_base_url: str = "",
     knowledge_base_id: str | None = None,
+    all_groups: list[str] | None = None,
 ) -> int:
-    """Rewrite document_access_group on the stored chunks of these documents.
+    """Rewrite the access-group metadata on the stored chunks of these documents.
 
-    The group is normally baked in at split time, so changing it afterwards would
-    mean re-indexing the document. Updating only the metadata keeps the vectors
-    untouched — no embedding calls, and no risk to what the index already recalls.
+    The groups are normally baked in at split time, so changing them afterwards
+    would mean re-indexing the document. Updating only the metadata keeps the
+    vectors untouched — no embedding calls, and no risk to what the index already
+    recalls.
+
+    Each chunk carries three representations: ``document_access_groups`` (the
+    full list, for display and Python-side filtering), ``document_access_group``
+    (the primary group — a scalar kept for backward compatibility), and one
+    boolean flag ``access_<group>`` per known group (chromadb can't filter on
+    list values, so retrieval matches on the flags).
     """
 
     unique_ids = sorted({doc_id for doc_id in doc_ids if doc_id})
     if not unique_ids:
         return 0
+    clean_groups = sorted({str(group).strip() for group in groups if str(group).strip()})
+    if not clean_groups:
+        raise ValueError("at least one group is required")
+    primary = clean_groups[0]
 
     vector_store = get_vector_store(
         persist_dir, embedding_model, embedding_api_key, embedding_base_url
@@ -230,7 +242,11 @@ def set_document_access_group(
     updated = []
     for metadata in metadatas:
         merged = dict(metadata or {})
-        merged["document_access_group"] = group
+        merged["document_access_group"] = primary
+        merged["document_access_groups"] = clean_groups
+        # 非成员组写 False：清除改组前遗留的陈旧 True flag。
+        for group in all_groups or []:
+            merged["access_" + group] = group in clean_groups
         updated.append(merged)
 
     # ponytail: langchain_chroma exposes no public metadata-only update, so reach

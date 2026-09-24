@@ -42,6 +42,9 @@ const el = {
 
   documentList: document.querySelector("#document-list"),
   reloadDocumentsButton: document.querySelector("#reload-documents-button"),
+  listModeControls: document.querySelector("#doc-list-controls"),
+  listModeSegment: document.querySelector("#doc-list-mode"),
+  groupView: document.querySelector("#group-view"),
 
   docBackButton: document.querySelector("#doc-back-button"),
   docTitle: document.querySelector("#doc-title"),
@@ -54,6 +57,8 @@ const el = {
 
 let mounted = false;
 const stagingState = { items: [], groups: [] };
+let listMode = "docs"; // "docs" | "groups"
+let openAccessPopover = null; // { wrapper, trigger, popover } 当前打开的访问组弹层
 
 // --- stats ----------------------------------------------------------------
 
@@ -421,6 +426,16 @@ function ingestDetail(indexedDocument) {
 }
 
 function renderDocuments() {
+  const canManageAccess = Boolean(state.access.manageable);
+  el.listModeControls.hidden = !canManageAccess;
+  const byGroup = canManageAccess && listMode === "groups";
+  el.documentList.hidden = byGroup;
+  el.groupView.hidden = !byGroup;
+  if (byGroup) {
+    renderGroupView();
+    return;
+  }
+
   el.documentList.replaceChildren();
   clearListLoading(el.documentList);
   if (!state.documents.length) {
@@ -434,7 +449,6 @@ function renderDocuments() {
   const table = document.createElement("div");
   table.className = "doc-table";
 
-  const canManageAccess = Boolean(state.access.manageable);
   // 入库人与时间来自审计日志，服务端只回给管理员（审计页本身也是仅管理员可见）。
   const isAdmin = Boolean(state.identity.isAdmin);
   const headers = ["标题", "来源", "切片", "切片方式"];
@@ -510,7 +524,7 @@ function renderDocuments() {
       row.append(ingest);
     }
     if (canManageAccess) {
-      row.append(createAccessSelect(indexedDocument));
+      row.append(createAccessEditor(indexedDocument));
     }
     row.append(actions);
     table.append(row);
@@ -518,46 +532,191 @@ function renderDocuments() {
   el.documentList.append(table);
 }
 
-// 每个文档一行下拉，改完立即生效（只改元数据，不重新向量化）。
-function createAccessSelect(indexedDocument) {
-  const select = document.createElement("select");
-  select.className = "config-select doc-access-select";
-  select.setAttribute("aria-label", `${indexedDocument.title} 的访问组`);
+function docAccessGroups(indexedDocument) {
+  const list =
+    indexedDocument.access_groups && indexedDocument.access_groups.length
+      ? indexedDocument.access_groups
+      : [indexedDocument.access_group || "public"];
+  return [...new Set(list)].sort();
+}
 
-  const groups = state.access.groups || [];
-  const current = indexedDocument.access_group || "public";
-  // 当前组若不在已知组里（例如策略被改过），也要显示出来，否则会误显示成别的组。
-  const options = groups.includes(current) ? groups : [current, ...groups];
-  for (const group of options) {
-    const option = document.createElement("option");
-    option.value = group;
-    option.textContent = group === "public" ? "public（所有人）" : group;
-    select.append(option);
+function groupBadge(group) {
+  const span = document.createElement("span");
+  span.className = "access-badge";
+  span.textContent = group === "public" ? "public（所有人）" : group;
+  return span;
+}
+
+// 每行一个访问组编辑按钮：点击弹层多选组，勾选立即生效（只改元数据，不重新向量化）。
+function createAccessEditor(indexedDocument) {
+  const wrapper = document.createElement("span");
+  wrapper.className = "access-editor";
+
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "access-editor-trigger";
+  trigger.setAttribute("aria-haspopup", "dialog");
+  trigger.setAttribute("aria-expanded", "false");
+  trigger.setAttribute("aria-label", `编辑 ${indexedDocument.title} 的访问组`);
+  renderEditorBadges(trigger, docAccessGroups(indexedDocument));
+
+  const popover = document.createElement("div");
+  popover.className = "access-popover";
+  popover.hidden = true;
+  popover.setAttribute("role", "dialog");
+  popover.setAttribute("aria-label", "访问组");
+
+  function renderPopover() {
+    popover.replaceChildren();
+    const title = document.createElement("div");
+    title.className = "access-popover-title";
+    title.textContent = indexedDocument.title || "未命名文档";
+    popover.append(title);
+
+    const groups = state.access.groups || [];
+    // 策略改过、文档还挂在已不存在的组上时也要显示并保留，否则保存会悄悄丢掉它。
+    const current = docAccessGroups(indexedDocument);
+    const options = [...new Set([...current, ...groups])].sort();
+    const boxes = new Map();
+    for (const group of options) {
+      const label = document.createElement("label");
+      label.className = "access-check";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.value = group;
+      box.checked = current.includes(group);
+      box.addEventListener("change", () => {
+        const next = [...boxes.values()]
+          .filter((candidate) => candidate.checked)
+          .map((candidate) => candidate.value);
+        if (!next.length) {
+          box.checked = true; // 回滚：不能把文档变成谁都看不见
+          showToast("至少保留一个访问组", "error");
+          return;
+        }
+        saveAccessGroups(indexedDocument, next, trigger, renderPopover);
+      });
+      label.append(box, document.createTextNode(group === "public" ? "public（所有人）" : group));
+      boxes.set(group, box);
+      popover.append(label);
+    }
+    const hint = document.createElement("div");
+    hint.className = "access-popover-hint";
+    hint.textContent = "至少保留一个组；改完立即生效";
+    popover.append(hint);
   }
-  select.value = current;
 
-  select.addEventListener("change", async () => {
-    const next = select.value;
-    select.disabled = true;
-    try {
-      await requestJson(
-        `/api/documents/${encodeURIComponent(indexedDocument.doc_id)}/access`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ group: next }),
-        },
-      );
-      indexedDocument.access_group = next;
-      showToast(`已将「${indexedDocument.title}」改为 ${next}`);
-    } catch (error) {
-      select.value = current;
-      showToast(error.message, "error");
-    } finally {
-      select.disabled = false;
+  trigger.addEventListener("click", () => {
+    const willOpen = popover.hidden;
+    closeAccessPopover();
+    if (willOpen) {
+      renderPopover(); // 每次打开按最新组集合重建，避免勾选后弹层内容过期
+      popover.hidden = false;
+      trigger.setAttribute("aria-expanded", "true");
+      openAccessPopover = { wrapper, trigger, popover };
     }
   });
-  return select;
+
+  wrapper.append(trigger, popover);
+  return wrapper;
+}
+
+function renderEditorBadges(trigger, groups) {
+  trigger.replaceChildren();
+  for (const group of groups) trigger.append(groupBadge(group));
+  if (!groups.length) {
+    const none = document.createElement("span");
+    none.className = "access-badge none";
+    none.textContent = "未开放";
+    trigger.append(none);
+  }
+}
+
+async function saveAccessGroups(indexedDocument, groups, trigger, onSaved) {
+  trigger.disabled = true;
+  try {
+    const result = await requestJson(
+      `/api/documents/${encodeURIComponent(indexedDocument.doc_id)}/access`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ groups }),
+      },
+    );
+    indexedDocument.access_groups = result.access_groups;
+    indexedDocument.access_group = result.access_groups[0] || "public";
+    renderEditorBadges(trigger, result.access_groups);
+    onSaved?.(); // 同步弹层里的勾选状态
+    showToast(`已更新「${indexedDocument.title}」的访问组`);
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    trigger.disabled = false;
+  }
+}
+
+function closeAccessPopover() {
+  if (openAccessPopover) {
+    openAccessPopover.popover.hidden = true;
+    openAccessPopover.trigger.setAttribute("aria-expanded", "false");
+    openAccessPopover = null;
+  }
+}
+
+// 「按组查看」：管理员视角，每个组能看到哪些文档（多对多，组视角回看文档）。
+function renderGroupView() {
+  el.groupView.replaceChildren();
+  const groups = state.access.groups || [];
+  if (!groups.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-list";
+    empty.textContent = "暂无访问组";
+    el.groupView.append(empty);
+    return;
+  }
+  const mapping = new Map(groups.map((group) => [group, []]));
+  for (const indexedDocument of state.documents) {
+    for (const group of docAccessGroups(indexedDocument)) {
+      if (!mapping.has(group)) mapping.set(group, []);
+      mapping.get(group).push(indexedDocument);
+    }
+  }
+  for (const group of [...groups].sort()) {
+    const documents = mapping.get(group) || [];
+    const section = document.createElement("section");
+    section.className = "access-group-section";
+
+    const head = document.createElement("div");
+    head.className = "access-group-head";
+    const name = document.createElement("strong");
+    name.textContent = group === "public" ? "public（所有人）" : group;
+    const count = document.createElement("span");
+    count.className = "access-group-count";
+    count.textContent = `${documents.length} 个文档`;
+    head.append(name, count);
+    section.append(head);
+
+    if (!documents.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty-list";
+      empty.textContent = "该组暂无文档";
+      section.append(empty);
+    } else {
+      const list = document.createElement("div");
+      list.className = "access-group-docs";
+      for (const indexedDoc of documents) {
+        const item = document.createElement("button");
+        item.type = "button";
+        item.className = "access-group-doc";
+        item.title = indexedDoc.source || "";
+        item.textContent = indexedDoc.title || "未命名文档";
+        item.addEventListener("click", () => openDocument(indexedDoc));
+        list.append(item);
+      }
+      section.append(list);
+    }
+    el.groupView.append(section);
+  }
 }
 
 async function deleteDocument(indexedDocument) {
@@ -846,6 +1005,20 @@ export default {
     });
 
     el.reloadDocumentsButton.addEventListener("click", () => emit("documents:refresh"));
+    el.listModeSegment.addEventListener("change", () => {
+      const checked = document.querySelector('input[name="doc-list-mode"]:checked');
+      listMode = checked ? checked.value : "docs";
+      renderDocuments();
+    });
+    // 点击弹层外或按 Esc 关闭访问组弹层。
+    document.addEventListener("click", (event) => {
+      if (!openAccessPopover) return;
+      if (openAccessPopover.wrapper.contains(event.target)) return;
+      closeAccessPopover();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") closeAccessPopover();
+    });
     el.docBackButton.addEventListener("click", showList);
     el.docLoadMore.addEventListener("click", loadDocumentPage);
     el.docViewMode.addEventListener("change", renderDocumentView);
@@ -896,6 +1069,7 @@ export default {
   },
 
   hide() {
+    closeAccessPopover();
     stopPolling();
   },
 

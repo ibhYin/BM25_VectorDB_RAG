@@ -160,6 +160,7 @@ def test_list_indexed_documents_aggregates_chunk_counts(
             "title": "A",
             "source": "a.md",
             "access_group": "hr",
+            "access_groups": ["hr"],
             "chunk_count": 2,
             # 没有 structured_by 的分片走的是固定长度切分。
             "chunk_strategy": "fixed",
@@ -174,6 +175,7 @@ def test_list_indexed_documents_aggregates_chunk_counts(
             "title": "B",
             "source": "b.md",
             "access_group": "public",
+            "access_groups": ["public"],
             "chunk_count": 1,
             "chunk_strategy": "fixed",
             "chunk_strategy_provider": "",

@@ -20,11 +20,11 @@ class UserContext:
 
 @dataclass(frozen=True)
 class AccessPolicy:
-    """Users belong to groups; each KB/document is visible to one group."""
+    """Users belong to groups; each KB/document is visible to one or more groups."""
 
     users: dict[str, frozenset[str]]
     knowledge_bases: dict[str, str]
-    documents: dict[str, str]
+    documents: dict[str, frozenset[str]]
     admins: frozenset[str]
 
     @classmethod
@@ -39,11 +39,21 @@ class AccessPolicy:
             for kb_id, value in payload.get("knowledge_bases", {}).items()
             if isinstance(value, dict)
         }
-        documents = {
-            str(doc_id): str(value.get("group", PUBLIC_GROUP))
-            for doc_id, value in payload.get("documents", {}).items()
-            if isinstance(value, dict)
-        }
+        documents: dict[str, frozenset[str]] = {}
+        for doc_id, value in payload.get("documents", {}).items():
+            if not isinstance(value, dict):
+                continue
+            raw_groups = value.get("groups")
+            if isinstance(raw_groups, list):
+                # 新格式：一个文档可属于多个组。
+                documents[str(doc_id)] = frozenset(
+                    str(group) for group in raw_groups if str(group).strip()
+                )
+            else:
+                # 旧格式：{"group": "hr"} 包成单元素集合。
+                documents[str(doc_id)] = frozenset(
+                    {str(value.get("group", PUBLIC_GROUP))}
+                )
         admins = frozenset(str(user_id) for user_id in payload.get("admins", []))
         return cls(users, knowledge_bases, documents, admins)
 
@@ -60,8 +70,23 @@ class AccessPolicy:
     def knowledge_base_group(self, knowledge_base_id: str) -> str:
         return self.knowledge_bases.get(knowledge_base_id, PUBLIC_GROUP)
 
+    def document_groups(self, doc_id: str) -> frozenset[str]:
+        return self.documents.get(doc_id, frozenset({PUBLIC_GROUP}))
+
     def document_group(self, doc_id: str) -> str:
-        return self.documents.get(doc_id, PUBLIC_GROUP)
+        """主组（排序后第一个），保留给向后兼容的旧字段。"""
+        groups = sorted(self.document_groups(doc_id))
+        return groups[0] if groups else ""
+
+    def all_groups(self) -> frozenset[str]:
+        """策略里出现过的所有组（users + 知识库 + 文档），供切片时写 flag。"""
+        groups = {PUBLIC_GROUP}
+        for user_groups in self.users.values():
+            groups.update(user_groups)
+        groups.update(self.knowledge_bases.values())
+        for doc_groups in self.documents.values():
+            groups.update(doc_groups)
+        return frozenset(groups)
 
     def can_access(self, metadata: dict[str, Any], user: UserContext, knowledge_base_id: str) -> bool:
         if self.is_admin(user):
@@ -69,7 +94,7 @@ class AccessPolicy:
         return (
             metadata.get("knowledge_base_id") == knowledge_base_id
             and metadata.get("knowledge_base_access_group") in user.groups
-            and metadata.get("document_access_group") in user.groups
+            and bool(_metadata_doc_groups(metadata) & user.groups)
         )
 
     def chroma_filter(self, knowledge_base_id: str, user: UserContext) -> dict[str, Any] | None:
@@ -80,13 +105,32 @@ class AccessPolicy:
         if not user.groups:
             return None
         groups = sorted(user.groups)
+        # 多组文档：切片元数据里为每个组存了 `access_<组>` 布尔 flag，
+        # chromadb 对 list 型元数据的 $in 过滤不生效，所以用 flag 的 $or 命中；
+        # 旧标量分支兼容从未改组的存量切片。
         return {
             "$and": [
                 {"knowledge_base_id": knowledge_base_id},
                 {"knowledge_base_access_group": {"$in": groups}},
-                {"document_access_group": {"$in": groups}},
+                {
+                    "$or": [
+                        {"document_access_group": {"$in": groups}},
+                        *[{"access_" + group: True} for group in groups],
+                    ]
+                },
             ]
         }
+
+
+def _metadata_doc_groups(metadata: dict[str, Any]) -> frozenset[str]:
+    """文档在切片元数据里的组集合：新格式是 list，旧格式是单个标量。"""
+    raw = metadata.get("document_access_groups")
+    if isinstance(raw, list):
+        return frozenset(str(group) for group in raw if group)
+    scalar = metadata.get("document_access_group")
+    if scalar:
+        return frozenset({str(scalar)})
+    return frozenset()
 
 
 def load_access_policy(path: Path) -> AccessPolicy | None:
@@ -122,22 +166,29 @@ def known_groups(path: Path) -> set[str]:
             groups.update(str(group) for group in user.get("groups", []))
     for section in ("knowledge_bases", "documents"):
         for entry in (payload.get(section) or {}).values():
-            if isinstance(entry, dict) and entry.get("group"):
+            if not isinstance(entry, dict):
+                continue
+            raw_groups = entry.get("groups")
+            if isinstance(raw_groups, list):
+                groups.update(str(group) for group in raw_groups)
+            elif entry.get("group"):
                 groups.add(str(entry["group"]))
     return groups
 
 
-def set_document_group(path: Path, doc_id: str, group: str) -> None:
-    """Point one document at an access group, creating the entry if needed.
+def set_document_groups(path: Path, doc_id: str, groups: list[str]) -> None:
+    """把文档指派给一个或多个访问组，创建条目（覆盖旧组集合）时写入策略。
 
-    Chunk metadata bakes in the group at split time, so this must run *before*
+    Chunk metadata bakes in the groups at split time, so this must run *before*
     the document is indexed.
     """
 
     doc_id = doc_id.strip()
-    group = group.strip()
-    if not doc_id or not group:
-        raise ValueError("doc_id and group are required")
+    clean = sorted({str(group).strip() for group in groups if str(group).strip()})
+    if not doc_id:
+        raise ValueError("doc_id is required")
+    if not clean:
+        raise ValueError("at least one group is required")
 
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -149,7 +200,7 @@ def set_document_group(path: Path, doc_id: str, group: str) -> None:
     documents = payload.setdefault("documents", {})
     if not isinstance(documents, dict):
         raise ValueError(f"Policy 'documents' must be an object: {path}")
-    documents[doc_id] = {"group": group}
+    documents[doc_id] = {"groups": clean}
 
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(
@@ -167,6 +218,15 @@ def document_access_metadata(
     if policy is None:
         metadata.setdefault("knowledge_base_access_group", PUBLIC_GROUP)
         metadata.setdefault("document_access_group", PUBLIC_GROUP)
+        metadata.setdefault("document_access_groups", [PUBLIC_GROUP])
+        metadata.setdefault("access_" + PUBLIC_GROUP, True)
         return
     metadata["knowledge_base_access_group"] = policy.knowledge_base_group(knowledge_base_id)
-    metadata["document_access_group"] = policy.document_group(str(metadata["doc_id"]))
+    groups = policy.document_groups(str(metadata["doc_id"]))
+    primary = sorted(groups)[0] if groups else ""
+    metadata["document_access_group"] = primary
+    metadata["document_access_groups"] = sorted(groups)
+    # 全量 flag 一起写：重新索引会整包替换 chunk 元数据，写 False 保证之前
+    # 属于、现在不属于的组不会留下陈旧 True。
+    for group in policy.all_groups():
+        metadata["access_" + group] = group in groups

@@ -125,7 +125,11 @@ function createRow(entry) {
   if (entry.chunks !== undefined) bits.push(`${entry.chunks} 切片`);
   if (entry.documents !== undefined) bits.push(`${entry.documents} 页`);
   if (entry.deleted_chunks !== undefined) bits.push(`删除 ${entry.deleted_chunks} 切片`);
-  if (entry.access_group) bits.push(`访问组 ${entry.access_group}`);
+  if (Array.isArray(entry.access_groups) && entry.access_groups.length) {
+    bits.push(`访问组 ${entry.access_groups.join("、")}`);
+  } else if (entry.access_group) {
+    bits.push(`访问组 ${entry.access_group}`);
+  }
   if (entry.structurize_provider) bits.push(entry.structurize_provider);
   if (entry.embedding_model) bits.push(entry.embedding_model);
   stats.textContent = bits.join(" · ");

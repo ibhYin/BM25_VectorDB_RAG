@@ -2158,16 +2158,6 @@ svg {
   overflow-y: auto;
 }
 
-.doc-access-select {
-  width: 100%;
-  height: 28px;
-  font-size: 12px;
-}
-
-.doc-access-select:disabled {
-  opacity: 0.6;
-}
-
 /* 切片方式与入库列：窄列，溢出就省略，完整信息在 title 里。 */
 .chunk-strategy,
 .document-ingest {
@@ -2182,6 +2172,169 @@ svg {
   color: var(--ink-faint);
 }
 
+/* 访问组编辑：每行一个触发按钮（组徽标），点击弹出多选框。 */
+.access-editor {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+.access-editor-trigger {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  width: 100%;
+  min-height: 26px;
+  padding: 2px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+}
+
+.access-editor-trigger:hover,
+.access-editor-trigger[aria-expanded="true"] {
+  border-color: var(--line-strong);
+  background: var(--bg);
+}
+
+.access-editor-trigger:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.access-badge {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.access-badge.none {
+  color: var(--ink-faint);
+  background: var(--bg);
+}
+
+.access-popover {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 4px);
+  right: 0;
+  left: auto;
+  min-width: 200px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.14);
+}
+
+.access-popover-title {
+  padding: 2px 4px 6px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.access-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.access-check:hover {
+  background: var(--bg);
+}
+
+.access-popover-hint {
+  padding: 4px 4px 2px;
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
+/* 「按组查看」：每个访问组列出它能看到的文档。 */
+#group-view {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.access-group-section {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+
+.access-group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.access-group-head strong {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.access-group-count {
+  font-size: 11px;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.access-group-docs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.access-group-doc {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  background: var(--bg);
+  cursor: pointer;
+}
+
+.access-group-doc:hover {
+  color: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+
+/* 已入库文档面板右上角：查看方式切换 + 刷新按钮。 */
+.doc-list-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 @media (max-width: 720px) {
   .doc-table.with-access .doc-row {
     grid-template-areas:
@@ -2192,7 +2345,17 @@ svg {
       "access access";
   }
 
-  .doc-table.with-access .doc-access-select { grid-area: access; }
+  .doc-table.with-access .access-editor { grid-area: access; }
+
+  .doc-list-controls {
+    width: 100%;
+    justify-content: space-between;
+    margin-top: 6px;
+  }
+
+  .section-head:has(.doc-list-controls) {
+    flex-wrap: wrap;
+  }
 }
 
 /* ============================ 评估页 ============================ */

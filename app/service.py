@@ -13,7 +13,7 @@ from app.access import (
     UserContext,
     known_groups,
     load_access_policy,
-    set_document_group,
+    set_document_groups,
 )
 from app import audit
 from rag.indexer import build_vector_index
@@ -393,10 +393,10 @@ def delete_indexed_documents(
 def set_document_access(
     settings: Settings,
     doc_id: str,
-    group: str,
+    groups: list[str],
     actor: str = "",
 ) -> int:
-    """Point one indexed document at an access group. Admin action.
+    """Point one indexed document at a set of access groups. Admin action.
 
     Updates both halves of the truth: the policy file (what future indexing will
     use) and the stored chunk metadata (what retrieval filters on right now).
@@ -404,40 +404,43 @@ def set_document_access(
     """
 
     doc_id = doc_id.strip()
-    group = group.strip()
+    clean_groups = sorted({str(group).strip() for group in groups if str(group).strip()})
     if not doc_id:
         raise ValueError("doc_id is required")
-    if not group:
-        raise ValueError("group is required")
+    if not clean_groups:
+        raise ValueError("at least one group is required")
 
     policy_path = settings.access_policy_file
     if not policy_path.is_file():
         raise ValueError("未启用访问控制：缺少访问策略文件")
     # 只允许已存在的组，避免拼错把文档变成谁都看不见。
-    if group not in known_groups(policy_path):
-        raise ValueError(f"未知的访问组：{group}")
+    known = known_groups(policy_path)
+    unknown = sorted(set(clean_groups) - known)
+    if unknown:
+        raise ValueError(f"未知的访问组：{'、'.join(unknown)}")
 
     with knowledge_base_lock.write():
         updated = set_document_access_group(
             [doc_id],
-            group,
+            clean_groups,
             persist_dir=settings.chroma_persist_dir,
             embedding_model=settings.embedding_model,
             embedding_api_key=settings.embedding_api_key,
             embedding_base_url=settings.embedding_base_url,
             knowledge_base_id=settings.knowledge_base_id,
+            all_groups=sorted(known),
         )
         if not updated:
             raise KeyError("Document not found")
         # 先确认文档存在再落策略，避免给不存在的 doc_id 留下垃圾条目。
-        set_document_group(policy_path, doc_id, group)
+        set_document_groups(policy_path, doc_id, clean_groups)
 
     audit.record(
         "access.change",
         actor=actor,
         knowledge_base_id=settings.knowledge_base_id,
         doc_ids=[doc_id],
-        access_group=group,
+        access_groups=clean_groups,
         chunks=updated,
     )
     return updated
@@ -467,7 +470,7 @@ def approve_staged_upload(
     if group and policy_file.is_file():
         for filename, _ in payload:
             doc_id = build_doc_id(str(settings.data_dir / filename))
-            set_document_group(policy_file, doc_id, group)
+            set_document_groups(policy_file, doc_id, [group])
             doc_ids.append(doc_id)
 
     job = get_upload_store().create_uploaded(
@@ -672,15 +675,19 @@ def list_indexed_documents(
         # structured_by is written per chunk at split time; its presence is what
         # routes a document to heading-aligned chunking in the first place.
         provider = str(metadata.get("structured_by") or "")
+        raw_groups = metadata.get("document_access_groups")
+        if isinstance(raw_groups, list):
+            access_groups = sorted(str(group) for group in raw_groups if group)
+        else:
+            access_groups = [str(metadata.get("document_access_group") or PUBLIC_GROUP)]
         document = documents.setdefault(
             doc_id,
             {
                 "doc_id": doc_id,
                 "title": str(metadata.get("title") or "未命名文档"),
                 "source": str(metadata.get("source") or ""),
-                "access_group": str(
-                    metadata.get("document_access_group") or PUBLIC_GROUP
-                ),
+                "access_group": access_groups[0] if access_groups else PUBLIC_GROUP,
+                "access_groups": access_groups,
                 "chunk_count": 0,
                 "chunk_strategy": "heading" if provider else "fixed",
                 "chunk_strategy_provider": provider,

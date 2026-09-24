@@ -73,31 +73,67 @@ def test_group_change_rewrites_metadata_and_leaves_the_body_alone(
         ],
     )
 
-    updated = set_document_access(settings, "doc", "engineering", "alice")
+    updated = set_document_access(settings, "doc", ["engineering"], "alice")
 
     assert updated == 2
     ids, metadatas = store._collection.updates[0]
     assert ids == ["doc#chunk_000", "doc#chunk_001"]
     assert {m["document_access_group"] for m in metadatas} == {"engineering"}
+    # 多组表示：完整列表 + 主组标量 + 每个已知组的布尔 flag。
+    assert {tuple(m["document_access_groups"]) for m in metadatas} == {
+        ("engineering",)
+    }
+    assert {m["access_engineering"] for m in metadatas} == {True}
+    # 不在新组里的已知组 flag 被清掉，避免改组前遗留的陈旧 True。
+    assert {m["access_hr"] for m in metadatas} == {False}
+    assert {m["access_public"] for m in metadatas} == {False}
     # Everything else in the metadata survives the rewrite.
     assert [m["page"] for m in metadatas] == [1, 2]
     assert [m["chunk_id"] for m in metadatas] == ["doc#chunk_000", "doc#chunk_001"]
 
 
+def test_group_change_to_multiple_groups_clears_old_flags(settings, monkeypatch) -> None:
+    store = _patch_store(
+        monkeypatch,
+        [
+            {
+                "doc_id": "doc",
+                "chunk_id": "doc#chunk_000",
+                "document_access_group": "hr",
+                "document_access_groups": ["hr"],
+                "access_hr": True,
+                "access_engineering": False,
+                "access_public": False,
+            }
+        ],
+    )
+
+    updated = set_document_access(settings, "doc", ["hr", "engineering"], "alice")
+
+    assert updated == 1
+    _, metadatas = store._collection.updates[0]
+    metadata = metadatas[0]
+    assert metadata["document_access_groups"] == ["engineering", "hr"]
+    assert metadata["document_access_group"] == "engineering"
+    assert metadata["access_hr"] is True
+    assert metadata["access_engineering"] is True
+    assert metadata["access_public"] is False
+
+
 def test_group_change_also_updates_the_policy_file(settings, monkeypatch) -> None:
     _patch_store(monkeypatch, [{"doc_id": "doc", "document_access_group": "public"}])
 
-    set_document_access(settings, "doc", "engineering", "alice")
+    set_document_access(settings, "doc", ["engineering"], "alice")
 
     saved = json.loads(settings.access_policy_file.read_text(encoding="utf-8"))
-    assert saved["documents"]["doc"] == {"group": "engineering"}
+    assert saved["documents"]["doc"] == {"groups": ["engineering"]}
 
 
 def test_unknown_group_is_rejected(settings, monkeypatch) -> None:
     _patch_store(monkeypatch, [{"doc_id": "doc", "document_access_group": "public"}])
 
     with pytest.raises(ValueError, match="未知的访问组"):
-        set_document_access(settings, "doc", "legal", "alice")
+        set_document_access(settings, "doc", ["legal"], "alice")
 
     # Nothing was written.
     saved = json.loads(settings.access_policy_file.read_text(encoding="utf-8"))
@@ -113,14 +149,14 @@ def test_missing_policy_file_is_rejected(tmp_path, monkeypatch) -> None:
     _patch_store(monkeypatch, [{"doc_id": "doc", "document_access_group": "public"}])
 
     with pytest.raises(ValueError, match="未启用访问控制"):
-        set_document_access(settings, "doc", "engineering", "alice")
+        set_document_access(settings, "doc", ["engineering"], "alice")
 
 
 def test_unknown_document_is_rejected(settings, monkeypatch) -> None:
     _patch_store(monkeypatch, [])
 
     with pytest.raises(KeyError):
-        set_document_access(settings, "nope", "engineering", "alice")
+        set_document_access(settings, "nope", ["engineering"], "alice")
 
     # A bogus doc_id must not leave a policy entry behind.
     saved = json.loads(settings.access_policy_file.read_text(encoding="utf-8"))
@@ -132,13 +168,13 @@ def test_the_change_is_audited(settings, monkeypatch) -> None:
 
     _patch_store(monkeypatch, [{"doc_id": "doc", "document_access_group": "public"}])
 
-    set_document_access(settings, "doc", "engineering", "alice")
+    set_document_access(settings, "doc", ["engineering"], "alice")
 
     entry = audit.read_entries()[0]
     assert entry["event"] == "access.change"
     assert entry["actor"] == "alice"
     assert entry["doc_ids"] == ["doc"]
-    assert entry["access_group"] == "engineering"
+    assert entry["access_groups"] == ["engineering"]
     assert entry["chunks"] == 1
 
 
@@ -166,7 +202,7 @@ def _handler(user):
     handler = object.__new__(WebRequestHandler)
     captured: dict = {}
     handler._require_admin = lambda: user
-    handler._read_json = lambda: {"group": "engineering"}
+    handler._read_json = lambda: {"groups": ["engineering"]}
     handler._send_json = lambda body, status=HTTPStatus.OK: captured.update(
         body=body, status=int(status)
     )
@@ -190,7 +226,20 @@ def test_endpoint_reports_the_updated_chunk_count(settings, monkeypatch) -> None
 
     assert captured["status"] == HTTPStatus.OK
     assert captured["body"]["updated_chunks"] == 2
-    assert captured["body"]["access_group"] == "engineering"
+    assert captured["body"]["access_groups"] == ["engineering"]
+
+
+def test_endpoint_accepts_legacy_single_group(settings, monkeypatch) -> None:
+    from app.access import UserContext
+
+    _patch_store(monkeypatch, [{"doc_id": "doc", "document_access_group": "public"}])
+    monkeypatch.setattr("app.web.get_settings", lambda: settings)
+    handler, captured = _handler(UserContext("alice", frozenset({"hr"})))
+    handler._read_json = lambda: {"group": "engineering"}
+
+    handler._handle_document_access("doc")
+
+    assert captured["body"]["access_groups"] == ["engineering"]
 
 
 def test_endpoint_maps_an_unknown_group_to_400(settings, monkeypatch) -> None:
@@ -200,7 +249,7 @@ def test_endpoint_maps_an_unknown_group_to_400(settings, monkeypatch) -> None:
     _patch_store(monkeypatch, [{"doc_id": "doc", "document_access_group": "public"}])
     monkeypatch.setattr("app.web.get_settings", lambda: settings)
     handler, _ = _handler(UserContext("alice", frozenset({"hr"})))
-    handler._read_json = lambda: {"group": "legal"}
+    handler._read_json = lambda: {"groups": ["legal"]}
 
     with pytest.raises(RequestError) as error:
         handler._handle_document_access("doc")

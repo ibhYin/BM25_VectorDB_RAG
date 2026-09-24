@@ -211,11 +211,18 @@
         <section class="panel">
           <div class="section-head">
             <h3>已入库文档</h3>
-            <button id="reload-documents-button" class="text-button" type="button">刷新</button>
+            <span class="doc-list-controls" id="doc-list-controls" hidden>
+              <div class="segmented" id="doc-list-mode" role="radiogroup" aria-label="查看方式">
+                <label><input type="radio" name="doc-list-mode" value="docs" checked /><span>按文档</span></label>
+                <label><input type="radio" name="doc-list-mode" value="groups" /><span>按组</span></label>
+              </div>
+              <button id="reload-documents-button" class="text-button" type="button">刷新</button>
+            </span>
           </div>
           <div class="item-list" id="document-list" aria-live="polite" aria-busy="true">
             <div class="loading-state"><span class="loading-spinner" aria-hidden="true"></span><span>加载中</span></div>
           </div>
+          <div id="group-view" hidden aria-live="polite"></div>
         </section>
       </div>
 

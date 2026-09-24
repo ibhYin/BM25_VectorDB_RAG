@@ -404,12 +404,19 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
         user = self._require_admin()
         doc_id = unquote(raw_doc_id).strip()
-        group = self._read_json().get("group", "")
-        if not isinstance(group, str):
-            raise RequestError(HTTPStatus.BAD_REQUEST, "group must be a string")
+        payload = self._read_json()
+        groups = payload.get("groups")
+        if isinstance(groups, list):
+            if not all(isinstance(group, str) for group in groups):
+                raise RequestError(HTTPStatus.BAD_REQUEST, "groups must be strings")
+        elif isinstance(payload.get("group"), str):
+            # 兼容旧前端：单组 `{"group": "hr"}`。
+            groups = [payload["group"]]
+        else:
+            raise RequestError(HTTPStatus.BAD_REQUEST, "groups must be a list")
         try:
             updated = set_document_access(
-                get_settings(), doc_id, group, _actor_name(user)
+                get_settings(), doc_id, groups, _actor_name(user)
             )
         except KeyError as exc:
             raise RequestError(HTTPStatus.NOT_FOUND, "Document not found") from exc
@@ -418,7 +425,9 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         self._send_json(
             {
                 "doc_id": doc_id,
-                "access_group": group.strip(),
+                "access_groups": sorted(
+                    {str(group).strip() for group in groups if str(group).strip()}
+                ),
                 "updated_chunks": updated,
             }
         )

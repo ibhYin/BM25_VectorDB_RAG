@@ -17,12 +17,16 @@ def policy() -> AccessPolicy:
             "users": {
                 "alice": {"groups": ["engineering"]},
                 "bob": {"groups": ["finance"]},
+                "carol": {"groups": ["hr"]},
             },
             "knowledge_bases": {
                 "engineering": {"group": "engineering"},
                 "finance": {"group": "finance"},
             },
-            "documents": {"secret": {"group": "engineering"}},
+            "documents": {
+                "secret": {"groups": ["engineering"]},
+                "shared": {"groups": ["finance", "hr"]},
+            },
         }
     )
 
@@ -50,9 +54,33 @@ def test_access_is_intersection_of_kb_and_document_groups() -> None:
         bob,
         "finance",
     )
-    assert access.chroma_filter("finance", bob)["$and"][-1] == {
+    doc_filter = access.chroma_filter("finance", bob)["$and"][-1]
+    assert doc_filter["$or"][0] == {
         "document_access_group": {"$in": ["finance", "public"]}
     }
+    # 新多组文档用布尔 flag 命中：bob 的每个组都有一个 `access_<组>` 分支。
+    assert {"access_finance": True} in doc_filter["$or"]
+    assert {"access_public": True} in doc_filter["$or"]
+
+
+def test_multi_group_document_is_visible_to_each_member_group() -> None:
+    access = policy()
+    # shared ∈ {finance, hr}
+    metadata = {
+        "knowledge_base_id": "finance",
+        "knowledge_base_access_group": "finance",
+        "document_access_groups": ["finance", "hr"],
+        "document_access_group": "finance",
+    }
+    bob = access.user_context("bob")  # finance
+    carol = access.user_context("carol")  # hr
+    assert access.can_access(metadata, bob, "finance")
+    # carol 属于 hr，但知识库组是 finance，仍然被拒——kb 组约束不变。
+    assert not access.can_access(metadata, carol, "finance")
+
+    # chroma_filter 里，carol（hr）的 $or 分支含 access_hr → 命中 shared 的 flag。
+    doc_filter = access.chroma_filter("finance", carol)["$and"][-1]
+    assert {"access_hr": True} in doc_filter["$or"]
 
 
 def test_admin_bypasses_group_filters_but_keeps_kb_constraint() -> None:
@@ -79,7 +107,7 @@ def test_admin_bypasses_group_filters_but_keeps_kb_constraint() -> None:
         alice,
         "finance",
     )
-    # chroma_filter：管理员只保留 kb 约束，不再夹组 $in 过滤
+    # chroma_filter：管理员只保留 kb 约束，不再夹组过滤
     assert access.chroma_filter("engineering", alice) == {
         "knowledge_base_id": "engineering"
     }
@@ -98,7 +126,8 @@ def test_non_admin_still_filtered_by_groups() -> None:
         bob,
         "engineering",
     )
-    assert access.chroma_filter("engineering", bob)["$and"][-1] == {
+    doc_filter = access.chroma_filter("engineering", bob)["$and"][-1]
+    assert doc_filter["$or"][0] == {
         "document_access_group": {"$in": ["finance", "public"]}
     }
 
@@ -115,6 +144,72 @@ def test_split_documents_copies_acl_metadata_to_every_chunk() -> None:
     assert chunks[0].metadata["knowledge_base_id"] == "engineering"
     assert chunks[0].metadata["knowledge_base_access_group"] == "engineering"
     assert chunks[0].metadata["document_access_group"] == "engineering"
+
+
+def test_split_documents_copies_multi_group_flags() -> None:
+    access = AccessPolicy.from_mapping(
+        {
+            "admins": ["alice"],
+            "users": {"alice": {"groups": ["engineering"]}, "bob": {"groups": ["finance"]}},
+            "knowledge_bases": {"engineering": {"group": "engineering"}},
+            "documents": {"secret": {"groups": ["engineering", "finance"]}},
+        }
+    )
+    chunks = split_documents(
+        [Document(page_content="机密内容", metadata={"source": "secret.md", "doc_id": "secret"})],
+        chunk_size=100,
+        chunk_overlap=0,
+        knowledge_base_id="engineering",
+        access_policy=access,
+    )
+
+    assert chunks[0].metadata["document_access_groups"] == ["engineering", "finance"]
+    assert chunks[0].metadata["document_access_group"] == "engineering"  # 主组
+    assert chunks[0].metadata["access_engineering"] is True
+    assert chunks[0].metadata["access_finance"] is True
+    # 不是成员的组 flag 为 False，防止之前属于、现在不属于的陈旧 True。
+    assert chunks[0].metadata["access_public"] is False
+
+
+def test_vector_search_filters_multi_group_chunks(tmp_path: Path) -> None:
+    import chromadb
+
+    from rag.vector_store import COLLECTION_NAME
+
+    collection = chromadb.PersistentClient(path=str(tmp_path)).create_collection(
+        COLLECTION_NAME, embedding_function=None,
+    )
+    collection.add(
+        ids=["a", "b", "c", "d"],
+        documents=["财务共享A", "财务机密B", "法务机密C", "财务旧D"],
+        metadatas=[
+            # 多组 {finance, hr}：flag 是检索命中手段
+            {"knowledge_base_id": "finance", "knowledge_base_access_group": "finance",
+             "document_access_group": "finance", "document_access_groups": ["finance", "hr"],
+             "access_finance": True, "access_hr": True, "chunk_id": "a"},
+            # 单组 {hr}：finance 用户不应看到
+            {"knowledge_base_id": "finance", "knowledge_base_access_group": "finance",
+             "document_access_group": "hr", "document_access_groups": ["hr"],
+             "access_hr": True, "access_finance": False, "chunk_id": "b"},
+            # {legal}：谁都看不到（非管理员）
+            {"knowledge_base_id": "finance", "knowledge_base_access_group": "finance",
+             "document_access_group": "legal", "access_legal": True, "chunk_id": "c"},
+            # 存量切片只有旧标量、没有 flag：靠旧分支命中
+            {"knowledge_base_id": "finance", "knowledge_base_access_group": "finance",
+             "document_access_group": "finance", "chunk_id": "d"},
+        ],
+        embeddings=[[1.0], [2.0], [3.0], [4.0]],
+    )
+
+    bob = policy().user_context("bob")  # finance
+    result = collection.get(where=policy().chroma_filter("finance", bob), include=["metadatas"])
+    assert sorted(m["chunk_id"] for m in result["metadatas"]) == ["a", "d"]
+
+    # carol（hr）对该 finance 库整体不可见：库访问组是 finance，先被 kb 组约束拦下，
+    # 即使 a 文档的组集合里含 hr。
+    carol = policy().user_context("carol")
+    result = collection.get(where=policy().chroma_filter("finance", carol), include=["metadatas"])
+    assert result["metadatas"] == []
 
 
 def test_bm25_filters_unauthorized_chunks(tmp_path: Path) -> None:

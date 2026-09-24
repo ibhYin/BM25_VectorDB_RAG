@@ -12,6 +12,6 @@
     "finance": {"group": "finance"}
   },
   "documents": {
-    "replace-with-doc-id": {"group": "hr"}
+    "replace-with-doc-id": {"groups": ["hr", "finance"]}
   }
 }
