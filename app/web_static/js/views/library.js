@@ -768,11 +768,25 @@ function setDocViewMode(value) {
   if (radio) radio.checked = true;
 }
 
-// 知识库页的「回到顶部」：整页滚动时按 window 滚动量显示，只在知识库页出现。
+// 知识库页的「回到顶部」：真正的滚动容器是 #page-library（.page 自带
+// overflow-y:auto），不同视口下也可能落到 window 或 #doc-body——三个都监听，
+// 取最大的滚动量判断。
 function updateDocBackTop() {
   const onLibrary = !document.querySelector("#page-library").hidden;
-  const y = Math.max(window.scrollY || 0, el.docBody.scrollTop || 0);
+  const pageEl = document.querySelector("#page-library");
+  const y = Math.max(
+    window.scrollY || 0,
+    pageEl ? pageEl.scrollTop || 0 : 0,
+    el.docBody.scrollTop || 0,
+  );
   el.docBackTop.hidden = !onLibrary || y < 400;
+}
+
+function scrollDocTop() {
+  window.scrollTo({ top: 0, behavior: "smooth" });
+  const pageEl = document.querySelector("#page-library");
+  if (pageEl) pageEl.scrollTo({ top: 0, behavior: "smooth" });
+  el.docBody.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 function showList() {
@@ -1050,14 +1064,12 @@ export default {
       const { scrollTop, clientHeight, scrollHeight } = el.docBody;
       if (scrollTop + clientHeight >= scrollHeight - 240) loadDocumentPage();
     });
-    // 文档视图没有约束高度时是整页滚动（#doc-body 只是 overflow-y:auto 但不滚），
-    // 所以「回到顶部」要监听 window 而非 doc-body，否则永远不出现。
+    // 文档视图没有约束高度时是整页/页面滚动（#doc-body 只是 overflow-y:auto 但不滚），
+    // 所以「回到顶部」要监听真正滚动的容器（#page-library / window / doc-body）。
     window.addEventListener("scroll", updateDocBackTop, { passive: true });
+    document.querySelector("#page-library").addEventListener("scroll", updateDocBackTop);
     el.docBody.addEventListener("scroll", updateDocBackTop);
-    el.docBackTop.addEventListener("click", () => {
-      window.scrollTo({ top: 0, behavior: "smooth" });
-      el.docBody.scrollTo({ top: 0, behavior: "smooth" });
-    });
+    el.docBackTop.addEventListener("click", scrollDocTop);
 
     on("documents", () => {
       renderStats();
