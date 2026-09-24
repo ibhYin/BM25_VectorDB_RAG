@@ -55,6 +55,7 @@ const el = {
   pathChroma: document.querySelector("#path-chroma"),
   pathConfig: document.querySelector("#path-config"),
   pathCache: document.querySelector("#path-cache"),
+  codeVersion: document.querySelector("#code-version"),
 };
 
 let mounted = false;
@@ -164,6 +165,7 @@ function renderIndexStatus() {
   el.pathData.textContent = status.data_dir || "—";
   el.pathChroma.textContent = status.chroma_persist_dir || "—";
   el.pathConfig.textContent = status.runtime_config_file || "—";
+  el.codeVersion.textContent = status.code_version || "—";
 
   // 缓存可随时删除，删了下次入库重新解析；这里顺带显示条目数方便判断。
   const cache = status.markdown_cache || {};

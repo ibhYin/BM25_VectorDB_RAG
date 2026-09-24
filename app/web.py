@@ -36,6 +36,36 @@ from rag.index_manifest import read_index_embedding_model
 STATIC_DIR = Path(__file__).resolve().parent / "web_static"
 logger = logging.getLogger(__name__)
 
+# 运行中的代码版本：部署目录里有 DEPLOYED_COMMIT 就优先用它，否则取 git 短哈希。
+# 进程启动时算一次并缓存——它标的是"这个进程跑的是哪版代码"，前端拿来提醒
+# 「代码更新了但服务没重启」。
+def _code_version() -> str:
+    try:
+        marker = Path("DEPLOYED_COMMIT")
+        if marker.is_file():
+            text = marker.read_text(encoding="utf-8").strip()
+            if text:
+                return text
+    except OSError:
+        pass
+    try:
+        import subprocess
+
+        proc = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+    except Exception:
+        pass
+    return "unknown"
+
+
+CODE_VERSION = _code_version()
+
 LOGIN_FAILURE_WINDOW = 15 * 60
 LOGIN_FAILURE_LIMIT = 8
 _login_failures: dict[str, list[float]] = {}
@@ -997,6 +1027,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             "chroma_exists": (settings.chroma_persist_dir / "chroma.sqlite3").is_file(),
             "mineru_configured": bool(settings.mineru_api_token),
             "structurize_provider": settings.structurize_provider,
+            "code_version": CODE_VERSION,
             "markdown_cache": markdown_cache.info(),
             **self._index_model_info(settings),
         }
