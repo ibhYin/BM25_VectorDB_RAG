@@ -768,17 +768,24 @@ function setDocViewMode(value) {
   if (radio) radio.checked = true;
 }
 
+// 知识库页的「回到顶部」：整页滚动时按 window 滚动量显示，只在知识库页出现。
+function updateDocBackTop() {
+  const onLibrary = !document.querySelector("#page-library").hidden;
+  const y = Math.max(window.scrollY || 0, el.docBody.scrollTop || 0);
+  el.docBackTop.hidden = !onLibrary || y < 400;
+}
+
 function showList() {
   el.docView.hidden = true;
   el.listView.hidden = false;
   docState.docId = "";
   docState.chunks = [];
   docState.focusChunkId = "";
-  el.docBackTop.hidden = true;
+  updateDocBackTop();
 }
 
 async function openDocument(indexedDocument, focusChunkId = "", highlightUsed = [], highlightUnused = []) {
-  el.docBackTop.hidden = true;
+  updateDocBackTop();
   docState.docId = indexedDocument.doc_id;
   docState.chunks = [];
   docState.nextOffset = 0;
@@ -1045,10 +1052,6 @@ export default {
     });
     // 文档视图没有约束高度时是整页滚动（#doc-body 只是 overflow-y:auto 但不滚），
     // 所以「回到顶部」要监听 window 而非 doc-body，否则永远不出现。
-    const updateDocBackTop = () => {
-      const y = Math.max(window.scrollY || 0, el.docBody.scrollTop || 0);
-      el.docBackTop.hidden = y < 400;
-    };
     window.addEventListener("scroll", updateDocBackTop, { passive: true });
     el.docBody.addEventListener("scroll", updateDocBackTop);
     el.docBackTop.addEventListener("click", () => {
