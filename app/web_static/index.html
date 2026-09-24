@@ -132,11 +132,14 @@
 
         <aside class="ask-rail" aria-label="检索过程与上下文">
           <section class="rail-section">
-            <div class="section-head"><h2>问答过程</h2></div>
+            <div class="section-head">
+              <h2>问答过程</h2>
+              <button id="process-toggle" class="text-button" type="button" aria-expanded="false">展开</button>
+            </div>
             <div class="process-list" id="process-list" aria-live="polite"></div>
           </section>
           <section class="rail-section grow">
-            <div class="section-head"><h2>匹配内容</h2></div>
+            <div class="section-head"><h2>匹配内容<span id="context-count" class="rail-count"></span></h2></div>
             <div class="context-list" id="context-list" aria-live="polite"></div>
           </section>
         </aside>

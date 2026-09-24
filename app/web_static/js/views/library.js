@@ -752,6 +752,9 @@ const docState = {
   done: false,
   focusChunkId: "",
   focusApplied: false,
+  // 从问答页跳进来时按「已用/未用」标记的切片集合（完整 doc_id#chunk_N）。
+  highlightUsed: new Set(),
+  highlightUnused: new Set(),
 };
 
 function currentDocMode() {
@@ -772,7 +775,7 @@ function showList() {
   docState.focusChunkId = "";
 }
 
-async function openDocument(indexedDocument, focusChunkId = "") {
+async function openDocument(indexedDocument, focusChunkId = "", highlightUsed = [], highlightUnused = []) {
   docState.docId = indexedDocument.doc_id;
   docState.chunks = [];
   docState.nextOffset = 0;
@@ -781,6 +784,8 @@ async function openDocument(indexedDocument, focusChunkId = "") {
   docState.done = false;
   docState.focusChunkId = focusChunkId;
   docState.focusApplied = false;
+  docState.highlightUsed = new Set(highlightUsed);
+  docState.highlightUnused = new Set(highlightUnused);
 
   // Only the card list can highlight a single chunk.
   if (focusChunkId) setDocViewMode("cards");
@@ -881,6 +886,11 @@ function renderChunkCards() {
     const card = document.createElement("article");
     card.className = "doc-chunk";
     card.dataset.chunkId = chunk.chunk_id;
+    if (docState.highlightUsed.has(chunk.chunk_id)) {
+      card.classList.add("doc-chunk-highlight", "used");
+    } else if (docState.highlightUnused.has(chunk.chunk_id)) {
+      card.classList.add("doc-chunk-highlight", "unused");
+    }
 
     const head = document.createElement("div");
     head.className = "doc-chunk-head";
@@ -945,6 +955,8 @@ async function openFromParams(params) {
   const { docId } = params;
   const suffix = params.chunkId || "";
   const chunkId = suffix && !suffix.includes("#") ? `${docId}#${suffix}` : suffix;
+  const highlightUsed = Array.isArray(params.used) ? params.used : [];
+  const highlightUnused = Array.isArray(params.unused) ? params.unused : [];
 
   let indexedDocument = state.documents.find((item) => item.doc_id === docId);
   if (!indexedDocument) {
@@ -964,7 +976,7 @@ async function openFromParams(params) {
       return;
     }
   }
-  await openDocument(indexedDocument, chunkId);
+  await openDocument(indexedDocument, chunkId, highlightUsed, highlightUnused);
 }
 
 // --- view contract --------------------------------------------------------

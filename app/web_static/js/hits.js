@@ -2,15 +2,30 @@
 //
 // 放在这里而不是留在 ask.js 里，是因为评估页也要用同一张卡片——视图之间互相 import
 // 会把两页耦在一起，而且以后卡片样式一改，两处显示就分叉了。
+//
+// options（缺省时保持旧行为，评估页不受影响）：
+//   compact       默认收起全文，提供「展开全文/收起」切换
+//   used          boolean，标题旁加「已用/未用」徽标
+//   onOpenOriginal(hit)  提供时卡片加「在原文查看」按钮
 
-export function createVectorHitCard(hit) {
+export function createVectorHitCard(hit, options = {}) {
+  const { compact = false, used, onOpenOriginal } = options;
   const card = document.createElement("article");
   card.className = "vector-hit";
 
   const header = document.createElement("div");
   header.className = "vector-hit-header";
+  const titleRow = document.createElement("span");
+  titleRow.className = "vector-hit-title-row";
   const title = document.createElement("strong");
   title.textContent = `${hit.rank}. ${hit.title || "未命名文档"}`;
+  titleRow.append(title);
+  if (typeof used === "boolean") {
+    const badge = document.createElement("span");
+    badge.className = `used-badge ${used ? "used" : "unused"}`;
+    badge.textContent = used ? "已用" : "未用";
+    titleRow.append(badge);
+  }
   const distance = document.createElement("span");
   distance.className = "distance-value";
   if (hit.retrieval_method === "hybrid") {
@@ -32,7 +47,7 @@ export function createVectorHitCard(hit) {
       similarity !== null ? `相似度 ${similarity.toFixed(2)}` : "",
     ].filter(Boolean).join(" · ");
   }
-  header.append(title, distance);
+  header.append(titleRow, distance);
 
   const metadata = document.createElement("div");
   metadata.className = "vector-hit-meta";
@@ -50,7 +65,34 @@ export function createVectorHitCard(hit) {
   text.className = "vector-hit-text";
   // 服务端存的只是切片引用，回看历史对话时没有正文。
   text.textContent = hit.text || "（历史记录只保留切片引用，正文请在知识库页查看）";
+  if (compact) text.hidden = true;
 
-  card.append(header, metadata, source, text);
+  const actions = document.createElement("div");
+  actions.className = "vector-hit-actions";
+  if (compact) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "text-button";
+    toggle.textContent = "展开全文";
+    toggle.addEventListener("click", () => {
+      const isHidden = text.hidden;
+      text.hidden = !isHidden;
+      toggle.textContent = isHidden ? "收起" : "展开全文";
+    });
+    actions.append(toggle);
+  }
+  if (onOpenOriginal) {
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "ghost-button";
+    open.textContent = "在原文查看";
+    open.addEventListener("click", (event) => {
+      event.stopPropagation();
+      onOpenOriginal(hit);
+    });
+    actions.append(open);
+  }
+
+  card.append(header, metadata, source, actions, text);
   return card;
 }

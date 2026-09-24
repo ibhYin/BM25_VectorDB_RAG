@@ -29,7 +29,9 @@ const el = {
   similarityThreshold: document.querySelector("#similarity-threshold"),
   similarityThresholdValue: document.querySelector("#similarity-threshold-value"),
   processList: document.querySelector("#process-list"),
+  processToggle: document.querySelector("#process-toggle"),
   contextList: document.querySelector("#context-list"),
+  contextCount: document.querySelector("#context-count"),
   kbPicker: document.querySelector(".kb-picker"),
   kbStatus: document.querySelector("#kb-status"),
   kbMenu: document.querySelector("#kb-menu"),
@@ -53,6 +55,8 @@ let mounted = false;
 // 流式答案：轮询期间不断把 job 里的增量答案重渲染进同一个 article。
 let streamingAnswerEl = null;
 let lastStreamedAnswer = "";
+// 问答过程默认折叠成一行摘要，点「展开」看完整阶段。
+let processExpanded = false;
 
 const convState = {
   items: [],
@@ -107,6 +111,32 @@ function createCitationChip(docId, chunkId) {
   // The document viewer lives on the library page now.
   chip.addEventListener("click", () => router.navigate("library", { docId, chunkId }));
   return chip;
+}
+
+// 从答案文本收集被引用的完整切片 id（doc_id#chunk_N），用来给匹配内容标「已用」。
+function extractCitedChunkIds(answerText) {
+  const cited = new Set();
+  if (!answerText) return cited;
+  for (const match of String(answerText).matchAll(INLINE_PATTERN)) {
+    const doc = match[1];
+    const chunk = match[2];
+    if (doc && chunk) cited.add(`${doc}#${chunk}`);
+  }
+  return cited;
+}
+
+// 跳到知识库文档查看器，并把「同一文档下」的命中切片按已用/未用分色高亮。
+function openHitInOriginal(hit) {
+  const cited = extractCitedChunkIds(state.answerJob?.answer);
+  const sameDoc = (state.vectorHits || []).filter((item) => item.doc_id === hit.doc_id);
+  const used = sameDoc.filter((item) => cited.has(item.chunk_id)).map((item) => item.chunk_id);
+  const unused = sameDoc.filter((item) => !cited.has(item.chunk_id)).map((item) => item.chunk_id);
+  router.navigate("library", {
+    docId: hit.doc_id,
+    chunkId: hit.chunk_id,
+    used,
+    unused,
+  });
 }
 
 function renderInline(text) {
@@ -262,6 +292,11 @@ function finalizeAnswer(job) {
 
 function renderContext() {
   const items = state.vectorHits || [];
+  const cited = extractCitedChunkIds(state.answerJob?.answer);
+  const usedCount = items.filter((item) => cited.has(item.chunk_id)).length;
+  el.contextCount.textContent = items.length
+    ? ` · ${items.length} 条${usedCount ? ` · 已用 ${usedCount}` : ""}`
+    : "";
   el.contextList.replaceChildren();
 
   if (!items.length) {
@@ -271,7 +306,15 @@ function renderContext() {
     el.contextList.append(empty);
     return;
   }
-  for (const item of items) el.contextList.append(createVectorHitCard(item));
+  for (const item of items) {
+    el.contextList.append(
+      createVectorHitCard(item, {
+        compact: true,
+        used: cited.has(item.chunk_id),
+        onOpenOriginal: openHitInOriginal,
+      }),
+    );
+  }
 }
 
 function renderContextLoading() {
@@ -297,6 +340,15 @@ function renderProcess() {
   const stages = state.answerJob ? state.answerJob.stages || {} : {};
   const method = state.answerJob?.retrieval_method || getRetrievalMethod();
 
+  if (!processExpanded) {
+    // 折叠：一行摘要，把空间让给匹配内容。
+    const summary = document.createElement("div");
+    summary.className = "process-summary";
+    summary.textContent = processSummary(stages);
+    el.processList.append(summary);
+    return;
+  }
+
   for (const [key, label] of processDefinitions) {
     const stage = stages[key] || { status: "pending", detail: {} };
     const item = document.createElement("article");
@@ -321,6 +373,33 @@ function renderProcess() {
     item.append(indicator, body);
     el.processList.append(item);
   }
+}
+
+function processSummary(stages) {
+  const job = state.answerJob;
+  const entries = processDefinitions.map(([key, label]) => ({
+    key,
+    label,
+    stage: (stages || {})[key] || {},
+  }));
+  const failed = entries.find((entry) => entry.stage.status === "failed");
+  const running = entries.find((entry) => entry.stage.status === "running");
+  const completed = entries.filter((entry) => entry.stage.status === "completed").length;
+  if (failed) return `× ${failed.label} 失败`;
+  if (running) return `${running.label}…`;
+  if (completed === entries.length) {
+    const seconds = elapsedSeconds(job);
+    return `✓ 完成${seconds !== null ? ` · 共 ${seconds} 秒` : ""}`;
+  }
+  if (completed > 0) return `进行中 · 已完成 ${completed}/${entries.length}`;
+  return "等待执行";
+}
+
+function toggleProcess() {
+  processExpanded = !processExpanded;
+  el.processToggle.setAttribute("aria-expanded", String(processExpanded));
+  el.processToggle.textContent = processExpanded ? "收起" : "展开";
+  renderProcess();
 }
 
 function stageSymbol(status) {
@@ -434,6 +513,9 @@ async function ask(event) {
   el.askButton.disabled = true;
   streamingAnswerEl = null;
   lastStreamedAnswer = "";
+  processExpanded = false;
+  el.processToggle.setAttribute("aria-expanded", "false");
+  el.processToggle.textContent = "展开";
   setRunStatusLoading(true, "正在处理问题...");
   state.answerJob = { retrieval_method: getRetrievalMethod() };
   state.vectorHits = [];
@@ -902,6 +984,7 @@ export default {
     renderContext();
 
     el.askForm.addEventListener("submit", ask);
+    el.processToggle.addEventListener("click", toggleProcess);
     el.clearChatButton.addEventListener("click", clearChat);
     el.newConversation.addEventListener("click", newConversation);
     el.question.addEventListener("keydown", (event) => {

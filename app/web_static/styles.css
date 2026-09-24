@@ -2762,3 +2762,69 @@ svg {
   font-size: 11px;
   color: var(--ink-faint);
 }
+
+/* ==================== 证据栏改版 ==================== */
+
+/* 匹配内容卡片：标题行 + 已用/未用徽标 + 操作行 */
+.vector-hit-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.used-badge {
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.used-badge.used {
+  border-color: #2f9e63;
+  background: #e6f6ec;
+  color: #1f7a49;
+}
+
+.used-badge.unused {
+  border-color: #c9a23a;
+  background: #fbf3dd;
+  color: #9a7a1c;
+}
+
+.vector-hit-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.rail-count {
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-faint);
+}
+
+/* 问答过程折叠摘要 */
+.process-summary {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+/* 文档查看器：按已用/未用分色的切片高亮 */
+.doc-chunk-highlight.used {
+  border-color: #2f9e63 !important;
+  box-shadow: 0 0 0 3px rgba(47, 158, 99, 0.18);
+}
+
+.doc-chunk-highlight.unused {
+  border-color: #c9a23a !important;
+  box-shadow: 0 0 0 3px rgba(201, 162, 58, 0.18);
+}
