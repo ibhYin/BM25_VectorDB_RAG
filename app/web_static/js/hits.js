@@ -5,8 +5,10 @@
 //
 // options（缺省时保持旧行为，评估页不受影响）：
 //   compact       默认收起全文，提供「展开全文/收起」切换
-//   used          boolean，标题旁加「已用/未用」徽标
+//   used          "used" | "unused" | "candidate"，标题旁加对应徽标；不传不显示
 //   onOpenOriginal(hit)  提供时卡片加「在原文查看」按钮
+
+const USED_BADGE_LABELS = { used: "已用", unused: "未用", candidate: "候选" };
 
 export function createVectorHitCard(hit, options = {}) {
   const { compact = false, used, onOpenOriginal } = options;
@@ -20,10 +22,11 @@ export function createVectorHitCard(hit, options = {}) {
   const title = document.createElement("strong");
   title.textContent = `${hit.rank}. ${hit.title || "未命名文档"}`;
   titleRow.append(title);
-  if (typeof used === "boolean") {
+  const badgeLabel = USED_BADGE_LABELS[used];
+  if (badgeLabel) {
     const badge = document.createElement("span");
-    badge.className = `used-badge ${used ? "used" : "unused"}`;
-    badge.textContent = used ? "已用" : "未用";
+    badge.className = `used-badge ${used}`;
+    badge.textContent = badgeLabel;
     titleRow.append(badge);
   }
   const distance = document.createElement("span");

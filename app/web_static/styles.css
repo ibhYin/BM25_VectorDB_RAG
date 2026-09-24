@@ -2795,6 +2795,12 @@ svg {
   color: #9a7a1c;
 }
 
+.used-badge.candidate {
+  border-color: var(--line);
+  background: var(--bg);
+  color: var(--ink-faint);
+}
+
 .vector-hit-actions {
   display: flex;
   gap: 8px;

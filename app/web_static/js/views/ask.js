@@ -126,11 +126,17 @@ function extractCitedChunkIds(answerText) {
 }
 
 // 跳到知识库文档查看器，并把「同一文档下」的命中切片按已用/未用分色高亮。
+// 答案还没生成时（候选期）不传高亮集合，只定位点击的切片。
 function openHitInOriginal(hit) {
-  const cited = extractCitedChunkIds(state.answerJob?.answer);
+  const answerText = state.answerJob?.answer || "";
+  const cited = answerText ? extractCitedChunkIds(answerText) : null;
   const sameDoc = (state.vectorHits || []).filter((item) => item.doc_id === hit.doc_id);
-  const used = sameDoc.filter((item) => cited.has(item.chunk_id)).map((item) => item.chunk_id);
-  const unused = sameDoc.filter((item) => !cited.has(item.chunk_id)).map((item) => item.chunk_id);
+  const used = cited
+    ? sameDoc.filter((item) => cited.has(item.chunk_id)).map((item) => item.chunk_id)
+    : [];
+  const unused = cited
+    ? sameDoc.filter((item) => !cited.has(item.chunk_id)).map((item) => item.chunk_id)
+    : [];
   router.navigate("library", {
     docId: hit.doc_id,
     chunkId: hit.chunk_id,
@@ -292,10 +298,16 @@ function finalizeAnswer(job) {
 
 function renderContext() {
   const items = state.vectorHits || [];
-  const cited = extractCitedChunkIds(state.answerJob?.answer);
-  const usedCount = items.filter((item) => cited.has(item.chunk_id)).length;
+  // 答案还没生成（answer 为空）时是「候选」，标不出来谁被用，先给中性态；
+  // 答案一旦出现（流式开始），引用了的翻「已用」、其余「未用」并实时更新。
+  const answerText = state.answerJob?.answer || "";
+  const resolved = Boolean(answerText);
+  const cited = resolved ? extractCitedChunkIds(answerText) : null;
+  const usedCount = cited
+    ? items.filter((item) => cited.has(item.chunk_id)).length
+    : 0;
   el.contextCount.textContent = items.length
-    ? ` · ${items.length} 条${usedCount ? ` · 已用 ${usedCount}` : ""}`
+    ? ` · ${items.length} 条` + (resolved && usedCount ? ` · 已用 ${usedCount}` : "")
     : "";
   el.contextList.replaceChildren();
 
@@ -307,10 +319,12 @@ function renderContext() {
     return;
   }
   for (const item of items) {
+    const used =
+      cited === null ? "candidate" : cited.has(item.chunk_id) ? "used" : "unused";
     el.contextList.append(
       createVectorHitCard(item, {
         compact: true,
-        used: cited.has(item.chunk_id),
+        used,
         onOpenOriginal: openHitInOriginal,
       }),
     );
