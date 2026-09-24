@@ -50,6 +50,10 @@ const el = {
 
 let mounted = false;
 
+// 流式答案：轮询期间不断把 job 里的增量答案重渲染进同一个 article。
+let streamingAnswerEl = null;
+let lastStreamedAnswer = "";
+
 const convState = {
   items: [],
   currentId: "",
@@ -216,6 +220,42 @@ function addChatMessage(type, text) {
   }
   el.chatStream.append(message);
   el.chatStream.scrollTop = el.chatStream.scrollHeight;
+  return message;
+}
+
+function elapsedSeconds(job) {
+  const start = new Date(job?.started_at);
+  const end = new Date(job?.finished_at);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+  return ((end - start) / 1000).toFixed(1);
+}
+
+// 轮询期间把增量答案重渲染进同一个 article；没新内容就不重渲染。
+function renderStreamingAnswer(text) {
+  if (!streamingAnswerEl) {
+    streamingAnswerEl = addChatMessage("answer", text);
+    lastStreamedAnswer = text;
+    return;
+  }
+  if (text === lastStreamedAnswer) return;
+  streamingAnswerEl.replaceChildren(renderAnswer(text));
+  el.chatStream.scrollTop = el.chatStream.scrollHeight;
+  lastStreamedAnswer = text;
+}
+
+function finalizeAnswer(job) {
+  const text = job.answer || "未生成答案";
+  if (!streamingAnswerEl) streamingAnswerEl = addChatMessage("answer", text);
+  else streamingAnswerEl.replaceChildren(renderAnswer(text));
+  const seconds = elapsedSeconds(job);
+  if (seconds !== null) {
+    const time = document.createElement("div");
+    time.className = "answer-time";
+    time.textContent = `⏱ 共 ${seconds} 秒`;
+    streamingAnswerEl.append(time);
+  }
+  streamingAnswerEl = null;
+  lastStreamedAnswer = "";
 }
 
 // --- evidence -------------------------------------------------------------
@@ -365,13 +405,18 @@ async function waitForAnswer(jobId, epoch) {
       state.vectorHits = job.vector_hits || [];
       renderContext();
     }
+    // 答案还在生成就边生成边显示（流式）。
+    if (job.status !== "completed" && job.answer) renderStreamingAnswer(job.answer);
     renderProcess();
     updateRunStatusFromJob(job);
-    if (job.status === "completed") return job;
+    if (job.status === "completed") {
+      finalizeAnswer(job);
+      return job;
+    }
     if (job.status === "failed") {
       throw new Error(job.error || "问答处理失败");
     }
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 300));
   }
 }
 
@@ -387,6 +432,8 @@ async function ask(event) {
   addChatMessage("question", question);
   el.question.value = "";
   el.askButton.disabled = true;
+  streamingAnswerEl = null;
+  lastStreamedAnswer = "";
   setRunStatusLoading(true, "正在处理问题...");
   state.answerJob = { retrieval_method: getRetrievalMethod() };
   state.vectorHits = [];
@@ -422,7 +469,6 @@ async function ask(event) {
     if (convState.epoch !== epoch) return;
 
     state.vectorHits = result.vector_hits || [];
-    addChatMessage("answer", result.answer || "未生成答案");
     renderContext();
     setRunStatusLoading(false, "回答完成");
   } catch (error) {
@@ -500,6 +546,8 @@ function renderConversations() {
 
 function resetChatStream() {
   el.chatStream.replaceChildren();
+  streamingAnswerEl = null;
+  lastStreamedAnswer = "";
   const empty = document.createElement("div");
   empty.className = "empty-chat";
   const mark = document.createElement("span");

@@ -62,6 +62,7 @@ class AnswerJobStore:
                 "status": "queued",
                 "error": "",
                 "answer": "",
+                "answer_streaming": False,
                 "vector_hits": [],
                 "top_k": top_k,
                 "similarity_threshold": similarity_threshold,
@@ -136,6 +137,14 @@ class AnswerJobStore:
                 if status in {"completed", "degraded", "failed", "skipped"}:
                     stage_state["finished_at"] = utc_now()
 
+        # 流式增量：把生成的片段不断写进 job["answer"]，前端轮询就能边生成边显示。
+        def on_token(delta: str) -> None:
+            if not delta:
+                return
+            with self._lock:
+                self._jobs[job_id]["answer"] += delta
+                self._jobs[job_id]["answer_streaming"] = True
+
         try:
             result = answer_question(
                 question,
@@ -147,6 +156,7 @@ class AnswerJobStore:
                 candidate_pool=job.get("candidate_pool"),
                 user=job.get("user"),
                 history=history,
+                on_token=on_token,
             )
         except Exception as exc:
             with self._lock:
@@ -166,6 +176,7 @@ class AnswerJobStore:
                 status="completed",
                 retrieval_method=result.get("retrieval_method", retrieval_method),
                 answer=result.get("answer", ""),
+                answer_streaming=False,
                 vector_hits=result.get("vector_hits", []),
                 finished_at=utc_now(),
             )

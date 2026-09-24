@@ -69,3 +69,40 @@ def test_answer_job_exposes_stage_progress_and_vector_hits(
     assert result["stages"]["encode"]["detail"]["dimensions"] == 2
     assert result["stages"]["vector_search"]["detail"]["matches"] == 1
     assert "vector_hits" not in result["stages"]["vector_search"]["detail"]
+
+
+def test_answer_job_streams_partial_answer_into_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    finished = Event()
+    mid = Event()
+    proceed = Event()
+
+    def fake_answer(question, settings, progress, **kwargs):
+        on_token = kwargs.get("on_token")
+        on_token("你")
+        on_token("好")
+        on_token("世界")
+        progress("answer", "running", {"model": "llm"})
+        mid.set()
+        proceed.wait(timeout=2)
+        progress("answer", "completed", {"model": "llm", "duration_ms": 8})
+        finished.set()
+        return {"answer": "你好世界", "vector_hits": []}
+
+    monkeypatch.setattr("app.service.answer_question", fake_answer)
+    store = AnswerJobStore(Settings(_env_file=None, max_concurrent_answers=1))
+    created = store.create("测试问题")
+
+    # 生成中途：部分答案已可被轮询看到。
+    assert mid.wait(timeout=2)
+    mid_state = store.get(created["id"])
+    assert mid_state["answer_streaming"] is True
+    assert mid_state["answer"] == "你好世界"
+
+    proceed.set()
+    assert finished.wait(timeout=2)
+    final = store.get(created["id"])
+    assert final["status"] == "completed"
+    assert final["answer"] == "你好世界"
+    assert final["answer_streaming"] is False

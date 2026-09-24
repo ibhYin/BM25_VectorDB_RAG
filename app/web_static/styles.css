@@ -2753,3 +2753,12 @@ svg {
   margin-bottom: 6px;
   background: var(--surface);
 }
+
+/* 流式答案末尾的总用时。 */
+.chat-message.answer .answer-time {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--ink-faint);
+}

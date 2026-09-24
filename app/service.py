@@ -1164,6 +1164,7 @@ def answer_question(
     candidate_pool: int | None = None,
     user: UserContext | None = None,
     history: list[dict] | None = None,
+    on_token: Callable[[str], None] | None = None,
 ) -> AnswerResult:
     """Encode, retrieve and answer through the shared CLI/Web RAG pipeline.
 
@@ -1266,6 +1267,7 @@ def answer_question(
             openai_api_key=settings.openai_api_key,
             openai_base_url=settings.openai_base_url,
             history=history,
+            on_token=on_token,
         )
         report(
             "answer",
