@@ -1,6 +1,6 @@
 # Local RAG Knowledge Workspace
 
-面向中文 PDF、Markdown 和 TXT 的本地知识库问答应用。文档通过 OpenAI-compatible Embedding 服务写入 Chroma，问题经过向量检索后交给 OpenAI-compatible Chat 模型生成带 `chunk_id` 引用的回答。
+面向中文 PDF、Markdown、TXT 以及视频/音频文件的本地知识库问答应用。文档通过 OpenAI-compatible Embedding 服务写入 Chroma，问题经过向量检索后交给 OpenAI-compatible Chat 模型生成带 `chunk_id` 引用的回答。
 
 ## 核心能力
 
@@ -129,6 +129,13 @@ hash_password; print(hash_password('密码'))"` 生成）。一个账号要**同
 `access_policy.json` 的 `users` 和 `web_auth.json` 的 `users` 才能登录。账号的创建、密码
 重置、所属组分配和删除都在网页「用户」页完成（仅管理员）；账号与密码由部署者自行配置，仓库不提供预置凭据。
 
+视频/音频文件（mp4/mkv/mov/webm/avi、mp3/wav/m4a/aac/flac/ogg）入库时先由 **ffmpeg**
+抽取音频，再调一个 OpenAI 兼容的 `audio/transcriptions` 接口（ASR）转写成文字，按时间戳
+分段后切片入库——答案引用会带出 `MM:SS` 时间范围。转写服务在网页「设置」页的「语音识别
+（视频/音频转写）」里配置（请求地址留空复用对话模型地址，填好「转写模型」即启用）；
+未配置模型时上传媒体文件会明确报「语音识别未配置」。转写依赖服务器已安装 `ffmpeg`
+（macOS：`brew install ffmpeg`；Linux：`apt install ffmpeg`）。
+
 切换 Embedding 模型后必须使用新的 Chroma 目录重新建库，不要混用不同模型的向量。
 
 ## 使用
@@ -171,7 +178,7 @@ python -m app.main web
 |---|---|
 | `#/ask` | 默认落地页。左侧对话记录、中间对话流与检索参数、右侧证据栏（问答过程 / 匹配内容）；三条分隔线都能拖，右下角还能直接切对话模型 |
 | `#/library` | 索引统计、上传、处理任务、待审核、已入库文档（标题 / 来源 / 切片 / 切片方式 / 最近入库 / 访问组）；点文档原地打开查看器 |
-| `#/settings` | 模型接入配置（LLM / Embedding / MinerU）与索引状态、运行目录 |
+| `#/settings` | 模型接入配置（LLM / Embedding / MinerU / 语音识别）与索引状态、运行目录 |
 | `#/audit` | 向量库写入记录，可按事件类型与操作者筛选（仅管理员） |
 | `#/eval` | 检索评估：给问题标出「本该被召回的切片」（仅管理员） |
 | `#/users` | 用户管理：建号、改密码、分配所属组、授予/收回管理员权限、删除（仅管理员） |
@@ -479,7 +486,7 @@ metadata，事后改策略需要重新索引。所以「通过」的动作顺序
 - `POST /api/documents/:doc_id/access`：改该文档的访问组（`{"groups": ["hr", "finance"]}`，
   兼容旧的 `{"group": "hr"}` 单组写法）。仅管理员，且只接受策略里已存在的组。
 - `GET /api/upload-jobs`：上传索引任务。仅管理员。
-- `POST /api/documents/upload`：上传 `files`，支持 PDF、Markdown、TXT。管理员直接入库；其他用户返回 `staged: true` 并进入待审区。
+- `POST /api/documents/upload`：上传 `files`，支持 PDF、Markdown、TXT 与视频/音频（视频/音频自动转写语音）。管理员直接入库；其他用户返回 `staged: true` 并进入待审区。
 - `POST /api/answer-jobs`：创建异步问答任务，可带 `conversation_id`（会校验归属）。
 - `GET /api/conversations`：当前用户的对话列表（标题、时间、轮数）。
 - `POST /api/conversations`：新建空对话。

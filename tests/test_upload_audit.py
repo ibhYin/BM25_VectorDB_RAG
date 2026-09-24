@@ -89,7 +89,7 @@ def test_bad_multipart_is_a_failed_upload_audit(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         "app.web.parse_multipart",
         lambda *args, **kwargs: (_ for _ in ()).throw(
-            ValueError("Unsupported document type: .mp4")
+            ValueError("Unsupported document type: .zip")
         ),
     )
     handler, _ = make_upload_handler(monkeypatch, settings)
@@ -100,7 +100,7 @@ def test_bad_multipart_is_a_failed_upload_audit(tmp_path, monkeypatch) -> None:
     entry = audit.read_entries()[0]
     assert entry["status"] == "failed"
     assert entry["failure_stage"] == "multipart_parse"
-    assert entry["error"] == "Unsupported document type: .mp4"
+    assert entry["error"] == "Unsupported document type: .zip"
 
 
 def test_unexpected_disk_error_is_audited_and_reraised(tmp_path, monkeypatch) -> None:

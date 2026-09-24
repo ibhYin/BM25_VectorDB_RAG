@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     mineru_model_version: Literal["pipeline", "vlm"] = "vlm"
     # Which converter runs when an ingest asks for structured extraction.
     structurize_provider: Literal["markitdown", "mineru"] = "markitdown"
+    # OpenAI-compatible ASR for video/audio ingestion; empty model means "not configured".
+    audio_transcribe_base_url: str = ""
+    audio_transcribe_api_key: str = ""
+    audio_transcribe_model: str = ""
     chunk_size: int = 800
     chunk_overlap: int = 120
     retrieval_top_k: int = 20
@@ -58,6 +62,9 @@ class Settings(BaseSettings):
         "embedding_base_url",
         "ocr_model",
         "mineru_api_token",
+        "audio_transcribe_base_url",
+        "audio_transcribe_api_key",
+        "audio_transcribe_model",
         mode="before",
     )
     @classmethod
@@ -69,6 +76,9 @@ class Settings(BaseSettings):
         if not self.embedding_base_url:
             self.embedding_base_url = self.openai_base_url
             self.embedding_api_key = self.embedding_api_key or self.openai_api_key
+        if not self.audio_transcribe_base_url:
+            self.audio_transcribe_base_url = self.openai_base_url
+            self.audio_transcribe_api_key = self.audio_transcribe_api_key or self.openai_api_key
         if self.chunk_size <= 0:
             raise ValueError("CHUNK_SIZE must be greater than zero")
         if not 0 <= self.chunk_overlap < self.chunk_size:
@@ -105,6 +115,9 @@ RUNTIME_CONFIG_FIELDS = (
     "mineru_api_token",
     "mineru_model_version",
     "structurize_provider",
+    "audio_transcribe_base_url",
+    "audio_transcribe_api_key",
+    "audio_transcribe_model",
 )
 # Empty means "keep what is already there": the UI never echoes secrets back,
 # and a blank model picker must not silently erase the configured model.
@@ -116,6 +129,7 @@ RUNTIME_CONFIG_KEEP_WHEN_EMPTY = (
     "mineru_api_token",
     "mineru_model_version",
     "structurize_provider",
+    "audio_transcribe_api_key",
 )
 
 
@@ -192,6 +206,20 @@ def update_runtime_config(overrides: dict[str, str]) -> Settings:
         ):
             settings.embedding_api_key = overrides["openai_api_key"]
 
+        # ASR 端点同理：没配自己的地址/密钥时就跟随 LLM。
+        if (
+            "openai_base_url" in overrides
+            and "audio_transcribe_base_url" not in overrides
+            and settings.audio_transcribe_base_url == previous_base_url
+        ):
+            settings.audio_transcribe_base_url = overrides["openai_base_url"]
+        if (
+            "openai_api_key" in overrides
+            and "audio_transcribe_api_key" not in overrides
+            and settings.audio_transcribe_api_key == previous_api_key
+        ):
+            settings.audio_transcribe_api_key = overrides["openai_api_key"]
+
         _apply_embedding_fallback(settings)
         _RUNTIME_OVERRIDES.update(overrides)
         _persist_runtime_overrides()
@@ -232,6 +260,10 @@ def runtime_config_view() -> dict[str, object]:
         "mineru_api_token_hint": _mask_secret(settings.mineru_api_token),
         "mineru_model_version": settings.mineru_model_version,
         "structurize_provider": settings.structurize_provider,
+        "audio_transcribe_base_url": settings.audio_transcribe_base_url,
+        "audio_transcribe_api_key_set": bool(settings.audio_transcribe_api_key),
+        "audio_transcribe_api_key_hint": _mask_secret(settings.audio_transcribe_api_key),
+        "audio_transcribe_model": settings.audio_transcribe_model,
         "runtime_config_file": str(runtime_config_path()),
     }
 

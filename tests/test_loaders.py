@@ -3,7 +3,12 @@ from pathlib import Path
 from langchain_core.documents import Document
 
 from rag import loaders
-from rag.loaders import load_documents, load_pdf_documents, pdf_page_to_markdown
+from rag.loaders import (
+    load_document_file,
+    load_documents,
+    load_pdf_documents,
+    pdf_page_to_markdown,
+)
 
 
 def make_text_pdf(text: str) -> bytes:
@@ -146,3 +151,54 @@ def test_load_pdf_documents_keeps_pdf_when_ocr_fails(
     assert len(documents) == 1
     assert documents[0].page_content.strip() == ""
     assert documents[0].metadata["ocr_error"] == "ocr failed"
+
+
+def test_load_document_file_transcribes_media_files(tmp_path: Path, monkeypatch) -> None:
+    """媒体文件自动走转写分支，透传 ASR 配置；structurize 被忽略。"""
+
+    from rag import transcriber
+
+    video = tmp_path / "demo.mp4"
+    video.write_bytes(b"fake video bytes")
+
+    captured: dict = {}
+    fake_docs = [
+        Document(
+            page_content="转写内容",
+            metadata={"source": str(video), "start_time": 0.0, "end_time": 5.0},
+        )
+    ]
+
+    def fake_transcribe_media(path, **kwargs):
+        captured["path"] = path
+        captured.update(kwargs)
+        return fake_docs
+
+    monkeypatch.setattr(transcriber, "transcribe_media", fake_transcribe_media)
+
+    documents = load_document_file(
+        video,
+        structurize=True,  # 对媒体应被忽略
+        audio_transcribe_base_url="https://asr.example.test/v1",
+        audio_transcribe_api_key="asr-key",
+        audio_transcribe_model="doubao-seed-asr-1",
+    )
+
+    assert documents == fake_docs
+    assert captured["path"] == video
+    assert captured["base_url"] == "https://asr.example.test/v1"
+    assert captured["api_key"] == "asr-key"
+    assert captured["model"] == "doubao-seed-asr-1"
+
+
+def test_load_document_file_audio_suffix_also_transcribes(tmp_path: Path, monkeypatch) -> None:
+    from rag import transcriber
+
+    audio = tmp_path / "voice.mp3"
+    audio.write_bytes(b"fake audio bytes")
+
+    monkeypatch.setattr(
+        transcriber, "transcribe_media", lambda path, **kwargs: []
+    )
+
+    assert load_document_file(audio) == []

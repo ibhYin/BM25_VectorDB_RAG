@@ -31,6 +31,11 @@ const el = {
   mineruVersion: document.querySelector("#config-mineru-model-version"),
   mineruScope: document.querySelector("#config-mineru-scope"),
 
+  asrBaseUrl: document.querySelector("#config-asr-base-url"),
+  asrApiKey: document.querySelector("#config-asr-api-key"),
+  asrModel: document.querySelector("#config-asr-model"),
+  asrScope: document.querySelector("#config-asr-scope"),
+
   refreshModels: document.querySelector("#config-refresh-models"),
 
   indexBuiltBy: document.querySelector("#index-built-by"),
@@ -118,6 +123,11 @@ function renderMineruScope(configured) {
   el.mineruScope.className = `scope-badge ${configured ? "cloud" : "empty"}`;
 }
 
+function renderAsrScope(configured) {
+  el.asrScope.textContent = configured ? "已启用" : "未配置";
+  el.asrScope.className = `scope-badge ${configured ? "cloud" : "empty"}`;
+}
+
 // --- load / save ----------------------------------------------------------
 
 function renderIndexStatus() {
@@ -166,6 +176,12 @@ async function loadConfig() {
       : "留空则保持不变";
     configState.clearMineruToken = false;
     renderMineruScope(Boolean(config.mineru_api_token_set));
+    el.asrBaseUrl.value = config.audio_transcribe_base_url || "";
+    el.asrModel.value = config.audio_transcribe_model || "";
+    el.asrApiKey.placeholder = config.audio_transcribe_api_key_set
+      ? `已配置 ${config.audio_transcribe_api_key_hint} · 留空保持不变`
+      : "留空则保持不变";
+    renderAsrScope(Boolean(config.audio_transcribe_model));
     setConfigStatus("");
   } catch (error) {
     setConfigStatus(error.message, "error");
@@ -212,6 +228,16 @@ function collectConfigChanges() {
   if (el.mineruProvider.value !== (loaded.structurize_provider || "markitdown")) {
     changes.structurize_provider = el.mineruProvider.value;
   }
+  const asrBaseUrl = el.asrBaseUrl.value.trim();
+  if (asrBaseUrl !== (loaded.audio_transcribe_base_url || "")) {
+    changes.audio_transcribe_base_url = asrBaseUrl;
+  }
+  const asrModel = el.asrModel.value.trim();
+  if (asrModel !== (loaded.audio_transcribe_model || "")) {
+    changes.audio_transcribe_model = asrModel;
+  }
+  const asrKey = el.asrApiKey.value.trim();
+  if (asrKey) changes.audio_transcribe_api_key = asrKey;
   return changes;
 }
 
@@ -256,8 +282,10 @@ async function submitConfig(event) {
     el.openaiApiKey.value = "";
     el.embeddingApiKey.value = "";
     el.mineruToken.value = "";
+    el.asrApiKey.value = "";
     configState.clearMineruToken = false;
     renderMineruScope(Boolean(config.mineru_api_token_set));
+    renderAsrScope(Boolean(config.audio_transcribe_model));
     showToast(embeddingChanged ? "已更换向量模型，请重新入库文档" : "配置已保存");
     await refreshStatus();
     renderIndexStatus();

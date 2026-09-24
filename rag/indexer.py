@@ -28,6 +28,9 @@ def build_vector_index(
     structurize_provider: str = "markitdown",
     mineru_token: str = "",
     mineru_model_version: str = "vlm",
+    audio_transcribe_base_url: str = "",
+    audio_transcribe_api_key: str = "",
+    audio_transcribe_model: str = "",
 ) -> tuple[list[Document], list[Document]]:
     """Load, split and index one directory through the shared vector pipeline.
 
@@ -52,6 +55,9 @@ def build_vector_index(
         structurize_provider=structurize_provider,
         mineru_token=mineru_token,
         mineru_model_version=mineru_model_version,
+        audio_transcribe_base_url=audio_transcribe_base_url,
+        audio_transcribe_api_key=audio_transcribe_api_key,
+        audio_transcribe_model=audio_transcribe_model,
     )
     if not documents:
         raise ValueError(f"No supported documents found in: {data_dir}")

@@ -95,8 +95,9 @@ function uploadFiles(fileList) {
   const files = Array.from(fileList || []);
   if (!files.length) return;
 
-  const invalid = files.filter((file) => !/\.(pdf|md|txt)$/i.test(file.name));
-  const valid = files.filter((file) => /\.(pdf|md|txt)$/i.test(file.name));
+  const ALLOWED_EXT = /\.(pdf|md|txt|mp4|mkv|mov|webm|avi|mp3|wav|m4a|aac|flac|ogg)$/i;
+  const invalid = files.filter((file) => !ALLOWED_EXT.test(file.name));
+  const valid = files.filter((file) => ALLOWED_EXT.test(file.name));
   if (invalid.length) {
     showJobError(`不支持的文件：${invalid.map((file) => file.name).join("、")}`);
   }

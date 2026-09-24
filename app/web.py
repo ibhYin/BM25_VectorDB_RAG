@@ -1245,6 +1245,24 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                     "structurize_provider must be markitdown or mineru",
                 )
             updates["structurize_provider"] = str(value)
+        if "audio_transcribe_base_url" in payload:
+            updates["audio_transcribe_base_url"] = cls._clean_base_url(
+                payload["audio_transcribe_base_url"], "audio_transcribe_base_url"
+            )
+        if "audio_transcribe_api_key" in payload:
+            value = payload["audio_transcribe_api_key"]
+            if not isinstance(value, str):
+                raise RequestError(
+                    HTTPStatus.BAD_REQUEST, "audio_transcribe_api_key must be a string"
+                )
+            value = value.strip()
+            if value:
+                updates["audio_transcribe_api_key"] = value
+        if "audio_transcribe_model" in payload:
+            # 模型名会回显，用户清空即为「禁用视频转写」。
+            updates["audio_transcribe_model"] = cls._clean_model_name(
+                payload["audio_transcribe_model"], "audio_transcribe_model"
+            )
         return updates
 
     @staticmethod

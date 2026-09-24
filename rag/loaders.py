@@ -9,7 +9,12 @@ if __package__ in {None, ""}:
 import fitz
 from langchain_core.documents import Document
 from rag.ocr import ocr_pdf_with_openai
-from rag.constants import DEFAULT_OCR_MODEL, SUPPORTED_SUFFIXES, TEXT_SUFFIXES
+from rag.constants import (
+    DEFAULT_OCR_MODEL,
+    MEDIA_SUFFIXES,
+    SUPPORTED_SUFFIXES,
+    TEXT_SUFFIXES,
+)
 
 
 # 文件类型与 PDF 扫描件检测阈值配置。
@@ -30,11 +35,14 @@ def load_documents(
     structurize_provider: str = "markitdown",
     mineru_token: str = "",
     mineru_model_version: str = "vlm",
+    audio_transcribe_base_url: str = "",
+    audio_transcribe_api_key: str = "",
+    audio_transcribe_model: str = "",
 ) -> list[Document]:
     """Load local text documents from the knowledge base directory.
 
     When structurize is True, files are converted to Markdown with the requested
-    provider before chunking.
+    provider before chunking. Media files are always transcribed via ASR.
     """
 
     documents: list[Document] = []
@@ -55,6 +63,9 @@ def load_documents(
                 structurize_provider=structurize_provider,
                 mineru_token=mineru_token,
                 mineru_model_version=mineru_model_version,
+                audio_transcribe_base_url=audio_transcribe_base_url,
+                audio_transcribe_api_key=audio_transcribe_api_key,
+                audio_transcribe_model=audio_transcribe_model,
             )
         )
 
@@ -71,18 +82,32 @@ def load_document_file(
     structurize_provider: str = "markitdown",
     mineru_token: str = "",
     mineru_model_version: str = "vlm",
+    audio_transcribe_base_url: str = "",
+    audio_transcribe_api_key: str = "",
+    audio_transcribe_model: str = "",
 ) -> list[Document]:
     """Load one supported file through the same path as directory ingestion.
 
     When structurize is True, converts the file to structured Markdown with the
     requested provider before splitting. Falls back to raw extraction when the
-    converter yields nothing.
+    converter yields nothing. Media files are always transcribed via ASR.
     """
 
     if not path.is_file():
         raise ValueError(f"Document does not exist: {path}")
     if path.suffix.lower() not in SUPPORTED_SUFFIXES:
         raise ValueError(f"Unsupported document type: {path.suffix or '(none)'}")
+
+    # 视频/音频没有可入库文本，必须转写；structurize 对媒体无意义，直接忽略。
+    if path.suffix.lower() in MEDIA_SUFFIXES:
+        from rag.transcriber import transcribe_media
+
+        return transcribe_media(
+            path,
+            base_url=audio_transcribe_base_url,
+            api_key=audio_transcribe_api_key,
+            model=audio_transcribe_model,
+        )
 
     if structurize:
         from rag.structurizer import convert_to_markdown

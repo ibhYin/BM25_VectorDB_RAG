@@ -170,14 +170,14 @@
           <section class="panel">
             <div class="section-head">
               <h3>添加文档</h3>
-              <span class="section-hint" id="upload-limit">PDF / MD / TXT</span>
+              <span class="section-hint" id="upload-limit">PDF / MD / TXT / 视频 / 音频</span>
             </div>
             <div class="drop-zone" id="drop-zone" role="button" tabindex="0" aria-describedby="drop-zone-description">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
               <strong>拖拽文件到这里</strong>
-              <span id="drop-zone-description">或选择文件后自动上传并入向量库</span>
+              <span id="drop-zone-description">或选择文件后自动上传并入向量库；视频/音频会自动转写语音</span>
             </div>
-            <input id="file-input" class="visually-hidden" type="file" multiple accept=".pdf,.md,.txt" />
+            <input id="file-input" class="visually-hidden" type="file" multiple accept=".pdf,.md,.txt,.mp4,.mkv,.mov,.webm,.avi,.mp3,.wav,.m4a,.aac,.flac,.ogg" />
             <label class="upload-option">
               <input id="structurize-checkbox" type="checkbox" />
               <span id="structurize-label">结构化提取</span>
@@ -333,6 +333,29 @@
             创建 Token。引擎选 MinerU 时，勾选「结构化提取」的上传会走在线版面分析。
           </p>
           <p class="config-hint warning">文档会上传到 mineru.net 第三方服务，请勿用于涉密材料。</p>
+        </fieldset>
+
+        <fieldset class="config-group" aria-label="语音识别">
+          <div class="config-group-head">
+            <span class="config-group-title">语音识别（视频/音频转写）</span>
+            <span class="scope-badge" id="config-asr-scope">未配置</span>
+          </div>
+          <label class="config-field">
+            <span>请求地址</span>
+            <input id="config-asr-base-url" type="url" inputmode="url" placeholder="留空复用对话模型地址" autocomplete="off" spellcheck="false" />
+          </label>
+          <label class="config-field">
+            <span>API Key</span>
+            <input id="config-asr-api-key" type="password" placeholder="留空则保持不变" autocomplete="new-password" spellcheck="false" />
+          </label>
+          <label class="config-field">
+            <span>转写模型</span>
+            <input id="config-asr-model" type="text" placeholder="如 doubao-seed-asr-…，留空禁用" autocomplete="off" spellcheck="false" />
+          </label>
+          <p class="config-hint">
+            上传 mp4/mp3 等视频/音频文件时，先用 ffmpeg 抽音频，再调 OpenAI 兼容的
+            <code>audio/transcriptions</code> 接口转写后入库。填好「转写模型」即启用。
+          </p>
         </fieldset>
 
         <footer class="config-foot">

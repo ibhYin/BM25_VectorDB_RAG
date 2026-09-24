@@ -48,3 +48,32 @@ def test_settings_reject_invalid_upload_limits() -> None:
 
     with pytest.raises(ValueError, match="upload limits"):
         Settings(_env_file=None, max_upload_files=0)
+
+
+def test_audio_transcribe_credentials_fall_back_to_openai() -> None:
+    shared = Settings(
+        _env_file=None,
+        openai_api_key="chat-key",
+        openai_base_url="https://chat.example.test/v1",
+    )
+    assert (shared.audio_transcribe_api_key, shared.audio_transcribe_base_url) == (
+        "chat-key",
+        "https://chat.example.test/v1",
+    )
+    assert shared.audio_transcribe_model == ""
+
+
+def test_audio_transcribe_can_override_openai() -> None:
+    settings = Settings(
+        _env_file=None,
+        openai_api_key="chat-key",
+        openai_base_url="https://chat.example.test/v1",
+        audio_transcribe_api_key="asr-key",
+        audio_transcribe_base_url="https://asr.example.test/v1",
+        audio_transcribe_model="doubao-seed-asr-1",
+    )
+    assert (settings.audio_transcribe_api_key, settings.audio_transcribe_base_url) == (
+        "asr-key",
+        "https://asr.example.test/v1",
+    )
+    assert settings.audio_transcribe_model == "doubao-seed-asr-1"

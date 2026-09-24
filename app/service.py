@@ -134,6 +134,9 @@ def ingest_knowledge_base(
             structurize_provider=settings.structurize_provider,
             mineru_token=settings.mineru_api_token,
             mineru_model_version=settings.mineru_model_version,
+            audio_transcribe_base_url=settings.audio_transcribe_base_url,
+            audio_transcribe_api_key=settings.audio_transcribe_api_key,
+            audio_transcribe_model=settings.audio_transcribe_model,
         )
 
     result = IngestResult(len(documents), len(chunks), rebuild, source_dir)
@@ -185,6 +188,9 @@ def ingest_files(
                         structurize_provider=settings.structurize_provider,
                         mineru_token=settings.mineru_api_token,
                         mineru_model_version=settings.mineru_model_version,
+                        audio_transcribe_base_url=settings.audio_transcribe_base_url,
+                        audio_transcribe_api_key=settings.audio_transcribe_api_key,
+                        audio_transcribe_model=settings.audio_transcribe_model,
                     )
                 )
 
