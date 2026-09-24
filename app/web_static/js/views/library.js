@@ -52,6 +52,7 @@ const el = {
   docBody: document.querySelector("#doc-body"),
   docProgress: document.querySelector("#doc-progress"),
   docLoadMore: document.querySelector("#doc-load-more"),
+  docBackTop: document.querySelector("#doc-back-top"),
   docViewMode: document.querySelector("#doc-view-mode"),
 };
 
@@ -773,9 +774,11 @@ function showList() {
   docState.docId = "";
   docState.chunks = [];
   docState.focusChunkId = "";
+  el.docBackTop.hidden = true;
 }
 
 async function openDocument(indexedDocument, focusChunkId = "", highlightUsed = [], highlightUnused = []) {
+  el.docBackTop.hidden = true;
   docState.docId = indexedDocument.doc_id;
   docState.chunks = [];
   docState.nextOffset = 0;
@@ -1036,9 +1039,13 @@ export default {
     el.docLoadMore.addEventListener("click", loadDocumentPage);
     el.docViewMode.addEventListener("change", renderDocumentView);
     el.docBody.addEventListener("scroll", () => {
+      el.docBackTop.hidden = el.docBody.scrollTop < 400;
       if (docState.done || docState.loading) return;
       const { scrollTop, clientHeight, scrollHeight } = el.docBody;
       if (scrollTop + clientHeight >= scrollHeight - 240) loadDocumentPage();
+    });
+    el.docBackTop.addEventListener("click", () => {
+      el.docBody.scrollTo({ top: 0, behavior: "smooth" });
     });
 
     on("documents", () => {

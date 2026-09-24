@@ -924,6 +924,7 @@ svg {
 
 /* 文档查看器现在在知识库页，作为列表的原地替换。 */
 #library-doc-view {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-height: 60vh;
@@ -2833,4 +2834,39 @@ svg {
 .doc-chunk-highlight.unused {
   border-color: #c9a23a !important;
   box-shadow: 0 0 0 3px rgba(201, 162, 58, 0.18);
+}
+
+
+/* 文档查看器「回到顶部」浮动按钮 */
+.back-top {
+  position: absolute;
+  right: 18px;
+  bottom: 52px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-soft);
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  opacity: 0.95;
+}
+
+.back-top:hover {
+  color: var(--accent-strong);
+  border-color: var(--accent-line);
+}
+
+.back-top[hidden] {
+  display: none;
+}
+
+.back-top svg {
+  width: 18px;
+  height: 18px;
 }
