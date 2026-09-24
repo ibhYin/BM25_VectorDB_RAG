@@ -29,6 +29,8 @@
 - 一个文档可同时属于多个访问组；管理员在「知识库」页弹层勾选（可切「按组」视图看每个组能
   看到哪些文档），**只改元数据、不重新向量化**。
 - 无入库权限的用户可以提交文档，进入待审区由管理员审核通过后才入库。
+- 视频/音频文件（mp4/mp3 等）入库时自动抽音频并经 ASR 转写（OpenAI 兼容或阿里云录音文件
+  识别，可切换），按时间戳分段，答案引用带 `MM:SS` 时间范围。
 - 每次向量库写入都留审计记录，网页端可查看（仅管理员）。
 
 ## 目录
@@ -176,7 +178,7 @@ python -m app.main ask "Transformer 为什么使用注意力机制？"
 python -m app.main web
 ```
 
-访问 <http://127.0.0.1:8000>。macOS 可以双击 `scripts/start_web.command` 启动并用 Google Chrome 打开，双击 `scripts/stop_web.command` 停止。
+访问 <http://127.0.0.1:8000>。macOS 可以双击 `scripts/start_web.command` 启动并用 Google Chrome 打开，双击 `scripts/stop_web.command` 停止。启动脚本会在后端启动时记录代码版本，下次运行发现**代码更新了但旧进程还在**时自动按新代码重启，避免「设置页缺字段/配置存不进去」这类版本漂移问题；设置页「索引状态」的**运行版本**可以随时看到当前进程跑的是哪版代码。
 
 ## 页面
 
@@ -184,7 +186,7 @@ python -m app.main web
 |---|---|
 | `#/ask` | 默认落地页。左侧对话记录、中间对话流与检索参数、右侧证据栏（问答过程 / 匹配内容）；三条分隔线都能拖，右下角还能直接切对话模型 |
 | `#/library` | 索引统计、上传、处理任务、待审核、已入库文档（标题 / 来源 / 切片 / 切片方式 / 最近入库 / 访问组）；点文档原地打开查看器 |
-| `#/settings` | 模型接入配置（LLM / Embedding / MinerU / 语音识别）与索引状态、运行目录 |
+| `#/settings` | 模型接入配置（LLM / Embedding / MinerU / 语音识别）与索引状态（含运行版本）、运行目录 |
 | `#/audit` | 向量库写入记录，可按事件类型与操作者筛选（仅管理员） |
 | `#/eval` | 检索评估：给问题标出「本该被召回的切片」（仅管理员） |
 | `#/users` | 用户管理：建号、改密码、分配所属组、授予/收回管理员权限、删除（仅管理员） |
@@ -454,7 +456,8 @@ metadata，事后改策略需要重新索引。所以「通过」的动作顺序
 
 ## Web API
 
-- `GET /api/status`：运行配置、索引状态，以及建库模型和是否与当前配置不一致。
+- `GET /api/status`：运行配置、索引状态，以及建库模型和是否与当前配置不一致；`code_version`
+  是当前进程运行的代码版本（部署目录有 `DEPLOYED_COMMIT` 则取它，否则取 git 短哈希）。
 - `GET /api/knowledge-bases`：当前知识库、它的访问组、调用者是否属于该组，以及策略里
   定义了但**本实例不服务**的其它知识库。注意一个实例只服务一个知识库（`KNOWLEDGE_BASE_ID`）。
 - `GET /api/audit`：向量库写入审计日志，`limit` 默认 100（1-1000），返回最新在前。仅管理员。
@@ -477,11 +480,15 @@ metadata，事后改策略需要重新索引。所以「通过」的动作顺序
   一位管理员。仅管理员。
 - `GET /api/config`：当前模型接入配置（API Key 不回显，只给 `••••` 加尾 4 位）和索引建库
   模型。仅管理员。
-- `POST /api/config`：更新 LLM / Embedding 的请求地址、API Key 与模型名，以及 MinerU 的
-  `mineru_api_token` / `mineru_model_version` 和结构化引擎 `structurize_provider`
-  （`markitdown` 或 `mineru`），写入 `config/runtime_config.json`。**省略**的字段保持不变；
-  API Key 和模型名留空也保持不变；Embedding 的地址留空表示复用 LLM 的地址，LLM 的地址留空
-  表示回退到 SDK 默认端点。仅管理员。
+- `POST /api/config`：更新 LLM / Embedding 的请求地址、API Key 与模型名、MinerU 的
+  `mineru_api_token` / `mineru_model_version`、结构化引擎 `structurize_provider`，以及语音识别
+  的 `audio_transcribe_provider`（`openai`/`aliyun`）/ base_url / api_key / model 和
+  `aliyun_access_key_id` / `aliyun_access_key_secret` / `aliyun_appkey` / `aliyun_region` /
+  `aliyun_oss_bucket` / `aliyun_oss_endpoint` / `aliyun_oss_prefix`，写入
+  `config/runtime_config.json`。**省略**的字段保持不变；API Key 留空也保持不变；Embedding 地址
+  留空表示复用 LLM 的地址，LLM 地址留空表示回退到 SDK 默认端点。响应带 **`updated`**（本次
+  实际写入的字段名列表，前端据此提示「部分字段未保存成功」）；提交后端不认识的字段返回
+  **400 `Unknown config field(s)`**（用于暴露前后端版本不一致）。仅管理员。
 - `POST /api/models`：按 `target`（`llm` / `embedding`）列出该端点可用模型，返回
   `{scope, models, error}`；`scope` 为 `local` 时模型带磁盘体积。仅管理员。
 - `GET /api/documents`：已入库文档、切片数与切片方式；管理员还会拿到该文档**最近一次**
