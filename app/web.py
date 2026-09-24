@@ -318,7 +318,15 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             update_runtime_config(updates)
         except ValueError as exc:
             raise RequestError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
-        self._send_json({**runtime_config_view(), **self._index_model_info(settings)})
+        # updated：本次真正写进去的字段名，前端拿它和「这次想改的字段」对比，
+        # 有没生效的能当场暴露出来。
+        self._send_json(
+            {
+                **runtime_config_view(),
+                "updated": sorted(updates),
+                **self._index_model_info(settings),
+            }
+        )
 
     def _handle_list_models(self) -> None:
         from app.config import endpoint_credentials
@@ -1228,6 +1236,18 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
     @classmethod
     def _read_config_updates(cls, payload: dict[str, object]) -> dict[str, str]:
+        from app.config import RUNTIME_CONFIG_FIELDS
+
+        # 前端发了后端不认识的字段（通常是前后端版本不一致）：明确报错而不是
+        # 静默丢弃——否则用户以为存上了、实际没生效。
+        known = set(RUNTIME_CONFIG_FIELDS) | {"clear_mineru_api_token"}
+        unknown = set(payload) - known
+        if unknown:
+            raise RequestError(
+                HTTPStatus.BAD_REQUEST,
+                f"Unknown config field(s): {', '.join(sorted(unknown))}",
+            )
+
         updates: dict[str, str] = {}
         for field in ("openai_base_url", "embedding_base_url"):
             if field in payload:

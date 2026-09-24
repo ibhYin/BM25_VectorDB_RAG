@@ -354,10 +354,23 @@ async function submitConfig(event) {
     renderMineruScope(Boolean(config.mineru_api_token_set));
     renderAsrScope(asrConfigured(config));
     toggleAsrFields();
-    showToast(embeddingChanged ? "已更换向量模型，请重新入库文档" : "配置已保存");
+
+    // 后端回显本次真正写进去的字段；有「这次想改但没生效」的就当场暴露——
+    // 通常是前后端版本不一致（前端字段旧后端不认识）。
+    const updated = config.updated || [];
+    const missed = Object.keys(changes).filter(
+      (key) => !key.startsWith("clear_") && !updated.includes(key),
+    );
+    if (missed.length) {
+      const names = missed.join("、");
+      showToast(`部分字段未保存成功：${names}（可能前后端版本不一致）`, "error");
+      setConfigStatus(`部分字段未保存成功：${names}`);
+    } else {
+      showToast(embeddingChanged ? "已更换向量模型，请重新入库文档" : "配置已保存");
+      setConfigStatus("已保存");
+    }
     await refreshStatus();
     renderIndexStatus();
-    setConfigStatus("已保存");
   } catch (error) {
     setConfigStatus(error.message, "error");
   } finally {
