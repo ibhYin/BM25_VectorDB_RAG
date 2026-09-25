@@ -2870,3 +2870,45 @@ svg {
   width: 18px;
   height: 18px;
 }
+
+/* ==================== 每轮答案的检索文档溯源 ==================== */
+
+.answer-docs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+
+.answer-docs-label {
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
+.doc-chip {
+  padding: 2px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--ink-soft);
+  font-size: 11px;
+  cursor: pointer;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doc-chip:hover {
+  border-color: var(--accent-line);
+  color: var(--accent-strong);
+}
+
+.chat-message.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-radius: var(--radius);
+}

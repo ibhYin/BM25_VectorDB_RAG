@@ -57,6 +57,12 @@ let streamingAnswerEl = null;
 let lastStreamedAnswer = "";
 // 问答过程默认折叠成一行摘要，点「展开」看完整阶段。
 let processExpanded = false;
+// 点聊天消息 pin 到某一轮：非 null 时证据栏显示该轮的切片，否则跟最新。
+let selectedTurnHits = null;
+let selectedTurnAnswer = "";
+let selectedTurnEl = null;
+// 最新一轮的 question 消息元素，答案完成后给它也挂上该轮数据。
+let lastQuestionEl = null;
 
 const convState = {
   items: [],
@@ -125,12 +131,76 @@ function extractCitedChunkIds(answerText) {
   return cited;
 }
 
+// 把一轮的命中切片按文档聚合：{doc_id → {title, total, used, firstChunk}}。
+function aggregateDocs(hits, answerText) {
+  const cited = answerText ? extractCitedChunkIds(answerText) : null;
+  const docs = new Map();
+  for (const hit of hits || []) {
+    const docId = hit.doc_id;
+    if (!docId) continue;
+    let entry = docs.get(docId);
+    if (!entry) {
+      entry = { title: hit.title || docId, total: 0, used: 0, firstChunk: "" };
+      docs.set(docId, entry);
+    }
+    entry.total += 1;
+    if (cited && cited.has(hit.chunk_id)) entry.used += 1;
+    if (!entry.firstChunk) entry.firstChunk = hit.chunk_id || "";
+  }
+  return docs;
+}
+
+// 从「这一轮」的 hits + 答案算某文档的已用/未用切片，跳文档查看器并双色高亮。
+function navigateToDoc(hits, answerText, docId, chunkId) {
+  const cited = answerText ? extractCitedChunkIds(answerText) : null;
+  const sameDoc = (hits || []).filter((item) => item.doc_id === docId);
+  const used = cited
+    ? sameDoc.filter((item) => cited.has(item.chunk_id)).map((item) => item.chunk_id)
+    : [];
+  const unused = cited
+    ? sameDoc.filter((item) => !cited.has(item.chunk_id)).map((item) => item.chunk_id)
+    : [];
+  router.navigate("library", { docId, chunkId, used, unused });
+}
+
+// 在答案消息下方追加一行「检索文档：…」，每篇文档一个可点击 chip。
+function renderRetrievedDocs(answerEl, hits, answerText) {
+  if (answerEl.querySelector(".answer-docs")) return;
+  const docs = aggregateDocs(hits, answerText);
+  if (!docs.size) return;
+
+  const row = document.createElement("div");
+  row.className = "answer-docs";
+  const label = document.createElement("span");
+  label.className = "answer-docs-label";
+  label.textContent = "检索文档";
+  row.append(label);
+
+  for (const [docId, doc] of docs) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "doc-chip";
+    chip.textContent = doc.used
+      ? `${doc.title}（已用 ${doc.used}/${doc.total}）`
+      : `${doc.title}（${doc.total} 片）`;
+    chip.title = "在文档查看器中查看该文档的命中切片";
+    chip.addEventListener("click", () =>
+      navigateToDoc(hits, answerText, docId, doc.firstChunk),
+    );
+    row.append(chip);
+  }
+  answerEl.append(row);
+}
+
 // 跳到知识库文档查看器，并把「同一文档下」的命中切片按已用/未用分色高亮。
 // 答案还没生成时（候选期）不传高亮集合，只定位点击的切片。
 function openHitInOriginal(hit) {
-  const answerText = state.answerJob?.answer || "";
+  const hits = selectedTurnHits ?? state.vectorHits || [];
+  const answerText = selectedTurnHits
+    ? selectedTurnAnswer
+    : state.answerJob?.answer || "";
   const cited = answerText ? extractCitedChunkIds(answerText) : null;
-  const sameDoc = (state.vectorHits || []).filter((item) => item.doc_id === hit.doc_id);
+  const sameDoc = hits.filter((item) => item.doc_id === hit.doc_id);
   const used = cited
     ? sameDoc.filter((item) => cited.has(item.chunk_id)).map((item) => item.chunk_id)
     : [];
@@ -243,12 +313,13 @@ function renderAnswer(text) {
   return fragment;
 }
 
-function addChatMessage(type, text) {
+function addChatMessage(type, text, turn) {
   const empty = el.chatStream.querySelector(".empty-chat");
   if (empty) empty.remove();
 
   const message = document.createElement("article");
   message.className = `chat-message ${type}`;
+  if (turn) message._turn = turn;
   if (type === "answer") {
     message.append(renderAnswer(text));
   } else {
@@ -283,6 +354,12 @@ function finalizeAnswer(job) {
   const text = job.answer || "未生成答案";
   if (!streamingAnswerEl) streamingAnswerEl = addChatMessage("answer", text);
   else streamingAnswerEl.replaceChildren(renderAnswer(text));
+
+  // 把该轮数据挂到答案与对应的问题消息上，点击任一可查看这轮的检索详情。
+  const turn = { hits: job.vector_hits || [], answer: job.answer || "" };
+  streamingAnswerEl._turn = turn;
+  if (lastQuestionEl) lastQuestionEl._turn = turn;
+
   const seconds = elapsedSeconds(job);
   if (seconds !== null) {
     const time = document.createElement("div");
@@ -290,6 +367,7 @@ function finalizeAnswer(job) {
     time.textContent = `⏱ 共 ${seconds} 秒`;
     streamingAnswerEl.append(time);
   }
+  renderRetrievedDocs(streamingAnswerEl, turn.hits, turn.answer);
   streamingAnswerEl = null;
   lastStreamedAnswer = "";
 }
@@ -297,10 +375,13 @@ function finalizeAnswer(job) {
 // --- evidence -------------------------------------------------------------
 
 function renderContext() {
-  const items = state.vectorHits || [];
+  // pin 到某一轮时显示那一轮的切片，否则跟最新（answerJob）。
+  const items = selectedTurnHits ?? state.vectorHits || [];
   // 答案还没生成（answer 为空）时是「候选」，标不出来谁被用，先给中性态；
   // 答案一旦出现（流式开始），引用了的翻「已用」、其余「未用」并实时更新。
-  const answerText = state.answerJob?.answer || "";
+  const answerText = selectedTurnHits
+    ? selectedTurnAnswer
+    : state.answerJob?.answer || "";
   const resolved = Boolean(answerText);
   const cited = resolved ? extractCitedChunkIds(answerText) : null;
   const usedCount = cited
@@ -337,6 +418,15 @@ function renderContextLoading() {
   loading.className = "loading-state";
   loading.append(createSpinner(), document.createTextNode("检索中"));
   el.contextList.append(loading);
+}
+
+function clearSelectedTurn() {
+  selectedTurnHits = null;
+  selectedTurnAnswer = "";
+  if (selectedTurnEl) {
+    selectedTurnEl.classList.remove("selected");
+    selectedTurnEl = null;
+  }
 }
 
 // --- process rail ---------------------------------------------------------
@@ -522,7 +612,7 @@ async function ask(event) {
     return;
   }
 
-  addChatMessage("question", question);
+  lastQuestionEl = addChatMessage("question", question);
   el.question.value = "";
   el.askButton.disabled = true;
   streamingAnswerEl = null;
@@ -530,6 +620,8 @@ async function ask(event) {
   processExpanded = false;
   el.processToggle.setAttribute("aria-expanded", "false");
   el.processToggle.textContent = "展开";
+  // 新提问回到最新：清掉 pin 的历史轮。
+  clearSelectedTurn();
   setRunStatusLoading(true, "正在处理问题...");
   state.answerJob = { retrieval_method: getRetrievalMethod() };
   state.vectorHits = [];
@@ -644,6 +736,8 @@ function resetChatStream() {
   el.chatStream.replaceChildren();
   streamingAnswerEl = null;
   lastStreamedAnswer = "";
+  lastQuestionEl = null;
+  clearSelectedTurn();
   const empty = document.createElement("div");
   empty.className = "empty-chat";
   const mark = document.createElement("span");
@@ -703,12 +797,27 @@ async function openConversation(conversationId) {
     const empty = el.chatStream.querySelector(".empty-chat");
     if (empty) empty.remove();
 
-    for (const turn of conversation.turns || []) {
-      addChatMessage("question", turn.question);
-      addChatMessage("answer", turn.answer || "（未记录答案）");
+    const turns = conversation.turns || [];
+    for (const turn of turns) {
+      const turnData = { hits: turn.hits || [], answer: turn.answer || "" };
+      const questionEl = addChatMessage("question", turn.question, turnData);
+      const answerEl = addChatMessage("answer", turn.answer || "（未记录答案）", turnData);
+      renderRetrievedDocs(answerEl, turnData.hits, turnData.answer);
+      questionEl._turn = turnData;
     }
-    const last = (conversation.turns || []).at(-1);
+    const last = turns.at(-1);
     state.vectorHits = last?.hits || [];
+    // pin 到最后一轮，让 used 标记基于该轮答案（而不是空的 answerJob）。
+    clearSelectedTurn();
+    if (last) {
+      selectedTurnHits = last.hits || [];
+      selectedTurnAnswer = last.answer || "";
+      const lastAnswerEl = el.chatStream.lastElementChild;
+      if (lastAnswerEl) {
+        selectedTurnEl = lastAnswerEl;
+        lastAnswerEl.classList.add("selected");
+      }
+    }
     renderContext();
     el.chatStream.scrollTop = el.chatStream.scrollHeight;
   } catch (error) {
@@ -1001,6 +1110,22 @@ export default {
     el.processToggle.addEventListener("click", toggleProcess);
     el.clearChatButton.addEventListener("click", clearChat);
     el.newConversation.addEventListener("click", newConversation);
+    // 点某条问答：右侧证据栏切到那一轮的检索切片（再点同一条取消）。
+    el.chatStream.addEventListener("click", (event) => {
+      const message = event.target.closest(".chat-message");
+      if (!message || !message._turn) return;
+      if (selectedTurnEl === message) {
+        clearSelectedTurn();
+        renderContext();
+        return;
+      }
+      if (selectedTurnEl) selectedTurnEl.classList.remove("selected");
+      selectedTurnEl = message;
+      message.classList.add("selected");
+      selectedTurnHits = message._turn.hits || [];
+      selectedTurnAnswer = message._turn.answer || "";
+      renderContext();
+    });
     el.question.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
