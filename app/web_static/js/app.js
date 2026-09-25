@@ -6,6 +6,7 @@ import {
   loadIdentity,
   refreshDocuments,
   router,
+  setupBackTop,
 } from "./core.js";
 import ask from "./views/ask.js";
 import audit from "./views/audit.js";
@@ -50,6 +51,7 @@ document.addEventListener("keydown", (event) => {
 
 // --- boot -----------------------------------------------------------------
 
+setupBackTop();
 router.start("ask");
 refreshDocuments();
 loadIdentity();

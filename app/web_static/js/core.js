@@ -27,7 +27,39 @@ export const el = {
   userLabel: document.querySelector("#user-label"),
   userMenu: document.querySelector("#user-menu"),
   toast: document.querySelector("#toast"),
+  backTop: document.querySelector("#back-top"),
 };
+
+// --- back to top -----------------------------------------------------------
+// 全局浮动「回到顶部」：任何页面滚动超过阈值就出现。滚动容器不固定（window 或
+// 当前 .page），所以 window 和所有 .page 都监听，取最大滚动量。
+
+const BACK_TOP_THRESHOLD = 400;
+
+function backTopVisible() {
+  let y = window.scrollY || 0;
+  for (const page of document.querySelectorAll(".page")) {
+    if (page.scrollTop > y) y = page.scrollTop;
+  }
+  return y >= BACK_TOP_THRESHOLD;
+}
+
+export function setupBackTop() {
+  const update = () => {
+    el.backTop.hidden = !backTopVisible();
+  };
+  window.addEventListener("scroll", update, { passive: true });
+  for (const page of document.querySelectorAll(".page")) {
+    page.addEventListener("scroll", update, { passive: true });
+  }
+  el.backTop.addEventListener("click", () => {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    for (const page of document.querySelectorAll(".page")) {
+      page.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  });
+  update();
+}
 
 // --- tiny event bus -------------------------------------------------------
 // Views subscribe to state changes instead of core reaching into their DOM.
