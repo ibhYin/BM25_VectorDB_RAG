@@ -80,3 +80,22 @@ def test_clean_markdown_empty_and_blocks() -> None:
     cleaned = clean_markdown(block)
     assert "1/T" in cleaned
     assert "$$" not in cleaned
+
+
+def test_clean_markdown_handles_latex_escapes_and_html_tags() -> None:
+    from rag.structurizer import clean_markdown
+
+    md = "COD为48.48\\~69.35 mg/L，氮氧化物58.42mg/m<sup>3</sup>。"
+    cleaned = clean_markdown(md)
+    assert "\\~" not in cleaned and "~" in cleaned
+    assert "<sup>" not in cleaned and "³" in cleaned
+
+
+def test_clean_markdown_collapses_spaced_out_formula() -> None:
+    from rag.structurizer import clean_markdown
+
+    md = r"烟尘 $< 2 0 m g / m ^ { 3 }$。"
+    cleaned = clean_markdown(md)
+    assert "【公式：" in cleaned
+    assert "2 0 m g" not in cleaned
+    assert "³" in cleaned

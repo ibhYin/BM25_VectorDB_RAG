@@ -36,18 +36,29 @@ _LATEX_CMD = {
     "mu": "μ", "sigma": "σ", "theta": "θ", "omega": "ω",
 }
 
+_SUP_TRANS = str.maketrans("0123456789+-=()", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾")
+_SUB_TRANS = str.maketrans("0123456789+-=()", "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎")
+_SUP_RE = re.compile(r"<sup>(.*?)</sup>", re.S)
+_SUB_RE = re.compile(r"<sub>(.*?)</sub>", re.S)
+# MinerU 在普通文本里也常把 LaTeX 转义字符写出来（如 `\~` 表示"到"）。
+_TEXT_ESCAPE_RE = re.compile(r"\\([~\-%&_#{}\$])")
+
 
 def _clean_math(expr: str) -> str:
-    """把一段 LaTeX 公式压成可读的文本形式：去反斜杠/花括号噪音、保留结构。"""
+    """把一段 LaTeX 公式压成可读文本：去反斜杠/花括号/多余空格、保留上下标结构。"""
 
     text = re.sub(r"\\frac\s*\{\s*([^{}]*?)\s*\}\s*\{\s*([^{}]*?)\s*\}", r"\1/\2", expr)
     text = re.sub(
         r"\\([a-zA-Z]+)", lambda m: _LATEX_CMD.get(m.group(1), ""), text
     )
     text = re.sub(r"[{}]", "", text)
-    text = re.sub(r"(\^|_)\s+", r"\1", text)
+    # 公式里的空格大多是 MinerU 逐字符排版造成的（`2 0 m g`），去掉；
+    # 数字上下标再转成 Unicode（`^ 3` → ³、`_ 1` → ₁）。
+    text = re.sub(r"\s+", "", text)
+    text = re.sub(r"\^(\d)", lambda m: m.group(1).translate(_SUP_TRANS), text)
+    text = re.sub(r"_(\d)", lambda m: m.group(1).translate(_SUB_TRANS), text)
     text = re.sub(r"[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]", "", text)
-    return re.sub(r"\s+", " ", text).strip()
+    return text.strip()
 
 
 def clean_markdown(markdown: str) -> str:
@@ -57,11 +68,18 @@ def clean_markdown(markdown: str) -> str:
     - 把 `$…$` / `$$…$$` 等 LaTeX 公式压成可读文本并打上【公式：…】标记，
       只有真带 LaTeX 特征的（含 `\` `_` `^` `{` `}`）才处理，普通文本里的
       `$`（如金额）原样保留
+    - 还原文本层的 LaTeX 转义字符（`\~` → `~` 等）
+    - HTML 上下标转 Unicode（`<sup>3</sup>` → ³），并清掉残留的 HTML 标签
     """
 
     if not markdown:
         return markdown
     text = _IMG_RE.sub("", markdown)
+    text = _TEXT_ESCAPE_RE.sub(r"\1", text)
+    text = _SUP_RE.sub(lambda m: m.group(1).translate(_SUP_TRANS), text)
+    text = _SUB_RE.sub(lambda m: m.group(1).translate(_SUB_TRANS), text)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = text.replace("&nbsp;", " ").replace("&amp;", "&")
 
     def math_repl(match: re.Match) -> str:
         expr = (
