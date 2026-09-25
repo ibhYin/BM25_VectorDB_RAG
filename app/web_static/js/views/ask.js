@@ -195,7 +195,7 @@ function renderRetrievedDocs(answerEl, hits, answerText) {
 // 跳到知识库文档查看器，并把「同一文档下」的命中切片按已用/未用分色高亮。
 // 答案还没生成时（候选期）不传高亮集合，只定位点击的切片。
 function openHitInOriginal(hit) {
-  const hits = selectedTurnHits ?? state.vectorHits || [];
+  const hits = selectedTurnHits ?? (state.vectorHits || []);
   const answerText = selectedTurnHits
     ? selectedTurnAnswer
     : state.answerJob?.answer || "";
@@ -376,7 +376,7 @@ function finalizeAnswer(job) {
 
 function renderContext() {
   // pin 到某一轮时显示那一轮的切片，否则跟最新（answerJob）。
-  const items = selectedTurnHits ?? state.vectorHits || [];
+  const items = selectedTurnHits ?? (state.vectorHits || []);
   // 答案还没生成（answer 为空）时是「候选」，标不出来谁被用，先给中性态；
   // 答案一旦出现（流式开始），引用了的翻「已用」、其余「未用」并实时更新。
   const answerText = selectedTurnHits
