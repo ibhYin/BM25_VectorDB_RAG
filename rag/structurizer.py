@@ -10,6 +10,7 @@ Two backends, chosen explicitly by the caller (``structurize_provider``):
   PyMuPDF path, so it is not a good default for PDF-heavy corpora.
 """
 
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -20,6 +21,60 @@ from rag.mineru_client import MineruError, convert_file as convert_with_mineru
 MARKITDOWN = "markitdown"
 MINERU = "mineru"
 STRUCTURIZE_PROVIDERS = (MARKITDOWN, MINERU)
+
+_IMG_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_MATH_RE = re.compile(
+    r"\$\$(.+?)\$\$|\$(.+?)\$|\\\[(.+?)\\\]|\\\((.+?)\\\)", re.S
+)
+_LATEX_CMD = {
+    "sum": "Σ", "prod": "Π", "int": "∫", "oint": "∮",
+    "leq": "≤", "geq": "≥", "neq": "≠", "times": "×", "pm": "±", "infty": "∞",
+    "log": "log", "ln": "ln", "exp": "exp", "sin": "sin", "cos": "cos",
+    "prime": "′", "ldots": "…", "cdots": "⋯", "dots": "…",
+    "begin": "", "end": "", "substack": "", "text": "",
+    "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ", "lambda": "λ",
+    "mu": "μ", "sigma": "σ", "theta": "θ", "omega": "ω",
+}
+
+
+def _clean_math(expr: str) -> str:
+    """把一段 LaTeX 公式压成可读的文本形式：去反斜杠/花括号噪音、保留结构。"""
+
+    text = re.sub(r"\\frac\s*\{\s*([^{}]*?)\s*\}\s*\{\s*([^{}]*?)\s*\}", r"\1/\2", expr)
+    text = re.sub(
+        r"\\([a-zA-Z]+)", lambda m: _LATEX_CMD.get(m.group(1), ""), text
+    )
+    text = re.sub(r"[{}]", "", text)
+    text = re.sub(r"(\^|_)\s+", r"\1", text)
+    text = re.sub(r"[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def clean_markdown(markdown: str) -> str:
+    """清洗 MinerU/转换产物里的多余符号。
+
+    - 去掉悬空的图片引用（图片不会入库，`![](…)` 在知识库里没意义）
+    - 把 `$…$` / `$$…$$` 等 LaTeX 公式压成可读文本并打上【公式：…】标记，
+      只有真带 LaTeX 特征的（含 `\` `_` `^` `{` `}`）才处理，普通文本里的
+      `$`（如金额）原样保留
+    """
+
+    if not markdown:
+        return markdown
+    text = _IMG_RE.sub("", markdown)
+
+    def math_repl(match: re.Match) -> str:
+        expr = (
+            match.group(1) or match.group(2) or match.group(3) or match.group(4) or ""
+        )
+        if not re.search(r"[\\_^{}]", expr):
+            return match.group(0)
+        cleaned = _clean_math(expr)
+        return f"【公式：{cleaned}】" if cleaned else ""
+
+    text = _MATH_RE.sub(math_repl, text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 @lru_cache(maxsize=1)
 def _markitdown_converter():
@@ -51,6 +106,8 @@ def convert_to_markdown(
         if not mineru_token:
             raise MineruError("已选择 MinerU 解析，但尚未配置 MinerU API Token")
         markdown = convert_with_mineru(file_path, mineru_token, mineru_model_version)
+        # MinerU 产物里常有 LaTeX 公式与悬空图片引用，入库前清洗成可读文本。
+        markdown = clean_markdown(markdown)
     elif provider == MARKITDOWN:
         markdown = convert_with_markitdown(file_path)
     else:
@@ -84,6 +141,7 @@ __all__ = [
     "MINERU",
     "STRUCTURIZE_PROVIDERS",
     "MineruError",
+    "clean_markdown",
     "convert_to_markdown",
     "convert_with_markitdown",
     "convert_with_mineru",
