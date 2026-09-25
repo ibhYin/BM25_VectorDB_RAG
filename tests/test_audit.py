@@ -143,3 +143,40 @@ def test_record_never_raises_on_an_unwritable_path(monkeypatch) -> None:
     monkeypatch.setenv("VECTOR_AUDIT_LOG", "/proc/definitely/not/writable.jsonl")
 
     audit.record("ingest.files", actor="alice")  # must not propagate
+
+
+def test_audit_log_trims_oldest_entries_when_over_the_limit(log_path: Path) -> None:
+    """超过行数上限时裁掉最旧的、只留最近 TRIM_AUDIT_TO_LINES 行。"""
+
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w", encoding="utf-8") as handle:
+        for index in range(2500):
+            handle.write(
+                json.dumps({"event": "ingest.files", "actor": "a", "index": index})
+                + "\n"
+            )
+    audit._approx_lines = audit.MAX_AUDIT_LINES + 1
+    audit._trim_audit(log_path)
+
+    lines = log_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == audit.TRIM_AUDIT_TO_LINES
+    # 最旧的被裁掉，最新的保留
+    assert json.loads(lines[0])["index"] == 2500 - audit.TRIM_AUDIT_TO_LINES
+    assert json.loads(lines[-1])["index"] == 2499
+
+
+def test_iter_entries_newest_first_stops_early(log_path: Path) -> None:
+    for index in range(50):
+        audit.record("ingest.files", actor="a", index=index)
+
+    count = 0
+
+    def stop_when(entry):
+        nonlocal count
+        count += 1
+        return count >= 3
+
+    entries = audit.iter_entries_newest_first(stop_when)
+
+    assert [entry["index"] for entry in entries] == [49, 48, 47]
+    assert count == 3

@@ -516,3 +516,31 @@ def test_delete_records_an_audit_entry(
         }
     ]
     assert entries[0]["deleted_chunks"] == 3
+
+
+def test_ingest_attribution_uses_newest_successful_record(monkeypatch, tmp_path) -> None:
+    import json
+
+    from app.service import _ingest_attribution
+
+    log = tmp_path / "vector_audit.jsonl"
+    monkeypatch.setenv("VECTOR_AUDIT_LOG", str(log))
+    with log.open("w", encoding="utf-8") as handle:
+        for index in range(100):
+            handle.write(
+                json.dumps(
+                    {"event": "ingest.files", "actor": "old", "doc_ids": [f"doc{index}"]}
+                )
+                + "\n"
+            )
+        # 最近一条：doc0 被重新入库（应覆盖旧归属）。
+        handle.write(
+            json.dumps({"event": "ingest.files", "actor": "new", "doc_ids": ["doc0"]})
+            + "\n"
+        )
+
+    result = _ingest_attribution({"doc0", "doc99"})
+
+    assert result["doc0"]["actor"] == "new"
+    assert result["doc99"]["actor"] == "old"
+    assert "doc1" not in result

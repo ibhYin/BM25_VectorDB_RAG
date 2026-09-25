@@ -624,7 +624,9 @@ def get_indexed_document(
     }
 
 
-def _ingest_attribution() -> dict[str, dict[str, str]]:
+def _ingest_attribution(
+    doc_ids: set[str] | None = None,
+) -> dict[str, dict[str, str]]:
     """Map doc_id → who *most recently* ingested that document, and when.
 
     The audit trail is the only record of this. Chunk metadata carries a
@@ -633,10 +635,18 @@ def _ingest_attribution() -> dict[str, dict[str, str]]:
 
     Documents indexed before the trail existed have no entry. They must render
     as unknown — never inherit a neighbouring document's actor.
+
+    ``doc_ids`` 传入当前索引里的文档集合时，从日志尾部反向扫、每篇找到最近一次
+    入库就提前停，不必把整份日志读完。
     """
 
+    remaining = set(doc_ids) if doc_ids else None
+
+    def stop_when(entry: object) -> bool:
+        return remaining is not None and not remaining
+
     attribution: dict[str, dict[str, str]] = {}
-    for entry in audit.read_entries(limit=None):
+    for entry in audit.iter_entries_newest_first(stop_when):
         if not str(entry.get("event", "")).startswith("ingest."):
             continue
         # 失败的入库尝试也用 ingest.* 事件名；它不能把「最近一次成功入库」覆盖掉。
@@ -644,15 +654,15 @@ def _ingest_attribution() -> dict[str, dict[str, str]]:
         if str(entry.get("status") or "success") != "success":
             continue
         for doc_id in entry.get("doc_ids") or []:
-            # read_entries yields newest first, so re-ingesting a document
-            # overwrites the earlier attribution rather than keeping it.
-            attribution.setdefault(
-                str(doc_id),
-                {
+            doc_id = str(doc_id)
+            # 尾部逆扫 newest first，所以重新入库会覆盖更早的那条归属。
+            if doc_id not in attribution:
+                attribution[doc_id] = {
                     "actor": str(entry.get("actor") or ""),
                     "timestamp": str(entry.get("timestamp") or ""),
-                },
-            )
+                }
+                if remaining is not None:
+                    remaining.discard(doc_id)
     return attribution
 
 
@@ -684,7 +694,14 @@ def list_indexed_documents(
         ).get(include=["metadatas"])
     documents: dict[str, dict[str, object]] = {}
     access_policy = load_access_policy(settings.access_policy_file)
-    attribution = _ingest_attribution() if admin else {}
+    # 管理员视图才需要"最近入库"归属；传入当前文档集合让归属从日志尾部逆扫、
+    # 每篇找到最近一次即停，避免整份日志读完。
+    current_doc_ids = {
+        str(m.get("doc_id", ""))
+        for m in (result.get("metadatas") or [])
+        if m and m.get("doc_id")
+    }
+    attribution = _ingest_attribution(current_doc_ids) if admin else {}
     for raw_metadata in result.get("metadatas", []):
         metadata = raw_metadata or {}
         if access_policy is not None and not admin:
