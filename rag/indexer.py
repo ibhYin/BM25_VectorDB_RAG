@@ -25,7 +25,7 @@ def build_vector_index(
     knowledge_base_id: str = "default",
     access_policy_file: Path | None = None,
     structurize: bool = False,
-    structurize_provider: str = "markitdown",
+    structurize_provider: str = "mineru",
     mineru_token: str = "",
     mineru_model_version: str = "vlm",
     audio_transcribe_base_url: str = "",
@@ -42,7 +42,7 @@ def build_vector_index(
 ) -> tuple[list[Document], list[Document]]:
     """Load, split and index one directory through the shared vector pipeline.
 
-    When structurize is True, documents are converted to Markdown via markitdown
+    When structurize is True, documents are converted to Markdown via MinerU
     before chunking, preserving headings, lists, and tables.
     """
 

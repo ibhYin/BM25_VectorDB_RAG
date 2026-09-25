@@ -27,6 +27,7 @@ from rag.retriever import (
     search_bm25,
 )
 from rag.splitter import split_documents
+from rag.structurizer import MINERU
 from rag.vector_store import (
     delete_documents,
     get_embeddings,
@@ -109,7 +110,7 @@ def ingest_knowledge_base(
 ) -> IngestResult:
     """Build the vector index from every supported document in one directory.
 
-    When structurize is True, documents are converted to Markdown via markitdown
+    When structurize is True, documents are converted to Markdown via MinerU
     before chunking, preserving headings, lists, and tables.
     """
 
@@ -131,7 +132,6 @@ def ingest_knowledge_base(
             knowledge_base_id=settings.knowledge_base_id,
             access_policy_file=settings.access_policy_file,
             structurize=structurize,
-            structurize_provider=settings.structurize_provider,
             mineru_token=settings.mineru_api_token,
             mineru_model_version=settings.mineru_model_version,
             audio_transcribe_base_url=settings.audio_transcribe_base_url,
@@ -157,7 +157,7 @@ def ingest_knowledge_base(
         chunks=result.chunks,
         rebuild=rebuild,
         structurize=structurize,
-        structurize_provider=settings.structurize_provider if structurize else "",
+        structurize_provider=MINERU if structurize else "",
         embedding_model=settings.embedding_model,
     )
     return result
@@ -171,7 +171,7 @@ def ingest_files(
 ) -> FileIngestResult:
     """Incrementally index uploaded files without rebuilding the whole directory.
 
-    When structurize is True, files are converted to Markdown via markitdown
+    When structurize is True, files are converted to Markdown via MinerU
     before chunking.
     """
 
@@ -193,7 +193,6 @@ def ingest_files(
                         ocr_model=settings.ocr_model,
                         ocr_max_pages=settings.ocr_max_pages,
                         structurize=structurize,
-                        structurize_provider=settings.structurize_provider,
                         mineru_token=settings.mineru_api_token,
                         mineru_model_version=settings.mineru_model_version,
                         audio_transcribe_base_url=settings.audio_transcribe_base_url,
@@ -272,7 +271,7 @@ def ingest_files(
             files=filenames,
             doc_ids=doc_ids,
             structurize=structurize,
-            structurize_provider=settings.structurize_provider if structurize else "",
+            structurize_provider=MINERU if structurize else "",
             embedding_model=settings.embedding_model,
             **audit.failure_fields(exc, stage),
         )
@@ -297,7 +296,7 @@ def ingest_files(
         documents=result.documents,
         chunks=result.chunks,
         structurize=structurize,
-        structurize_provider=settings.structurize_provider if structurize else "",
+        structurize_provider=MINERU if structurize else "",
         embedding_model=settings.embedding_model,
     )
     return result

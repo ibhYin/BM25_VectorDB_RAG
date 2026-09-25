@@ -232,17 +232,10 @@ def test_read_config_updates_rejects_unknown_mineru_version() -> None:
     assert error.value.status == HTTPStatus.BAD_REQUEST
 
 
-def test_read_config_updates_accepts_structurize_provider() -> None:
-    updates = WebRequestHandler._read_config_updates(
-        {"structurize_provider": "mineru"}
-    )
-
-    assert updates == {"structurize_provider": "mineru"}
-
-
-def test_read_config_updates_rejects_unknown_structurize_provider() -> None:
+def test_read_config_updates_rejects_removed_structurize_provider() -> None:
+    # markitdown 已移除，structurize_provider 不再是可配置字段：任何值都应被拒。
     with pytest.raises(RequestError) as error:
-        WebRequestHandler._read_config_updates({"structurize_provider": "unknown"})
+        WebRequestHandler._read_config_updates({"structurize_provider": "mineru"})
 
     assert error.value.status == HTTPStatus.BAD_REQUEST
 

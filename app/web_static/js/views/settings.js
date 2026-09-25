@@ -25,7 +25,6 @@ const el = {
   embeddingWarning: document.querySelector("#config-embedding-warning"),
   indexModel: document.querySelector("#config-index-model"),
 
-  mineruProvider: document.querySelector("#config-structurize-provider"),
   mineruToken: document.querySelector("#config-mineru-token"),
   mineruClear: document.querySelector("#config-mineru-clear"),
   mineruVersion: document.querySelector("#config-mineru-model-version"),
@@ -197,7 +196,6 @@ async function loadConfig() {
       ? `已配置 ${config.embedding_api_key_hint} · 留空保持不变`
       : "留空则保持不变";
     el.mineruVersion.value = config.mineru_model_version || "vlm";
-    el.mineruProvider.value = config.structurize_provider || "markitdown";
     el.mineruToken.placeholder = config.mineru_api_token_set
       ? `已配置 ${config.mineru_api_token_hint} · 留空保持不变`
       : "留空则保持不变";
@@ -266,9 +264,6 @@ function collectConfigChanges() {
   if (configState.clearMineruToken) changes.clear_mineru_api_token = true;
   if (el.mineruVersion.value !== (loaded.mineru_model_version || "vlm")) {
     changes.mineru_model_version = el.mineruVersion.value;
-  }
-  if (el.mineruProvider.value !== (loaded.structurize_provider || "markitdown")) {
-    changes.structurize_provider = el.mineruProvider.value;
   }
   const asrBaseUrl = el.asrBaseUrl.value.trim();
   if (asrBaseUrl !== (loaded.audio_transcribe_base_url || "")) {

@@ -1,9 +1,11 @@
-"""Tests for document structurization via markitdown."""
+"""Tests for document structurization via MinerU."""
 
 from pathlib import Path
 import pytest
 
-from rag.structurizer import convert_to_markdown
+from rag import structurizer
+from rag.mineru_client import MineruError
+from rag.structurizer import MINERU, convert_to_markdown
 
 
 @pytest.fixture
@@ -20,27 +22,65 @@ def sample_pdf(tmp_path: Path) -> Path:
     return pdf_path
 
 
-def test_convert_pdf_to_markdown(sample_pdf: Path) -> None:
-    markdown = convert_to_markdown(sample_pdf)
-    assert markdown
-    assert isinstance(markdown, str)
-    # Markitdown extracts text; exact format varies, but it should not be empty.
-    assert len(markdown.strip()) > 0
+def test_convert_uses_mineru_and_cleans_output(
+    sample_pdf: Path, monkeypatch
+) -> None:
+    calls: list = []
+
+    def fake_mineru(path, token, version):
+        calls.append((path, token, version))
+        return r"""# Heading
+
+$$ \frac{1}{T} $$
+
+正文"""
+
+    monkeypatch.setattr(structurizer, "convert_with_mineru", fake_mineru)
+
+    result = convert_to_markdown(sample_pdf, MINERU, mineru_token="token")
+
+    assert calls == [(sample_pdf, "token", "vlm")]
+    assert "\\frac" not in result
+    assert "【公式：" in result
 
 
-def test_convert_returns_empty_on_missing_file(tmp_path: Path) -> None:
-    missing = tmp_path / "does-not-exist.pdf"
-    result = convert_to_markdown(missing)
-    # Conversion fails silently; returns empty string so caller can fall back.
-    assert result == ""
+def test_convert_requires_mineru_token(sample_pdf: Path) -> None:
+    with pytest.raises(MineruError):
+        convert_to_markdown(sample_pdf, MINERU, mineru_token="")
 
 
-def test_convert_handles_unsupported_format(tmp_path: Path) -> None:
-    unsupported = tmp_path / "binary.dat"
-    unsupported.write_bytes(b"\x00\x01\x02\x03")
-    result = convert_to_markdown(unsupported)
-    # Markitdown may fail or return empty; either way, no crash.
-    assert isinstance(result, str)
+def test_convert_rejects_unknown_provider(sample_pdf: Path) -> None:
+    with pytest.raises(ValueError):
+        convert_to_markdown(sample_pdf, provider="markitdown", mineru_token="t")
+
+
+def test_convert_propagates_mineru_failure(
+    sample_pdf: Path, monkeypatch
+) -> None:
+    def boom(path, token, version):
+        raise RuntimeError("mineru down")
+
+    monkeypatch.setattr(structurizer, "convert_with_mineru", boom)
+
+    with pytest.raises(RuntimeError, match="mineru down"):
+        convert_to_markdown(sample_pdf, MINERU, mineru_token="t")
+
+
+def test_convert_empty_result_is_not_cached(
+    sample_pdf: Path, monkeypatch
+) -> None:
+    calls: list = []
+
+    def empty_mineru(path, token, version):
+        calls.append(path)
+        return ""
+
+    monkeypatch.setattr(structurizer, "convert_with_mineru", empty_mineru)
+
+    assert convert_to_markdown(sample_pdf, MINERU, mineru_token="t") == ""
+    convert_to_markdown(sample_pdf, MINERU, mineru_token="t")
+    # 空结果不缓存，第二次仍会真的调用 MinerU。
+    assert len(calls) == 2
 
 
 def test_clean_markdown_removes_dangling_image_refs() -> None:

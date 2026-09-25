@@ -44,7 +44,7 @@ def test_editing_the_file_invalidates_the_entry(pdf: Path) -> None:
 def test_provider_and_version_are_part_of_the_key(pdf: Path) -> None:
     markdown_cache.write(pdf, "mineru", "vlm", "# mineru vlm")
 
-    assert markdown_cache.read(pdf, "markitdown", "vlm") is None
+    assert markdown_cache.read(pdf, "other", "vlm") is None
     assert markdown_cache.read(pdf, "mineru", "pipeline") is None
 
 
@@ -56,10 +56,10 @@ def test_provider_boundaries_cannot_collide(pdf: Path) -> None:
 
 
 def test_empty_markdown_is_not_cached(pdf: Path) -> None:
-    markdown_cache.write(pdf, "markitdown", "", "")
+    markdown_cache.write(pdf, "other", "", "")
 
     # Caching a blank result would block a retry that might succeed.
-    assert markdown_cache.read(pdf, "markitdown", "") is None
+    assert markdown_cache.read(pdf, "other", "") is None
 
 
 def test_a_corrupt_entry_reads_as_a_miss(pdf: Path, tmp_path: Path) -> None:
@@ -116,14 +116,14 @@ def test_structurizer_serves_the_second_call_from_cache(pdf: Path, monkeypatch) 
 
     calls = []
 
-    def fake_markitdown(path):
+    def fake_mineru(path, token, version):
         calls.append(path)
         return "# 解析结果"
 
-    monkeypatch.setattr(structurizer, "convert_with_markitdown", fake_markitdown)
+    monkeypatch.setattr(structurizer, "convert_with_mineru", fake_mineru)
 
-    first = structurizer.convert_to_markdown(pdf, "markitdown")
-    second = structurizer.convert_to_markdown(pdf, "markitdown")
+    first = structurizer.convert_to_markdown(pdf, "mineru", mineru_token="token")
+    second = structurizer.convert_to_markdown(pdf, "mineru", mineru_token="token")
 
     assert first == second == "# 解析结果"
     # 第二次没有再跑转换 —— 这正是重新入库时省下 MinerU 额度的地方。
@@ -137,14 +137,14 @@ def test_structurizer_does_not_cache_a_miss_that_would_need_retrying(
 
     calls = []
 
-    def fake_markitdown(path):
+    def fake_mineru(path, token, version):
         calls.append(path)
         return ""
 
-    monkeypatch.setattr(structurizer, "convert_with_markitdown", fake_markitdown)
+    monkeypatch.setattr(structurizer, "convert_with_mineru", fake_mineru)
 
-    assert structurizer.convert_to_markdown(pdf, "markitdown") == ""
-    structurizer.convert_to_markdown(pdf, "markitdown")
+    assert structurizer.convert_to_markdown(pdf, "mineru", mineru_token="token") == ""
+    structurizer.convert_to_markdown(pdf, "mineru", mineru_token="token")
 
     # 空结果不缓存，所以第二次仍然真的去转换了。
     assert len(calls) == 2

@@ -1,7 +1,7 @@
 """Content-addressed cache for converted Markdown.
 
 Structured extraction is the expensive step — MinerU is a remote, metered API and
-markitdown re-parses whole PDFs. The converted Markdown is keyed by the *file
+MinerU re-parses whole PDFs. The converted Markdown is keyed by the *file
 contents* plus the converter identity, so:
 
 * editing a file invalidates its entry automatically (no mtime bookkeeping)

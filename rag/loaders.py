@@ -32,7 +32,7 @@ def load_documents(
     ocr_model: str = DEFAULT_OCR_MODEL,
     ocr_max_pages: int | None = None,
     structurize: bool = False,
-    structurize_provider: str = "markitdown",
+    structurize_provider: str = "mineru",
     mineru_token: str = "",
     mineru_model_version: str = "vlm",
     audio_transcribe_base_url: str = "",
@@ -49,8 +49,8 @@ def load_documents(
 ) -> list[Document]:
     """Load local text documents from the knowledge base directory.
 
-    When structurize is True, files are converted to Markdown with the requested
-    provider before chunking. Media files are always transcribed via ASR.
+    When structurize is True, files are converted to Markdown via MinerU before
+    chunking. Media files are always transcribed via ASR.
     """
 
     documents: list[Document] = []
@@ -95,7 +95,7 @@ def load_document_file(
     ocr_model: str = DEFAULT_OCR_MODEL,
     ocr_max_pages: int | None = None,
     structurize: bool = False,
-    structurize_provider: str = "markitdown",
+    structurize_provider: str = "mineru",
     mineru_token: str = "",
     mineru_model_version: str = "vlm",
     audio_transcribe_base_url: str = "",

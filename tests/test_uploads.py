@@ -196,7 +196,7 @@ def test_list_indexed_documents_reports_heading_chunking(
                 "metadatas": [
                     {"doc_id": "s", "title": "S", "source": "s.pdf", "structured_by": "mineru"},
                     {"doc_id": "s", "title": "S", "source": "s.pdf", "structured_by": "mineru"},
-                    {"doc_id": "m", "title": "M", "source": "m.docx", "structured_by": "markitdown"},
+                    {"doc_id": "m", "title": "M", "source": "m.docx", "structured_by": "mineru"},
                 ]
             }
 
@@ -209,7 +209,7 @@ def test_list_indexed_documents_reports_heading_chunking(
 
     assert by_id["s"]["chunk_strategy"] == "heading"
     assert by_id["s"]["chunk_strategy_provider"] == "mineru"
-    assert by_id["m"]["chunk_strategy_provider"] == "markitdown"
+    assert by_id["m"]["chunk_strategy_provider"] == "mineru"
 
 
 def test_list_indexed_documents_attributes_ingest_to_the_audit_trail(

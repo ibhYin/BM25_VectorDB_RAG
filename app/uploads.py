@@ -170,7 +170,7 @@ class UploadJobStore:
         """Reserve the queue slot before replacing any existing file.
 
         When structurize is True, uploaded files are converted to Markdown via
-        markitdown before chunking. ``actor`` is recorded in the audit trail.
+        MinerU before chunking. ``actor`` is recorded in the audit trail.
         """
 
         with self._lock:

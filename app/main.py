@@ -30,7 +30,7 @@ def ingest(
     structurize: bool = typer.Option(
         False,
         "--structurize",
-        help="Convert documents to Markdown via markitdown (preserves headings/lists/tables).",
+        help="Convert documents to Markdown via MinerU (preserves headings/lists/tables).",
     ),
 ) -> None:
     from app.service import ingest_knowledge_base

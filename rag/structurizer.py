@@ -1,26 +1,17 @@
 """Turn a source document into Markdown before chunking.
 
-Two backends, chosen explicitly by the caller (``structurize_provider``):
-
-* **mineru** — MinerU's online precise API. Real layout analysis, so headings,
-  lists and tables survive. This is the only backend that structures PDFs
-  usefully, and it needs an API token.
-* **markitdown** — local and free, good for formats that already carry
-  structure (docx/pptx/xlsx/html). For PDFs it is weaker than the built-in
-  PyMuPDF path, so it is not a good default for PDF-heavy corpora.
+The only backend is **mineru** — MinerU's online precise API. Real layout
+analysis, so headings, lists and tables survive. It needs an API token.
 """
 
 import re
-from functools import lru_cache
 from pathlib import Path
 
 from rag import markdown_cache
 from rag.mineru_client import MineruError, convert_file as convert_with_mineru
 
 
-MARKITDOWN = "markitdown"
 MINERU = "mineru"
-STRUCTURIZE_PROVIDERS = (MARKITDOWN, MINERU)
 
 _IMG_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _MATH_RE = re.compile(
@@ -94,16 +85,10 @@ def clean_markdown(markdown: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
-@lru_cache(maxsize=1)
-def _markitdown_converter():
-    from markitdown import MarkItDown
-
-    return MarkItDown()
-
 
 def convert_to_markdown(
     file_path: Path,
-    provider: str = MARKITDOWN,
+    provider: str = MINERU,
     mineru_token: str = "",
     mineru_model_version: str = "vlm",
 ) -> str:
@@ -120,16 +105,13 @@ def convert_to_markdown(
     if cached is not None:
         return cached
 
-    if provider == MINERU:
-        if not mineru_token:
-            raise MineruError("已选择 MinerU 解析，但尚未配置 MinerU API Token")
-        markdown = convert_with_mineru(file_path, mineru_token, mineru_model_version)
-        # MinerU 产物里常有 LaTeX 公式与悬空图片引用，入库前清洗成可读文本。
-        markdown = clean_markdown(markdown)
-    elif provider == MARKITDOWN:
-        markdown = convert_with_markitdown(file_path)
-    else:
+    if provider != MINERU:
         raise ValueError(f"未知的结构化引擎：{provider}")
+    if not mineru_token:
+        raise MineruError("已选择 MinerU 解析，但尚未配置 MinerU API Token")
+    markdown = convert_with_mineru(file_path, mineru_token, mineru_model_version)
+    # MinerU 产物里常有 LaTeX 公式与悬空图片引用，入库前清洗成可读文本。
+    markdown = clean_markdown(markdown)
 
     # 空结果不缓存——那多半是失败，缓存住会挡住重试。
     if markdown:
@@ -139,28 +121,10 @@ def convert_to_markdown(
     return markdown
 
 
-def convert_with_markitdown(file_path: Path) -> str:
-    """Local markitdown conversion; "" on failure so callers can fall back."""
-
-    try:
-        result = _markitdown_converter().convert(str(file_path))
-        return result.text_content or ""
-    except ImportError as exc:
-        raise RuntimeError(
-            "markitdown 未安装；请安装完整依赖或改用 MinerU 结构化提取"
-        ) from exc
-    except Exception:
-        # Conversion failed; caller should fall back to raw extraction.
-        return ""
-
-
 __all__ = [
-    "MARKITDOWN",
     "MINERU",
-    "STRUCTURIZE_PROVIDERS",
     "MineruError",
     "clean_markdown",
     "convert_to_markdown",
-    "convert_with_markitdown",
     "convert_with_mineru",
 ]

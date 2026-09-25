@@ -23,8 +23,6 @@ class Settings(BaseSettings):
     # MinerU online parsing; a token turns structurization on for real documents.
     mineru_api_token: str = ""
     mineru_model_version: Literal["pipeline", "vlm"] = "vlm"
-    # Which converter runs when an ingest asks for structured extraction.
-    structurize_provider: Literal["markitdown", "mineru"] = "markitdown"
     # OpenAI-compatible ASR for video/audio ingestion; empty model means "not configured".
     audio_transcribe_base_url: str = ""
     audio_transcribe_api_key: str = ""
@@ -133,7 +131,6 @@ RUNTIME_CONFIG_FIELDS = (
     "embedding_model",
     "mineru_api_token",
     "mineru_model_version",
-    "structurize_provider",
     "audio_transcribe_base_url",
     "audio_transcribe_api_key",
     "audio_transcribe_model",
@@ -155,7 +152,6 @@ RUNTIME_CONFIG_KEEP_WHEN_EMPTY = (
     "embedding_model",
     "mineru_api_token",
     "mineru_model_version",
-    "structurize_provider",
     "audio_transcribe_api_key",
     "aliyun_access_key_id",
     "aliyun_access_key_secret",
@@ -289,7 +285,6 @@ def runtime_config_view() -> dict[str, object]:
         "mineru_api_token_set": bool(settings.mineru_api_token),
         "mineru_api_token_hint": _mask_secret(settings.mineru_api_token),
         "mineru_model_version": settings.mineru_model_version,
-        "structurize_provider": settings.structurize_provider,
         "audio_transcribe_base_url": settings.audio_transcribe_base_url,
         "audio_transcribe_api_key_set": bool(settings.audio_transcribe_api_key),
         "audio_transcribe_api_key_hint": _mask_secret(settings.audio_transcribe_api_key),

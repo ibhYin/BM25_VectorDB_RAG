@@ -10,8 +10,7 @@
 - 浏览器拖拽上传，后台增量索引，同名文档安全替换旧切片。
 - PDF 文本提取与扫描件 OCR 分流。
 - **可选的文档结构化提取**：上传或 CLI 入库时勾选「结构化提取」，把文档转成 Markdown 后再切片，
-  保留标题、列表、表格结构。支持两个引擎：**MinerU 在线解析**（真实版面分析，适用 PDF 等复杂版面）
-  和 **markitdown 本地转换**（适用自带结构的 docx/pptx/xlsx/html）。引擎在配置弹窗选择。
+  保留标题、列表、表格结构。引擎为 **MinerU 在线解析**（真实版面分析，适用 PDF 等复杂版面）。
 - 稳定的 `doc_id`、`chunk_id`、页码和章节元数据。
 - 结构化文档按 Markdown 标题层级切分，切片不跨章节，且每片都带真实章节路径。
 - 转换结果按内容哈希缓存，重新入库不会重复消耗 MinerU 额度。
@@ -85,7 +84,6 @@ CANDIDATE_POOL_SIZE=100
 # 可选：配置后「结构化提取」走 MinerU 在线版面分析
 MINERU_API_TOKEN=
 MINERU_MODEL_VERSION=vlm
-STRUCTURIZE_PROVIDER=markitdown
 ```
 
 也可以在网页右上角的「模型接入配置」里直接填写请求地址、API Key 和模型名。保存后写入
@@ -240,21 +238,13 @@ CSP `default-src 'self'` 允许同源模块）。
 ## 文档结构化
 
 PDF 只携带视觉排版，不含「这是二级标题」这类语义信息，所以需要版面分析模型才能拿到真实
-结构。项目提供两个引擎，在配置弹窗的「文档解析（结构化提取）」里选：
-
-| 引擎 | 适用场景 | 要求 |
-|---|---|---|
-| **markitdown** | 文档本身已带结构（docx/pptx/xlsx/html） | 无（本地运行） |
-| **MinerU** | PDF 等复杂版面，真正识别标题层级 | 需要 API Token |
-
-> 实测提醒：markitdown 对**学术 PDF** 效果不如项目内置的 PyMuPDF 提取路径（会把标题页
-> 识别成表格、把英文单词粘连）。所以处理 PDF 时建议用 MinerU 引擎。
+结构。项目的结构化引擎是 **MinerU 在线解析**（真实版面分析，识别标题层级，适用 PDF 等复杂
+版面），需要 API Token。
 
 ### 配置 MinerU
 
 1. 到 <https://mineru.net/apiManage/docs> 注册并创建 API Token
-2. 网页右上角齿轮 → 「文档解析（结构化提取）」→ 
-   - 解析引擎选 **MinerU**
+2. 网页右上角齿轮 → 「文档解析（MinerU 结构化提取）」→
    - 填入 Token（也可写进 `.env` 的 `MINERU_API_TOKEN`）
    - 保存后立即生效
 3. 上传文档时勾选「结构化提取」；或在 CLI 用 `python -m app.main ingest --structurize`
@@ -274,15 +264,10 @@ PDF 只携带视觉排版，不含「这是二级标题」这类语义信息，�
 3. 轮询 `GET /api/v4/extract-results/batch/{batch_id}` → `state=done` 后取 `full_zip_url`
 4. 下载 zip，读取其中的 `full.md`
 
-限制：单文件 ≤ 200MB、≤ 200 页。轮询超时默认 1800 秒。MinerU 失败会**直接报错**而不是静默
-退回 markitdown —— 否则会用一个明显更差的解析结果污染索引。
+限制：单文件 ≤ 200MB、≤ 200 页。轮询超时默认 1800 秒。MinerU 失败会**直接报错**，而不是
+静默降级 —— 否则会用一个明显更差的解析结果污染索引。
 
-> ⚠️ 文档会上传到 mineru.net 第三方服务，涉密材料不要选 MinerU 引擎。
-
-### 使用 markitdown（本地）
-
-不需要额外配置，在配置弹窗选「markitdown」引擎即可。适合处理 docx/pptx/xlsx/html 等
-自带结构的格式。对 PDF 效果较差，不如直接用内置的 PyMuPDF 路径。
+> ⚠️ 文档会上传到 mineru.net 第三方服务，涉密材料不要启用结构化提取。
 
 ## 按文档管理访问权限
 
@@ -625,7 +610,7 @@ pytest -q
 
 测试覆盖 PDF/OCR 分流、切片元数据、向量 ID、安全重建、独立 Embedding 端点、并发问答、
 上传边界、原始命中证据、Web 请求安全、运行时配置读写、模型目录（本地体积 / 云端列表）、
-索引 manifest、切片定位、网关请求头、文档结构化（markitdown / MinerU 显式选择）、MinerU
+索引 manifest、切片定位、网关请求头、文档结构化（MinerU）、MinerU
 API 流程、写入审计，以及检索评估（指标边界、标注的重新锚定、快照可比性、评估端点权限）。
 测试不访问真实外部服务。
 
