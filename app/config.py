@@ -45,7 +45,8 @@ class Settings(BaseSettings):
     retrieval_method: Literal["vector", "bm25", "hybrid"] = "hybrid"
     candidate_pool_size: int = 100
     similarity_threshold: float = 0.35
-    max_concurrent_answers: int = 8
+    # 2 核小内存服务器：并发 LLM 调用过多会 CPU 过度订阅并抬高峰值内存，默认调低。
+    max_concurrent_answers: int = 3
     max_request_bytes: int = 1_048_576
     max_upload_bytes: int = 100 * 1024 * 1024
     max_upload_files: int = 10

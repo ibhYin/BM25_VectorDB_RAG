@@ -5,6 +5,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+# 2 核服务器：在导入 numpy/onnxruntime 前限制线程池，避免过度订阅 + 额外内存。
+os.environ.setdefault("OMP_NUM_THREADS", "2")
+os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")
+
 import numpy as np
 import onnxruntime as ort
 from fastapi import FastAPI, HTTPException
@@ -16,9 +20,22 @@ MODEL_DIR = Path(os.environ.get("EMBEDDING_MODEL_DIR", "models/bge-small-zh-v1.5
 MODEL_NAME = os.environ.get("EMBEDDING_MODEL_NAME", "bge-small-zh:q8_0")
 MODEL_FILE = os.environ.get("EMBEDDING_MODEL_FILE", "model.onnx")
 MAX_LENGTH = int(os.environ.get("EMBEDDING_MAX_LENGTH", "512"))
+THREADS = int(os.environ.get("EMBEDDING_THREADS", "2"))
+
+# 关掉 CPU arena 预分配并限制线程：bge-small 模型本身很小（~90MB），500MB 的
+# RSS 主要是 onnxruntime 的 arena 预留，关掉能明显压低常驻内存。
+_session_options = ort.SessionOptions()
+_session_options.intra_op_num_threads = THREADS
+_session_options.inter_op_num_threads = 1
+_session_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+try:
+    _session_options.enable_cpu_mem_arena = False
+except AttributeError:
+    pass
 
 _session = ort.InferenceSession(
     str(MODEL_DIR / MODEL_FILE),
+    sess_options=_session_options,
     providers=["CPUExecutionProvider"],
 )
 _tokenizer = Tokenizer.from_file(str(MODEL_DIR / "tokenizer.json"))
