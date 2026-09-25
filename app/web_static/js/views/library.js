@@ -1059,7 +1059,7 @@ export default {
       el.uploadLimit.textContent = `PDF / MD / TXT · 单次最多 ${status.max_upload_files} 个`;
       el.structurizeLabel.textContent = status.mineru_configured
         ? "结构化提取（MinerU 在线解析）"
-        : "结构化提取（本地 markitdown，PDF 效果一般）";
+        : "结构化提取（需配置 MinerU Token）";
     });
   },
 
