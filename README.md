@@ -260,7 +260,8 @@ PDF 只携带视觉排版，不含「这是二级标题」这类语义信息，�
 3. 上传文档时勾选「结构化提取」；或在 CLI 用 `python -m app.main ingest --structurize`
 
 解析精度可选 `vlm`（默认，精度最高）或 `pipeline`（更快，精度较低），对应
-`MINERU_MODEL_VERSION`。
+`MINERU_MODEL_VERSION`。**超过 200 页的 PDF**（MinerU 单文件上限）会自动按
+150 页切分成多卷、逐卷解析后带页码标记拼回一份 Markdown，无需手动拆书。
 
 ### 调用流程
 

@@ -251,3 +251,67 @@ def test_download_markdown_rejects_archive_without_full_md(monkeypatch) -> None:
 
     with pytest.raises(MineruError, match="full.md"):
         mineru_client._download_markdown("https://zip")
+
+
+def test_convert_file_splits_oversized_pdf_and_merges(tmp_path, monkeypatch) -> None:
+    """超过 200 页的 PDF 切成 ≤150 页的多卷，逐卷解析后带页码标记拼回。"""
+    import tempfile
+
+    import fitz
+
+    pdf = tmp_path / "big.pdf"
+    with fitz.open() as doc:
+        for _ in range(300):
+            doc.new_page(width=595, height=842)
+        doc.save(pdf)
+
+    # 让切出来的临时卷落在 tmp_path，方便断言清理。
+    real_mkstemp = tempfile.mkstemp
+
+    def fake_mkstemp(suffix="", **kwargs):
+        fd, name = real_mkstemp(dir=str(tmp_path), suffix=suffix, **kwargs)
+        return fd, name
+
+    monkeypatch.setattr(mineru_client.tempfile, "mkstemp", fake_mkstemp)
+
+    calls: list[int] = []
+
+    def fake_convert_one(path, token, model_version, max_wait_seconds):
+        with fitz.open(path) as doc:
+            calls.append(doc.page_count)
+        return f"# 第 {len(calls)} 卷内容"
+
+    monkeypatch.setattr(mineru_client, "_convert_one", fake_convert_one)
+
+    result = convert_file(pdf, "token", "vlm")
+
+    # 300 页 → 2 卷，各 150 页
+    assert calls == [150, 150]
+    assert "分卷：第 1-150 页" in result
+    assert "分卷：第 151-300 页" in result
+    assert result.count("分卷") == 2
+    # 临时卷全部清理，只剩原文件
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["big.pdf"]
+
+
+def test_convert_file_leaves_small_pdf_unsplit(tmp_path, monkeypatch) -> None:
+    import fitz
+
+    pdf = tmp_path / "small.pdf"
+    with fitz.open() as doc:
+        for _ in range(50):
+            doc.new_page(width=595, height=842)
+        doc.save(pdf)
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        mineru_client,
+        "_convert_one",
+        lambda path, token, model_version, max_wait_seconds: (
+            captured.update(path=path),
+            "# markdown",
+        )[1],
+    )
+
+    assert convert_file(pdf, "token", "vlm") == "# markdown"
+    assert captured["path"] == pdf  # 没有分卷，直接传原文件
