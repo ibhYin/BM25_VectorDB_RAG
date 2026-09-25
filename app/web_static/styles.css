@@ -146,6 +146,11 @@ svg {
 .chip.loading {
   color: var(--ink-faint);
 }
+.chip.warn {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
 
 .icon-button {
   display: grid;

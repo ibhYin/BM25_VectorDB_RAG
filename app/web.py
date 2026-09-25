@@ -135,6 +135,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._handle_me()
         elif parsed.path == "/api/status":
             self._send_json(self._status_payload())
+        elif parsed.path == "/api/system-stats":
+            self._handle_system_stats()
         elif parsed.path == "/api/knowledge-bases":
             self._handle_knowledge_bases()
         elif parsed.path == "/api/config":
@@ -1012,6 +1014,19 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             "markdown_cache": markdown_cache.info(),
             **self._index_model_info(settings),
         }
+
+    def _handle_system_stats(self) -> None:
+        """极简服务器资源快照（CPU/内存/磁盘/进程/向量服务），供页头状态条轮询。"""
+
+        settings = get_settings()
+        from app.system_stats import collect_system_stats
+
+        self._send_json(
+            collect_system_stats(
+                settings.embedding_base_url or settings.openai_base_url,
+                data_dir=str(settings.data_dir),
+            )
+        )
 
     def _handle_me(self) -> None:
         """Expose the current session identity and its policy groups."""

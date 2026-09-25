@@ -7,6 +7,7 @@ import {
   refreshDocuments,
   router,
   setupBackTop,
+  startServerStatsPolling,
 } from "./core.js";
 import ask from "./views/ask.js";
 import audit from "./views/audit.js";
@@ -55,3 +56,4 @@ setupBackTop();
 router.start("ask");
 refreshDocuments();
 loadIdentity();
+startServerStatsPolling();

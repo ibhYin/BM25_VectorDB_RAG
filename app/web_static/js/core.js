@@ -15,6 +15,7 @@ export const el = {
   serviceSummary: document.querySelector("#service-summary"),
   vectorStatus: document.querySelector("#vector-status"),
   modelStatus: document.querySelector("#model-status"),
+  serverStats: document.querySelector("#server-stats"),
   refreshButton: document.querySelector("#refresh-button"),
   indexWarning: document.querySelector("#index-warning"),
   navAudit: document.querySelector("#nav-audit"),
@@ -123,8 +124,14 @@ export function renderListError(element, message) {
 export function formatBytes(bytes) {
   const value = Number(bytes) || 0;
   if (value < 1024) return `${value} B`;
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
-  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let amount = value / 1024;
+  let unit = 0;
+  while (amount >= 1024 && unit < units.length - 1) {
+    amount /= 1024;
+    unit += 1;
+  }
+  return `${amount.toFixed(amount >= 100 ? 0 : 1)} ${units[unit]}`;
 }
 
 export function formatTime(value) {
@@ -394,6 +401,63 @@ export async function refreshDocuments() {
     emit("documents:error", error.message);
   }
   await refreshStatus();
+}
+
+// --- server resources -----------------------------------------------------
+
+const SERVER_STATS_POLL_MS = 5000;
+
+export async function refreshServerStats() {
+  let stats;
+  try {
+    stats = await requestJson("/api/system-stats");
+  } catch (_) {
+    el.serverStats.textContent = "资源不可用";
+    el.serverStats.classList.remove("ok", "warn");
+    return;
+  }
+  const memory = stats.memory || {};
+  const disk = stats.disk || {};
+  const memPercent = memory.percent;
+  const diskPercent = disk.percent;
+  const load = stats.cpu_load;
+
+  const parts = [];
+  parts.push(`CPU ${load === null || load === undefined ? "?" : load.toFixed(2)}`);
+  parts.push(`内存 ${memPercent === null || memPercent === undefined ? "?" : `${memPercent}%`}`);
+  parts.push(`盘 ${diskPercent === null || diskPercent === undefined ? "?" : `${diskPercent}%`}`);
+  el.serverStats.textContent = parts.join(" · ");
+
+  // tooltip：完整明细
+  const cores = stats.cpu_cores ?? "?";
+  const detail = [
+    `CPU 负载 ${load === null || load === undefined ? "未知" : load.toFixed(2)} / ${cores} 核`,
+    memPercent === null || memPercent === undefined
+      ? "内存 未知"
+      : `内存 ${formatBytes(memory.used)} / ${formatBytes(memory.total)}（可用 ${formatBytes(memory.available)}）`,
+    diskPercent === null || diskPercent === undefined
+      ? "磁盘 未知"
+      : `磁盘 ${formatBytes(disk.used)} / ${formatBytes(disk.total)}`,
+    stats.process_rss ? `Web 进程 RSS ${formatBytes(stats.process_rss)}` : null,
+    stats.embedding_online === true
+      ? "向量服务 在线"
+      : stats.embedding_online === false
+        ? "向量服务 离线"
+        : "向量服务 未知",
+  ].filter(Boolean);
+  el.serverStats.title = detail.join("\n");
+
+  const warned =
+    (memPercent !== null && memPercent !== undefined && memPercent >= 90) ||
+    (diskPercent !== null && diskPercent !== undefined && diskPercent >= 90) ||
+    stats.embedding_online === false;
+  el.serverStats.classList.toggle("warn", warned);
+  el.serverStats.classList.toggle("ok", !warned && load !== null && load !== undefined);
+}
+
+export function startServerStatsPolling() {
+  refreshServerStats();
+  setInterval(refreshServerStats, SERVER_STATS_POLL_MS);
 }
 
 export function shortDocLabel(docId) {
