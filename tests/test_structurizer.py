@@ -139,3 +139,62 @@ def test_clean_markdown_collapses_spaced_out_formula() -> None:
     assert "【公式：" in cleaned
     assert "2 0 m g" not in cleaned
     assert "³" in cleaned
+
+
+def test_serialize_pipe_table_basic() -> None:
+    md = """| 项目 | 2019年 | 2018年 |
+| --- | --- | --- |
+| 营业收入 | 197.97亿 | 170.34亿 |
+| 净利润 | 53.53亿 | 43.65亿 |"""
+    out = structurizer.serialize_pipe_tables(md)
+    assert "项目：营业收入；2019年：197.97亿；2018年：170.34亿" in out
+    assert "项目：净利润；2019年：53.53亿；2018年：43.65亿" in out
+    # 表头/分隔行不再以管道形式保留
+    assert "| 项目 |" not in out
+    assert "|---|" not in out and "| --- |" not in out
+
+
+def test_serialize_table_without_separator_stays_unchanged() -> None:
+    md = """| 名称 | 值 |
+| 甲 | 1 |"""
+    out = structurizer.serialize_pipe_tables(md)
+    # 没有分隔行，不算标准管道表，原样保留
+    assert out == md
+
+
+def test_serialize_table_with_empty_corner_cell() -> None:
+    md = """| | 2019年 | 2018年 |
+| --- | --- | --- |
+| 营业收入 | 197.97亿 | 170.34亿 |"""
+    out = structurizer.serialize_pipe_tables(md)
+    assert "营业收入；2019年：197.97亿；2018年：170.34亿" in out
+
+
+def test_serialize_table_more_columns_than_header() -> None:
+    md = """| 项目 | 2019年 |
+| --- | --- |
+| 甲 | 1 | 2 |"""
+    out = structurizer.serialize_pipe_tables(md)
+    # 多出来的列回退为 列N
+    assert "项目：甲；2019年：1；列3：2" in out
+
+
+def test_serialize_table_keeps_escaped_pipe_inside_cell() -> None:
+    md = r"""| 项目 | 说明 |
+| --- | --- |
+| 甲 | a \| b |"""
+    out = structurizer.serialize_pipe_tables(md)
+    assert "项目：甲；说明：a | b" in out
+
+
+def test_serialize_pipe_table_in_clean_markdown_flow() -> None:
+    md = """正文
+
+| 项目 | 值 |
+| --- | --- |
+| 甲 | 1 |
+
+结尾"""
+    out = structurizer.clean_markdown(md)
+    assert "项目：甲；值：1" in out
+    assert "正文" in out and "结尾" in out

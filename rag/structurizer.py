@@ -34,6 +34,10 @@ _SUB_RE = re.compile(r"<sub>(.*?)</sub>", re.S)
 # MinerU 在普通文本里也常把 LaTeX 转义字符写出来（如 `\~` 表示"到"）。
 _TEXT_ESCAPE_RE = re.compile(r"\\([~\-%&_#{}\$])")
 
+# markdown 管道表的单元格分隔（转义 `\|` 用占位符保护，避免被当成列分隔）。
+_TABLE_ROW_RE = re.compile(r"^\s*\|")
+_TABLE_SEP_CELL_RE = re.compile(r":?-{3,}:?")
+
 
 def _clean_math(expr: str) -> str:
     """把一段 LaTeX 公式压成可读文本：去反斜杠/花括号/多余空格、保留上下标结构。"""
@@ -52,6 +56,73 @@ def _clean_math(expr: str) -> str:
     return text.strip()
 
 
+def _split_table_cells(line: str) -> list[str]:
+    """把一行管道表拆成单元格；转义的 `\|` 不当作列分隔。"""
+    line = line.strip()
+    if not line.startswith("|"):
+        return [line]
+    inner = line[1:-1] if line.endswith("|") else line[1:]
+    protected = inner.replace(r"\|", "\x00")
+    return [cell.strip().replace("\x00", "|") for cell in protected.split("|")]
+
+
+def _is_separator_row(cells: list[str]) -> bool:
+    return all(
+        _TABLE_SEP_CELL_RE.fullmatch(cell.strip()) for cell in cells if cell.strip()
+    )
+
+
+def serialize_pipe_tables(markdown: str) -> str:
+    """把 markdown 管道表序列化成每行自描述的「列名：值」文本。
+
+    MinerU vlm 会把表格输出成 `| 表头 | … |` 管道表。通用文本切分可能把长表从
+    中间切断，后半段的数值脱离表头（"53.53" 不知道是营收还是净利润）。这里把
+    每一行串成「列名：值；…」，任何一行被独立检索到都自带列名语义。
+    """
+
+    lines = markdown.splitlines()
+    out: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if not _TABLE_ROW_RE.match(line):
+            out.append(line)
+            index += 1
+            continue
+
+        # 收集连续的表行
+        block = [line]
+        index += 1
+        while index < len(lines) and _TABLE_ROW_RE.match(lines[index]):
+            block.append(lines[index])
+            index += 1
+
+        # 至少要有 表头 + 分隔行 + 数据行 才值得处理；第二行必须是 `| --- |`。
+        if len(block) < 3 or not _is_separator_row(_split_table_cells(block[1])):
+            out.extend(block)
+            continue
+
+        header = _split_table_cells(block[0])
+        for data_line in block[2:]:
+            cells = _split_table_cells(data_line)
+            parts: list[str] = []
+            for column, cell in enumerate(cells):
+                if not cell:
+                    continue
+                col_name = (
+                    header[column].strip()
+                    if column < len(header)
+                    else f"列{column + 1}"
+                )
+                if col_name:
+                    parts.append(f"{col_name}：{cell}")
+                else:
+                    # 左上角无表头时（如表格第一列是行标签），值原样保留
+                    parts.append(cell)
+            out.append("；".join(parts) if parts else data_line)
+    return "\n".join(out)
+
+
 def clean_markdown(markdown: str) -> str:
     """清洗 MinerU/转换产物里的多余符号。
 
@@ -61,6 +132,7 @@ def clean_markdown(markdown: str) -> str:
       `$`（如金额）原样保留
     - 还原文本层的 LaTeX 转义字符（`\~` → `~` 等）
     - HTML 上下标转 Unicode（`<sup>3</sup>` → ³），并清掉残留的 HTML 标签
+    - 管道表序列化成每行自描述的「列名：值」，保证切片不丢表头语义
     """
 
     if not markdown:
@@ -82,6 +154,7 @@ def clean_markdown(markdown: str) -> str:
         return f"【公式：{cleaned}】" if cleaned else ""
 
     text = _MATH_RE.sub(math_repl, text)
+    text = serialize_pipe_tables(text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
@@ -127,4 +200,5 @@ __all__ = [
     "clean_markdown",
     "convert_to_markdown",
     "convert_with_mineru",
+    "serialize_pipe_tables",
 ]
