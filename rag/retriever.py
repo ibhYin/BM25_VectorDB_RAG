@@ -1,5 +1,4 @@
 import math
-import re
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -72,17 +71,30 @@ def search_bm25(
     user: UserContext | None = None,
     access_policy: AccessPolicy | None = None,
 ) -> list[dict[str, object]]:
-    """Rank current Chroma chunk text using jieba and SQLite FTS5 BM25."""
+    """Rank current Chroma chunk text using jieba and SQLite FTS5 BM25.
 
-    import chromadb
-
-    from rag.vector_store import COLLECTION_NAME
+    优先查持久化索引（写入时由 `rebuild_bm25_index` 全量重建）；索引缺失/损坏时
+    回退到内存全量重建，行为与过去完全一致。
+    """
 
     if top_k <= 0:
         raise ValueError("top_k must be greater than zero")
 
     if not (persist_dir / "chroma.sqlite3").is_file():
         return []
+
+    from rag.bm25_index import bm25_index_path, query_bm25_index
+
+    if bm25_index_path(persist_dir).is_file():
+        return _search_bm25_index(
+            question, persist_dir, top_k, knowledge_base_id, user, access_policy
+        )
+
+    # 回退路径：没有持久化索引（如测试的裸 chroma 目录、首次启动）时走内存全量重建。
+    import chromadb
+
+    from rag.vector_store import COLLECTION_NAME
+
     client = chromadb.PersistentClient(path=str(persist_dir))
     try:
         collection = client.get_collection(COLLECTION_NAME, embedding_function=None)
@@ -121,18 +133,70 @@ def search_bm25(
     )
 
 
-def _tokenize(text: str) -> list[str]:
-    import jieba
+def _search_bm25_index(
+    question: str,
+    persist_dir: Path,
+    top_k: int,
+    knowledge_base_id: str,
+    user: UserContext | None,
+    access_policy: AccessPolicy | None,
+) -> list[dict[str, object]]:
+    """持久化索引快路径：索引给排名，正文/元数据仍从 Chroma 按 chunk_id 定向取。"""
 
-    return [
-        term
-        for word in jieba.cut_for_search(text.casefold())
-        for term in re.findall(r"[^\W_]+", word)
-    ]
+    from rag.bm25_index import query_bm25_index
+
+    ranked = query_bm25_index(persist_dir, question, top_k)
+    if not ranked:
+        return []
+
+    import chromadb
+
+    from rag.vector_store import COLLECTION_NAME
+
+    client = chromadb.PersistentClient(path=str(persist_dir))
+    try:
+        collection = client.get_collection(COLLECTION_NAME, embedding_function=None)
+    except chromadb.errors.NotFoundError:
+        return []
+    records = collection.get(
+        where={"chunk_id": {"$in": [chunk_id for chunk_id, _ in ranked]}},
+        include=["documents", "metadatas"],
+    )
+    by_id = {
+        str(metadata.get("chunk_id", "")): (text or "", metadata or {})
+        for text, metadata in zip(
+            records["documents"] or [], records["metadatas"] or []
+        )
+    }
+    if not by_id:
+        return []
+
+    documents: list[tuple[Document, float]] = []
+    for chunk_id, score in ranked:
+        if chunk_id not in by_id:
+            continue
+        text, metadata = by_id[chunk_id]
+        if access_policy is not None and user is not None and not access_policy.can_access(
+            metadata, user, knowledge_base_id
+        ):
+            continue
+        documents.append((Document(page_content=text, metadata=metadata), score))
+
+    return build_vector_hits(documents, retrieval_method="bm25")
+
+
+def _tokenize(text: str) -> list[str]:
+    from rag.bm25_index import tokenize
+
+    return tokenize(text)
 
 
 def _bm25_scores(texts: list[str], question: str) -> list[float]:
-    """Score every text with SQLite FTS5 BM25; zero means no query term matched."""
+    """Score every text with SQLite FTS5 BM25; zero means no query term matched.
+
+    仅供 hybrid 重排（候选池小）与无持久化索引时的回退使用；单条 BM25 检索优先
+    走 `search_bm25` 里的持久化索引快路径。
+    """
 
     terms = list(dict.fromkeys(_tokenize(question)))
     scores = [0.0] * len(texts)

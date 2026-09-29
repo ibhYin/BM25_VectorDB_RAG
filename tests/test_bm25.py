@@ -173,3 +173,89 @@ def test_vector_mode_retains_top_k_and_similarity_filter(monkeypatch):
     result = answer_question("test", settings, similarity_threshold=0,
                              retrieval_method="vector")
     assert len(result["vector_hits"]) == 2
+
+
+def _make_collection(tmp_path, docs):
+    collection = chromadb.PersistentClient(path=str(tmp_path)).create_collection(
+        COLLECTION_NAME, embedding_function=None,
+    )
+    collection.add(
+        ids=[f"id{i}" for i in range(len(docs))],
+        documents=[text for text, _ in docs],
+        metadatas=[meta for _, meta in docs],
+        embeddings=[[1.0, 0.0]] * len(docs),
+    )
+    return collection
+
+
+def test_persisted_index_matches_in_memory_results(tmp_path):
+    docs = [
+        ("注意力 机制 Attention", {"chunk_id": "doc#chunk_001", "doc_id": "doc"}),
+        ("注意力 " + "语言模型 " * 20, {"chunk_id": "doc#chunk_002", "doc_id": "doc"}),
+        ("数据库 索引", {"chunk_id": "other#chunk_001", "doc_id": "other"}),
+    ]
+    _make_collection(tmp_path, docs)
+
+    # 无索引 → 回退内存路径
+    fallback = search_bm25("注意力", tmp_path, 20)
+    assert len(fallback) == 2
+
+    from rag.bm25_index import rebuild_bm25_index
+
+    rebuild_bm25_index(tmp_path, embedding_model="test")
+    assert (tmp_path / "bm25.sqlite3").is_file()
+
+    # 有索引 → 快路径
+    indexed = search_bm25("注意力", tmp_path, 20)
+    assert [hit["chunk_id"] for hit in indexed] == [
+        hit["chunk_id"] for hit in fallback
+    ]
+    assert indexed[0]["bm25_score"] > indexed[1]["bm25_score"] > 0
+    assert indexed[0]["text"] == "注意力 机制 Attention"
+    assert indexed[0]["retrieval_method"] == "bm25"
+
+
+def test_persisted_index_follows_upsert_and_delete(tmp_path):
+    _make_collection(tmp_path, [("注意力", {"chunk_id": "doc#chunk_001"})])
+    from rag.bm25_index import rebuild_bm25_index
+
+    rebuild_bm25_index(tmp_path, embedding_model="test")
+    assert search_bm25("注意力", tmp_path, 20)[0]["chunk_id"] == "doc#chunk_001"
+
+    # upsert 后不重建 → 旧索引不返回新词
+    collection = chromadb.PersistentClient(path=str(tmp_path)).get_collection(
+        COLLECTION_NAME, embedding_function=None,
+    )
+    collection.upsert(ids=["id0"], documents=["新版关键词"], embeddings=[[1.0, 0.0]])
+    assert search_bm25("新版关键词", tmp_path, 20) == []
+
+    # 重建后 → 跟随新内容
+    rebuild_bm25_index(tmp_path, embedding_model="test")
+    assert search_bm25("新版关键词", tmp_path, 20)[0]["text"] == "新版关键词"
+
+    # delete 后重建 → 不再返回
+    collection.delete(ids=["id0"])
+    rebuild_bm25_index(tmp_path, embedding_model="test")
+    assert search_bm25("注意力", tmp_path, 20) == []
+
+
+def test_persisted_index_respects_access_filter(tmp_path):
+    _make_collection(
+        tmp_path,
+        [
+            ("公开内容", {"chunk_id": "pub#chunk_001", "groups": ["public"]}),
+            ("秘密内容", {"chunk_id": "sec#chunk_001", "groups": ["secret"]}),
+        ],
+    )
+    from rag.bm25_index import rebuild_bm25_index
+    from app.access import AccessPolicy
+
+    rebuild_bm25_index(tmp_path, embedding_model="test")
+
+    class Allowed:
+        def can_access(self, metadata, user, knowledge_base_id):
+            return "secret" not in (metadata.get("groups") or [])
+
+    policy = Allowed()
+    hits = search_bm25("内容", tmp_path, 20, "default", user="bob", access_policy=policy)
+    assert [hit["chunk_id"] for hit in hits] == ["pub#chunk_001"]

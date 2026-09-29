@@ -16,6 +16,7 @@ from app.access import (
     set_document_groups,
 )
 from app import audit
+from rag.bm25_index import rebuild_bm25_index
 from rag.indexer import build_vector_index
 from rag.index_manifest import write_index_manifest
 from rag.loaders import load_document_file
@@ -146,6 +147,12 @@ def ingest_knowledge_base(
             aliyun_oss_endpoint=settings.aliyun_oss_endpoint,
             aliyun_oss_prefix=settings.aliyun_oss_prefix,
         )
+        rebuild_bm25_index(
+            settings.chroma_persist_dir,
+            settings.embedding_model,
+            settings.embedding_api_key,
+            settings.embedding_base_url,
+        )
 
     result = IngestResult(len(documents), len(chunks), rebuild, source_dir)
     audit.record(
@@ -254,6 +261,12 @@ def ingest_files(
                 knowledge_base_id=settings.knowledge_base_id,
             )
             write_index_manifest(settings.chroma_persist_dir, settings.embedding_model)
+            rebuild_bm25_index(
+                settings.chroma_persist_dir,
+                settings.embedding_model,
+                settings.embedding_api_key,
+                settings.embedding_base_url,
+            )
     except Exception as exc:
         # 原异常仍原样抛给上传任务（任务页继续显示失败）；审计只写清洗后的原因，
         # 不含 traceback / Token / 预签名 URL。
@@ -361,6 +374,12 @@ def delete_indexed_documents(
                 embedding_api_key=settings.embedding_api_key,
                 embedding_base_url=settings.embedding_base_url,
                 knowledge_base_id=settings.knowledge_base_id,
+            )
+            rebuild_bm25_index(
+                settings.chroma_persist_dir,
+                settings.embedding_model,
+                settings.embedding_api_key,
+                settings.embedding_base_url,
             )
     except Exception as exc:
         audit.record(
