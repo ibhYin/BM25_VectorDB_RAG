@@ -26,6 +26,7 @@ from rag.retriever import (
     rrf_fuse,
     rerank_bm25_scores,
     search_bm25,
+    weighted_fuse,
 )
 from rag.splitter import split_documents
 from rag.structurizer import MINERU
@@ -763,6 +764,7 @@ def list_indexed_documents(
 class AnswerResult(TypedDict):
     question: str
     retrieval_method: str
+    fusion_method: str | None
     vector_context: list[str]
     vector_hits: list[dict[str, object]]
     answer: str
@@ -776,8 +778,11 @@ def _retrieval_params(
     retrieval_method: str | None,
     top_k: int | None,
     similarity_threshold: float | None,
-) -> tuple[str, int, float]:
-    """解析并校验检索参数。两个入口共用，免得默认值逻辑分叉。"""
+    fusion_method: str | None = None,
+    fusion_k: int | None = None,
+    fusion_alpha: float | None = None,
+) -> tuple[str, int, float, str, int, float]:
+    """解析并校验检索参数。多个入口共用，免得默认值逻辑分叉。"""
 
     method = settings.retrieval_method if retrieval_method is None else retrieval_method
     if method not in ("vector", "bm25", "hybrid"):
@@ -788,7 +793,27 @@ def _retrieval_params(
         if similarity_threshold is not None
         else settings.similarity_threshold
     )
-    return method, effective_top_k, effective_threshold
+    effective_fusion = (
+        settings.fusion_method if fusion_method is None else fusion_method
+    )
+    if effective_fusion not in ("rrf", "weighted"):
+        raise ValueError("fusion_method must be rrf or weighted")
+    effective_k = fusion_k if fusion_k is not None else settings.fusion_k
+    if effective_k <= 0:
+        raise ValueError("fusion_k must be greater than zero")
+    effective_alpha = (
+        fusion_alpha if fusion_alpha is not None else settings.fusion_alpha
+    )
+    if not 0.0 <= effective_alpha <= 1.0:
+        raise ValueError("fusion_alpha must be between 0 and 1")
+    return (
+        method,
+        effective_top_k,
+        effective_threshold,
+        effective_fusion,
+        effective_k,
+        effective_alpha,
+    )
 
 
 def _access_context(
@@ -814,6 +839,9 @@ def _retrieve_locked(
     top_k: int,
     threshold: float,
     candidate_pool: int | None,
+    fusion_method: str,
+    fusion_k: int,
+    fusion_alpha: float,
     user: UserContext | None,
     access_policy: AccessPolicy | None,
     access_filter: dict[str, object] | None,
@@ -905,7 +933,10 @@ def _retrieve_locked(
             [match[0].page_content for match in matches],
             question,
         )
-        hits = rrf_fuse(vector_hits, bm25_scores)[:top_k]
+        if fusion_method == "weighted":
+            hits = weighted_fuse(vector_hits, bm25_scores, alpha=fusion_alpha)[:top_k]
+        else:
+            hits = rrf_fuse(vector_hits, bm25_scores, k=fusion_k)[:top_k]
         recall = len(matches)
     else:
         embeddings = get_embeddings(
@@ -956,6 +987,7 @@ def _retrieve_locked(
         duration_ms=round((perf_counter() - started) * 1000),
         similarity_threshold=threshold if method == "vector" else None,
         pool=effective_pool if method == "hybrid" else None,
+        fusion_method=fusion_method if method == "hybrid" else None,
         vector_hits=hits,
     )
     return hits
@@ -968,14 +1000,17 @@ def retrieve_question(
     top_k: int | None = None,
     similarity_threshold: float | None = None,
     candidate_pool: int | None = None,
+    fusion_method: str | None = None,
+    fusion_k: int | None = None,
+    fusion_alpha: float | None = None,
     user: UserContext | None = None,
 ) -> list[dict[str, object]]:
     """只要检索结果，不生成答案。
 
     给评估与调试用：同一批问题换不同参数跑，就能看出差异，而不必付一次答案生成
     的钱。返回的 hit 带全部分数与元数据（rank / similarity / bm25_score /
-    rrf_score / section_path / chunk_id …）——注意喂给 LLM 的 `format_vector_hits`
-    会把分数丢掉，这里不丢。
+    rrf_score / weighted_score / section_path / chunk_id …）——注意喂给 LLM 的
+    `format_vector_hits` 会把分数丢掉，这里不丢。
 
     自己取读锁。**不要在已持锁时调用**，理由见 `_retrieve_locked`。
     """
@@ -983,8 +1018,16 @@ def retrieve_question(
     question = question.strip()
     if not question:
         raise ValueError("Question is required")
-    method, effective_top_k, effective_threshold = _retrieval_params(
-        settings, retrieval_method, top_k, similarity_threshold
+    (
+        method,
+        effective_top_k,
+        effective_threshold,
+        effective_fusion,
+        effective_k,
+        effective_alpha,
+    ) = _retrieval_params(
+        settings, retrieval_method, top_k, similarity_threshold,
+        fusion_method, fusion_k, fusion_alpha,
     )
     access_policy, access_filter = _access_context(settings, user)
 
@@ -996,6 +1039,9 @@ def retrieve_question(
             effective_top_k,
             effective_threshold,
             candidate_pool,
+            effective_fusion,
+            effective_k,
+            effective_alpha,
             user,
             access_policy,
             access_filter,
@@ -1197,6 +1243,9 @@ def answer_question(
     similarity_threshold: float | None = None,
     retrieval_method: str | None = None,
     candidate_pool: int | None = None,
+    fusion_method: str | None = None,
+    fusion_k: int | None = None,
+    fusion_alpha: float | None = None,
     user: UserContext | None = None,
     history: list[dict] | None = None,
     on_token: Callable[[str], None] | None = None,
@@ -1212,8 +1261,16 @@ def answer_question(
     question = question.strip()
     if not question:
         raise ValueError("Question is required")
-    method, effective_top_k, effective_threshold = _retrieval_params(
-        settings, retrieval_method, top_k, similarity_threshold
+    (
+        method,
+        effective_top_k,
+        effective_threshold,
+        effective_fusion,
+        effective_k,
+        effective_alpha,
+    ) = _retrieval_params(
+        settings, retrieval_method, top_k, similarity_threshold,
+        fusion_method, fusion_k, fusion_alpha,
     )
     access_policy, access_filter = _access_context(settings, user)
 
@@ -1241,6 +1298,7 @@ def answer_question(
         return {
             "question": question,
             "retrieval_method": "system",
+            "fusion_method": None,
             "vector_context": [],
             "vector_hits": [],
             "answer": answer,
@@ -1280,6 +1338,9 @@ def answer_question(
                 effective_top_k,
                 effective_threshold,
                 candidate_pool,
+                effective_fusion,
+                effective_k,
+                effective_alpha,
                 user,
                 access_policy,
                 access_filter,
@@ -1314,6 +1375,7 @@ def answer_question(
         return {
             "question": question,
             "retrieval_method": method,
+            "fusion_method": effective_fusion if method == "hybrid" else None,
             "vector_context": vector_context,
             "vector_hits": hits,
             "answer": answer,

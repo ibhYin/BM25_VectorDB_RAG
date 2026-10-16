@@ -254,16 +254,17 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         if not question:
             raise RequestError(HTTPStatus.BAD_REQUEST, "Question is required")
 
-        top_k, similarity_threshold, retrieval_method, candidate_pool = (
-            self._read_retrieval_params(payload)
-        )
+        params = self._read_retrieval_params(payload)
         result = answer_question(
             question,
             settings,
-            top_k=top_k,
-            similarity_threshold=similarity_threshold,
-            retrieval_method=retrieval_method,
-            candidate_pool=candidate_pool,
+            top_k=params["top_k"],
+            similarity_threshold=params["similarity_threshold"],
+            retrieval_method=params["retrieval_method"],
+            candidate_pool=params["candidate_pool"],
+            fusion_method=params["fusion_method"],
+            fusion_k=params["fusion_k"],
+            fusion_alpha=params["fusion_alpha"],
             user=user,
         )
         self._send_json(
@@ -358,15 +359,16 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             )
 
         try:
-            top_k, similarity_threshold, retrieval_method, candidate_pool = (
-                self._read_retrieval_params(payload)
-            )
+            params = self._read_retrieval_params(payload)
             job = get_answer_store().create(
                 question_value,
-                top_k=top_k,
-                similarity_threshold=similarity_threshold,
-                retrieval_method=retrieval_method,
-                candidate_pool=candidate_pool,
+                top_k=params["top_k"],
+                similarity_threshold=params["similarity_threshold"],
+                retrieval_method=params["retrieval_method"],
+                candidate_pool=params["candidate_pool"],
+                fusion_method=params["fusion_method"],
+                fusion_k=params["fusion_k"],
+                fusion_alpha=params["fusion_alpha"],
                 user=user,
                 conversation_id=conversation_id,
             )
@@ -633,14 +635,17 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         if not isinstance(question, str) or not question.strip():
             raise RequestError(HTTPStatus.BAD_REQUEST, "question is required")
 
-        top_k, threshold, method, pool = self._read_retrieval_params(payload)
+        params = self._read_retrieval_params(payload)
         hits = retrieve_question(
             question,
             get_settings(),
-            retrieval_method=method,
-            top_k=top_k,
-            similarity_threshold=threshold,
-            candidate_pool=pool,
+            retrieval_method=params["retrieval_method"],
+            top_k=params["top_k"],
+            similarity_threshold=params["similarity_threshold"],
+            candidate_pool=params["candidate_pool"],
+            fusion_method=params["fusion_method"],
+            fusion_k=params["fusion_k"],
+            fusion_alpha=params["fusion_alpha"],
             user=user,
         )
         self._send_json({"hits": hits})
@@ -653,17 +658,20 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         user = self._require_admin()
         payload = self._read_json()
         ks = _read_k_list(payload.get("ks"))
-        top_k, threshold, method, pool = self._read_retrieval_params(payload)
+        params = self._read_retrieval_params(payload)
 
         settings = get_settings()
         batch = run_batch(
             settings,
             anchor_eval_labels(settings, read_questions()),
             ks=ks,
-            method=method,
-            top_k=top_k,
-            threshold=threshold,
-            pool=pool,
+            method=params["retrieval_method"],
+            top_k=params["top_k"],
+            threshold=params["similarity_threshold"],
+            pool=params["candidate_pool"],
+            fusion_method=params["fusion_method"],
+            fusion_k=params["fusion_k"],
+            fusion_alpha=params["fusion_alpha"],
             user=user,
         )
         # 只回检索结果 id，不回 hit 正文：那些按题去 /api/eval/retrieve 取，
@@ -1000,6 +1008,9 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             "chunk_overlap": settings.chunk_overlap,
             "retrieval_top_k": settings.retrieval_top_k,
             "retrieval_method": settings.retrieval_method,
+            "fusion_method": settings.fusion_method,
+            "fusion_k": settings.fusion_k,
+            "fusion_alpha": settings.fusion_alpha,
             "candidate_pool_size": settings.candidate_pool_size,
             "similarity_threshold": settings.similarity_threshold,
             "max_upload_bytes": settings.max_upload_bytes,
@@ -1339,7 +1350,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
     @staticmethod
     def _read_retrieval_params(
         payload: dict[str, object],
-    ) -> tuple[int | None, float | None, str | None]:
+    ) -> dict[str, object]:
         retrieval_method = payload.get("retrieval_method")
         if "retrieval_method" in payload and retrieval_method not in (
             "vector", "bm25", "hybrid",
@@ -1381,7 +1392,46 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                     HTTPStatus.BAD_REQUEST,
                     "similarity_threshold must be between 0 and 1",
                 )
-        return top_k, similarity_threshold, retrieval_method, candidate_pool
+
+        fusion_method = payload.get("fusion_method")
+        if fusion_method is not None and fusion_method not in ("rrf", "weighted"):
+            raise RequestError(
+                HTTPStatus.BAD_REQUEST,
+                "fusion_method must be rrf or weighted",
+            )
+        fusion_k = payload.get("fusion_k")
+        if fusion_k is not None:
+            if isinstance(fusion_k, bool) or not isinstance(fusion_k, int):
+                raise RequestError(
+                    HTTPStatus.BAD_REQUEST, "fusion_k must be an integer"
+                )
+            if fusion_k <= 0 or fusion_k > 200:
+                raise RequestError(
+                    HTTPStatus.BAD_REQUEST, "fusion_k must be between 1 and 200"
+                )
+        fusion_alpha = payload.get("fusion_alpha")
+        if fusion_alpha is not None:
+            if isinstance(fusion_alpha, bool) or not isinstance(
+                fusion_alpha, (int, float)
+            ):
+                raise RequestError(
+                    HTTPStatus.BAD_REQUEST, "fusion_alpha must be a number"
+                )
+            if not 0.0 <= fusion_alpha <= 1.0:
+                raise RequestError(
+                    HTTPStatus.BAD_REQUEST,
+                    "fusion_alpha must be between 0 and 1",
+                )
+
+        return {
+            "top_k": top_k,
+            "similarity_threshold": similarity_threshold,
+            "retrieval_method": retrieval_method,
+            "candidate_pool": candidate_pool,
+            "fusion_method": fusion_method,
+            "fusion_k": fusion_k,
+            "fusion_alpha": fusion_alpha,
+        }
 
     def _send_json(
         self,

@@ -1191,6 +1191,12 @@ svg {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+.segmented.disabled {
+  opacity: 0.55;
+}
+.segmented.disabled input {
+  cursor: not-allowed;
+}
 
 .mini-field {
   display: flex;

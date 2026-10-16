@@ -24,6 +24,11 @@ const el = {
   askButton: document.querySelector("#ask-button"),
   question: document.querySelector("#question"),
   retrievalMethod: document.querySelector("#retrieval-method"),
+  fusionMethod: document.querySelector("#fusion-method"),
+  fusionK: document.querySelector("#fusion-k"),
+  fusionKField: document.querySelector("#fusion-k-field"),
+  fusionAlpha: document.querySelector("#fusion-alpha"),
+  fusionAlphaField: document.querySelector("#fusion-alpha-field"),
   retrievalTopK: document.querySelector("#retrieval-top-k"),
   candidatePool: document.querySelector("#candidate-pool"),
   similarityThreshold: document.querySelector("#similarity-threshold"),
@@ -88,6 +93,18 @@ function setRetrievalMethod(value) {
   if (radio) radio.checked = true;
 }
 
+function getFusionMethod() {
+  const checked = document.querySelector('input[name="fusion-method"]:checked');
+  return checked ? checked.value : "rrf";
+}
+
+function setFusionMethod(value) {
+  const radio = document.querySelector(
+    `input[name="fusion-method"][value="${value}"]`,
+  );
+  if (radio) radio.checked = true;
+}
+
 function updateRetrievalControls() {
   const method = getRetrievalMethod();
   const thresholdOff = method !== "vector";
@@ -96,6 +113,16 @@ function updateRetrievalControls() {
     ? "不适用"
     : Number(el.similarityThreshold.value).toFixed(2);
   el.candidatePool.disabled = method !== "hybrid";
+
+  // 融合方式只在 hybrid 下有意义（vector/bm25 是单路检索，没有融合）。
+  const fusionOff = method !== "hybrid";
+  for (const radio of el.fusionMethod.querySelectorAll("input")) {
+    radio.disabled = fusionOff;
+  }
+  el.fusionMethod.classList.toggle("disabled", fusionOff);
+  const weighted = getFusionMethod() === "weighted";
+  el.fusionKField.hidden = fusionOff || weighted;
+  el.fusionAlphaField.hidden = fusionOff || !weighted;
 }
 
 // --- answer rendering -----------------------------------------------------
@@ -532,7 +559,11 @@ function stageDetail(key, stage) {
     const recall = detail.recall != null
       && detail.recall !== detail.matches && detail.recall !== detail.pool
       ? ` · 召回 ${detail.recall}` : "";
-    return `${detail.matches || 0} 个结果 · Top ${detail.top_k || 0}${pool}${recall}${duration}`;
+    const fusionLabels = { rrf: "RRF 融合", weighted: "加权融合" };
+    const fusion = fusionLabels[detail.fusion_method]
+      ? ` · ${fusionLabels[detail.fusion_method]}`
+      : "";
+    return `${detail.matches || 0} 个结果 · Top ${detail.top_k || 0}${pool}${recall}${fusion}${duration}`;
   }
   if (key === "answer") return `${detail.model || "LLM"}${duration}`;
   if (key === "condense") {
@@ -649,6 +680,15 @@ async function ask(event) {
         similarity_threshold: el.similarityThreshold.disabled
           ? undefined
           : Number(el.similarityThreshold.value),
+        fusion_method: el.candidatePool.disabled ? undefined : getFusionMethod(),
+        fusion_k:
+          el.candidatePool.disabled || getFusionMethod() !== "rrf"
+            ? undefined
+            : Number(el.fusionK.value),
+        fusion_alpha:
+          el.candidatePool.disabled || getFusionMethod() !== "weighted"
+            ? undefined
+            : Number(el.fusionAlpha.value),
       }),
     });
     state.answerJob = job;
@@ -1142,7 +1182,12 @@ export default {
       loadKnowledgeBases();
     });
 
-    for (const element of [el.retrievalTopK, el.similarityThreshold]) {
+    for (const element of [
+      el.retrievalTopK,
+      el.similarityThreshold,
+      el.fusionK,
+      el.fusionAlpha,
+    ]) {
       element.addEventListener("input", () => {
         state.retrievalInitialized = true;
         updateRetrievalControls();
@@ -1154,6 +1199,14 @@ export default {
       updateRetrievalControls();
       if (!state.answerJob) renderProcess();
     });
+    el.fusionMethod.addEventListener("change", () => {
+      state.retrievalInitialized = true;
+      updateRetrievalControls();
+      if (!state.answerJob) renderProcess();
+    });
+
+    // 先按 HTML 默认值定一次显隐/禁用，别等服务端状态回来才对齐。
+    updateRetrievalControls();
   },
 
   show() {
@@ -1179,6 +1232,9 @@ export default {
     el.retrievalTopK.value = status.retrieval_top_k ?? 20;
     el.candidatePool.value = status.candidate_pool_size ?? 100;
     el.similarityThreshold.value = status.similarity_threshold ?? 0.35;
+    setFusionMethod(status.fusion_method || "rrf");
+    el.fusionK.value = status.fusion_k ?? 60;
+    el.fusionAlpha.value = status.fusion_alpha ?? 0.5;
     state.retrievalInitialized = true;
     updateRetrievalControls();
     // 模型名来自 status，所以选择器要等它到了再装

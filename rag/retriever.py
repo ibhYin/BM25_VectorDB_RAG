@@ -265,6 +265,44 @@ def rrf_fuse(
     ]
 
 
+def weighted_fuse(
+    vector_hits: list[dict[str, object]],
+    bm25_scores: list[float],
+    alpha: float = 0.5,
+) -> list[dict[str, object]]:
+    """按归一化分数加权融合向量与 BM25 两个信号。
+
+    RRF 只看名次、不看分数差距；加权融合保留分数，适合「向量分和 BM25 分都能
+    反映相关度」的场景。向量侧用 `build_vector_hits` 产出的 similarity（已 clamp
+    到 [0,1]），BM25 侧先 min-max 归一化到 [0,1]，再 `alpha·sim + (1-alpha)·bm25`。
+    """
+
+    if len(vector_hits) != len(bm25_scores):
+        raise ValueError("vector_hits and bm25_scores must have the same length")
+
+    bm25_positive = [score for score in bm25_scores if score > 0]
+    bm25_max = max(bm25_positive) if bm25_positive else 0.0
+    normalized = [
+        (float(score) / bm25_max) if bm25_max > 0 else 0.0 for score in bm25_scores
+    ]
+
+    fused: list[tuple[float, int, dict[str, object]]] = []
+    for index, hit in enumerate(vector_hits):
+        vector_score = float(hit.get("similarity") or 0.0)
+        score = alpha * vector_score + (1.0 - alpha) * normalized[index]
+        merged = dict(hit)
+        merged["retrieval_method"] = "hybrid"
+        merged["bm25_score"] = float(bm25_scores[index])
+        merged["weighted_score"] = score
+        fused.append((score, index, merged))
+
+    fused.sort(key=lambda item: (-item[0], item[1]))
+    return [
+        {**hit, "rank": position}
+        for position, (_, _, hit) in enumerate(fused, start=1)
+    ]
+
+
 def format_vector_hits(hits: list[dict[str, object]]) -> list[str]:
     return [
         (

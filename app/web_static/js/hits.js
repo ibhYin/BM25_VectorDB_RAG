@@ -32,12 +32,18 @@ export function createVectorHitCard(hit, options = {}) {
   const distance = document.createElement("span");
   distance.className = "distance-value";
   if (hit.retrieval_method === "hybrid") {
-    distance.title = "混合检索：相似度为向量语义相关性，BM25 为关键词匹配分";
     const similarity = Number(hit.similarity) || 0;
     const bm25 = Number(hit.bm25_score) || 0;
+    const weighted = hit.weighted_score !== undefined ? Number(hit.weighted_score) : null;
+    const rrf = hit.rrf_score !== undefined ? Number(hit.rrf_score) : null;
+    distance.title = weighted !== null
+      ? "混合检索（加权融合）：融合分 = α·向量相似度 + (1-α)·归一化 BM25"
+      : "混合检索（RRF 融合）：相似度为向量语义相关性，BM25 为关键词匹配分";
     distance.textContent = [
       similarity > 0 ? `相似度 ${similarity.toFixed(2)}` : "",
       bm25 > 0 ? `BM25 ${bm25.toPrecision(4)}` : "",
+      weighted !== null ? `融合 ${weighted.toFixed(3)}` : "",
+      rrf !== null ? `RRF ${rrf.toFixed(4)}` : "",
     ].filter(Boolean).join(" · ") || "混合";
   } else if (hit.retrieval_method === "bm25") {
     distance.title = "BM25 关键词匹配分数，越高越相关，不是概率";

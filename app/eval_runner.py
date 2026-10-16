@@ -23,6 +23,9 @@ def run_batch(
     top_k: int | None = None,
     threshold: float | None = None,
     pool: int | None = None,
+    fusion_method: str | None = None,
+    fusion_k: int | None = None,
+    fusion_alpha: float | None = None,
     user=None,
 ) -> dict:
     """逐题检索并汇总。返回 `{rows, summary, labelled, total, stale_total}`。"""
@@ -39,6 +42,9 @@ def run_batch(
             top_k=top_k,
             similarity_threshold=threshold,
             candidate_pool=pool,
+            fusion_method=fusion_method,
+            fusion_k=fusion_k,
+            fusion_alpha=fusion_alpha,
             user=user,
         )
         rows.append(

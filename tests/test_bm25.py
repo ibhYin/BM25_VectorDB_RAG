@@ -135,10 +135,26 @@ def test_retrieval_defaults_and_validation():
         Settings(_env_file=None, retrieval_method="semantic")
     with pytest.raises(ValueError, match="retrieval_method"):
         answer_question("test", Settings(_env_file=None), retrieval_method="semantic")
-    assert WebRequestHandler._read_retrieval_params({}) == (None, None, None, None)
+    assert WebRequestHandler._read_retrieval_params({}) == {
+        "top_k": None,
+        "similarity_threshold": None,
+        "retrieval_method": None,
+        "candidate_pool": None,
+        "fusion_method": None,
+        "fusion_k": None,
+        "fusion_alpha": None,
+    }
     assert WebRequestHandler._read_retrieval_params({
         "retrieval_method": "bm25", "top_k": 20, "similarity_threshold": 0,
-    }) == (20, 0, "bm25", None)
+    }) == {
+        "top_k": 20,
+        "similarity_threshold": 0,
+        "retrieval_method": "bm25",
+        "candidate_pool": None,
+        "fusion_method": None,
+        "fusion_k": None,
+        "fusion_alpha": None,
+    }
 
 
 def test_vector_mode_retains_top_k_and_similarity_filter(monkeypatch):

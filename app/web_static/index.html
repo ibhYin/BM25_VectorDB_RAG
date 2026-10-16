@@ -111,6 +111,18 @@
               <span>候选池</span>
               <input id="candidate-pool" type="number" form="ask-form" min="20" max="500" step="1" value="100" required />
             </label>
+            <div class="segmented" id="fusion-method" role="radiogroup" aria-label="融合方式">
+              <label><input type="radio" name="fusion-method" value="rrf" form="ask-form" checked /><span>RRF</span></label>
+              <label><input type="radio" name="fusion-method" value="weighted" form="ask-form" /><span>加权</span></label>
+            </div>
+            <label class="mini-field" id="fusion-k-field">
+              <span>k</span>
+              <input id="fusion-k" type="number" form="ask-form" min="1" max="200" step="1" value="60" />
+            </label>
+            <label class="mini-field" id="fusion-alpha-field" hidden>
+              <span>α</span>
+              <input id="fusion-alpha" type="number" form="ask-form" min="0" max="1" step="0.05" value="0.5" />
+            </label>
             <label class="mini-field threshold-field">
               <span>阈值</span>
               <input id="similarity-threshold" type="range" form="ask-form" min="0" max="1" step="0.01" value="0.35" />
@@ -470,6 +482,14 @@
               <option value="vector">vector</option>
               <option value="bm25">bm25</option>
               <option value="hybrid">hybrid</option>
+            </select>
+          </label>
+          <label class="mini-field">
+            <span>融合</span>
+            <select id="eval-fusion" class="config-select">
+              <option value="">跟随配置</option>
+              <option value="rrf">rrf</option>
+              <option value="weighted">weighted</option>
             </select>
           </label>
           <label class="mini-field">

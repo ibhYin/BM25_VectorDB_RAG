@@ -15,6 +15,7 @@ const el = {
   summary: document.querySelector("#eval-summary"),
   status: document.querySelector("#eval-status"),
   method: document.querySelector("#eval-method"),
+  fusion: document.querySelector("#eval-fusion"),
   topK: document.querySelector("#eval-top-k"),
   ks: document.querySelector("#eval-ks"),
   importButton: document.querySelector("#eval-import"),
@@ -31,6 +32,7 @@ function retrievalBody(extra) {
   const body = { ...extra };
   // 空字符串会被后端判成非法方法，所以「跟随配置」时干脆不发这个字段
   if (el.method.value) body.retrieval_method = el.method.value;
+  if (el.fusion.value) body.fusion_method = el.fusion.value;
   const topK = Number(el.topK.value);
   if (Number.isInteger(topK) && topK > 0) body.top_k = topK;
   return body;

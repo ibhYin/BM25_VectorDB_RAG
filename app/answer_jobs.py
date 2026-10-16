@@ -43,6 +43,9 @@ class AnswerJobStore:
         similarity_threshold: float | None = None,
         retrieval_method: str | None = None,
         candidate_pool: int | None = None,
+        fusion_method: str | None = None,
+        fusion_k: int | None = None,
+        fusion_alpha: float | None = None,
         user: UserContext | None = None,
         conversation_id: str | None = None,
     ) -> dict[str, Any]:
@@ -52,6 +55,8 @@ class AnswerJobStore:
         method = self._settings.retrieval_method if retrieval_method is None else retrieval_method
         if method not in ("vector", "bm25", "hybrid"):
             raise ValueError("retrieval_method must be vector, bm25 or hybrid")
+        if fusion_method is not None and fusion_method not in ("rrf", "weighted"):
+            raise ValueError("fusion_method must be rrf or weighted")
 
         with self._lock:
             job_id = uuid.uuid4().hex
@@ -68,6 +73,9 @@ class AnswerJobStore:
                 "similarity_threshold": similarity_threshold,
                 "retrieval_method": method,
                 "candidate_pool": candidate_pool,
+                "fusion_method": fusion_method,
+                "fusion_k": fusion_k,
+                "fusion_alpha": fusion_alpha,
                 "user": user,
                 "conversation_id": conversation_id or "",
                 "created_at": now,
@@ -154,6 +162,9 @@ class AnswerJobStore:
                 similarity_threshold=job.get("similarity_threshold"),
                 retrieval_method=retrieval_method,
                 candidate_pool=job.get("candidate_pool"),
+                fusion_method=job.get("fusion_method"),
+                fusion_k=job.get("fusion_k"),
+                fusion_alpha=job.get("fusion_alpha"),
                 user=job.get("user"),
                 history=history,
                 on_token=on_token,
@@ -175,6 +186,7 @@ class AnswerJobStore:
             job.update(
                 status="completed",
                 retrieval_method=result.get("retrieval_method", retrieval_method),
+                fusion_method=result.get("fusion_method"),
                 answer=result.get("answer", ""),
                 answer_streaming=False,
                 vector_hits=result.get("vector_hits", []),

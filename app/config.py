@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     chunk_overlap: int = 120
     retrieval_top_k: int = 20
     retrieval_method: Literal["vector", "bm25", "hybrid"] = "hybrid"
+    # hybrid 模式下的融合/重排序方式：rrf（名次倒数融合）或 weighted（归一化加权求和）。
+    fusion_method: Literal["rrf", "weighted"] = "rrf"
+    fusion_k: int = 60
+    fusion_alpha: float = 0.5
     candidate_pool_size: int = 100
     similarity_threshold: float = 0.35
     # 2 核小内存服务器：并发 LLM 调用过多会 CPU 过度订阅并抬高峰值内存，默认调低。
@@ -106,6 +110,11 @@ class Settings(BaseSettings):
             raise ValueError("SIMILARITY_THRESHOLD must be between 0 and 1")
         if not 20 <= self.candidate_pool_size <= 500:
             raise ValueError("CANDIDATE_POOL_SIZE must be between 20 and 500")
+        # fusion_method 的取值由 Literal 类型在 pydantic 层拦截，这里只管数值范围。
+        if self.fusion_k <= 0:
+            raise ValueError("FUSION_K must be greater than zero")
+        if not 0.0 <= self.fusion_alpha <= 1.0:
+            raise ValueError("FUSION_ALPHA must be between 0 and 1")
         if self.max_concurrent_answers <= 0:
             raise ValueError("MAX_CONCURRENT_ANSWERS must be greater than zero")
         if self.ocr_max_pages is not None and self.ocr_max_pages <= 0:
