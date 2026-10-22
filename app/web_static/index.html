@@ -190,18 +190,25 @@
             </div>
             <div class="drop-zone" id="drop-zone" role="button" tabindex="0" aria-describedby="drop-zone-description">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
-              <strong>拖拽文件到这里</strong>
-              <span id="drop-zone-description">或选择文件后自动上传并入向量库；视频/音频会自动转写语音</span>
+              <strong>拖拽文件或文件夹到这里</strong>
+              <span id="drop-zone-description">或选择后自动上传并入向量库；文件夹会递归收集其中的文档；视频/音频会自动转写语音</span>
             </div>
             <input id="file-input" class="visually-hidden" type="file" multiple accept=".pdf,.md,.txt,.mp4,.mkv,.mov,.webm,.avi,.mp3,.wav,.m4a,.aac,.flac,.ogg" />
             <label class="upload-option">
+            <input id="folder-input" class="visually-hidden" type="file" webkitdirectory multiple />
               <input id="structurize-checkbox" type="checkbox" />
               <span id="structurize-label">结构化提取</span>
             </label>
-            <button id="choose-files-button" class="ghost-button" type="button">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
-              选择文件
-            </button>
+            <div class="upload-actions">
+              <button id="choose-files-button" class="ghost-button" type="button">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
+                选择文件
+              </button>
+              <button id="choose-folder-button" class="ghost-button" type="button">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+                选择文件夹
+              </button>
+            </div>
             <p class="permission-note" id="upload-permission" hidden></p>
           </section>
 

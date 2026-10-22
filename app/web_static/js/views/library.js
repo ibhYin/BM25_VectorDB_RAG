@@ -27,9 +27,11 @@ const el = {
 
   dropZone: document.querySelector("#drop-zone"),
   fileInput: document.querySelector("#file-input"),
+  folderInput: document.querySelector("#folder-input"),
   structurizeCheckbox: document.querySelector("#structurize-checkbox"),
   structurizeLabel: document.querySelector("#structurize-label"),
   chooseFilesButton: document.querySelector("#choose-files-button"),
+  chooseFolderButton: document.querySelector("#choose-folder-button"),
   uploadPermission: document.querySelector("#upload-permission"),
   uploadLimit: document.querySelector("#upload-limit"),
 
@@ -91,81 +93,240 @@ function openFilePicker() {
   el.fileInput.click();
 }
 
-function uploadFiles(fileList) {
-  const files = Array.from(fileList || []);
-  if (!files.length) return;
+function openFolderPicker() {
+  el.folderInput.click();
+}
 
-  const ALLOWED_EXT = /\.(pdf|md|txt|mp4|mkv|mov|webm|avi|mp3|wav|m4a|aac|flac|ogg)$/i;
-  const invalid = files.filter((file) => !ALLOWED_EXT.test(file.name));
-  const valid = files.filter((file) => ALLOWED_EXT.test(file.name));
-  if (invalid.length) {
-    showJobError(`不支持的文件：${invalid.map((file) => file.name).join("、")}`);
-  }
-  if (!valid.length) return;
+// --- 上传前整理：展平 / 过滤 / 重名改名 / 分批 --------------------------------
 
-  const form = new FormData();
-  for (const file of valid) {
-    form.append("files", file, file.name);
-  }
-  if (el.structurizeCheckbox.checked) form.append("structurize", "on");
+const ALLOWED_EXT = /\.(pdf|md|txt|mp4|mkv|mov|webm|avi|mp3|wav|m4a|aac|flac|ogg)$/i;
 
-  const uploadJob = {
-    id: `upload-${Date.now()}`,
-    filenames: valid.map((file) => file.name),
-    status: "uploading",
-    progress: 0,
-    files: valid.length,
-    documents: 0,
-    chunks: 0,
-    error: "",
+// 状态还没回来时用后端的默认上限兜底，别退化成「不限」（那会发出被 413 拒掉的超大请求）。
+const DEFAULT_MAX_FILES = 10;
+const DEFAULT_MAX_BYTES = 100 * 1024 * 1024;
+
+function uploadLimits() {
+  return {
+    maxFiles: state.status?.max_upload_files || DEFAULT_MAX_FILES,
+    maxBytes: state.status?.max_upload_bytes || DEFAULT_MAX_BYTES,
   };
-  state.jobs.unshift(uploadJob);
-  renderJobs();
+}
 
-  const request = new XMLHttpRequest();
-  request.open("POST", "/api/documents/upload");
-  request.upload.addEventListener("progress", (event) => {
-    if (event.lengthComputable) {
-      uploadJob.progress = Math.round((event.loaded / event.total) * 100);
-      renderJobs();
+// 只取文件名（与后端 safe_filename 一致）；文件夹里的子目录在客户端就展平掉。
+function baseName(file) {
+  const raw = file.webkitRelativePath || file.name || "";
+  return raw.split("/").pop();
+}
+
+function dedupeName(name, used) {
+  if (!used.has(name.toLowerCase())) {
+    used.add(name.toLowerCase());
+    return name;
+  }
+  const dot = name.lastIndexOf(".");
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : "";
+  let index = 2;
+  let candidate = `${stem}(${index})${ext}`;
+  while (used.has(candidate.toLowerCase())) {
+    index += 1;
+    candidate = `${stem}(${index})${ext}`;
+  }
+  used.add(candidate.toLowerCase());
+  return candidate;
+}
+
+/** 展平、剔掉不支持的格式与超大单文件、给重名加序号。 */
+function prepareUploads(fileList) {
+  const { maxBytes } = uploadLimits();
+  const used = new Set();
+  const accepted = [];
+  const oversized = [];
+  let skippedUnsupported = 0;
+
+  for (const file of Array.from(fileList || [])) {
+    const name = baseName(file);
+    if (!name || !ALLOWED_EXT.test(name)) {
+      skippedUnsupported += 1;
+      continue;
     }
-  });
-
-  request.addEventListener("load", () => {
-    let payload = {};
-    try {
-      payload = JSON.parse(request.responseText);
-    } catch (_) {
-      payload = { error: "服务返回无效响应" };
+    // 单个文件就超过整个请求体上限时，分批也救不了它。
+    if (maxBytes && file.size > maxBytes) {
+      oversized.push(name);
+      continue;
     }
+    accepted.push({ file, name: dedupeName(name, used) });
+  }
+  return { accepted, skippedUnsupported, oversized };
+}
 
-    if (request.status >= 200 && request.status < 300) {
-      if (payload.staged) {
-        // Non-admin submission: parked for review, so it is not an index job.
-        const index = state.jobs.indexOf(uploadJob);
-        if (index >= 0) state.jobs.splice(index, 1);
-        renderJobs();
-        showToast("已提交，等待管理员审核");
-        loadStaging();
-        return;
+/** 按「文件数」与「总字节」两个上限切批；单批至少放一个文件。 */
+function batchUploads(items) {
+  const { maxFiles, maxBytes } = uploadLimits();
+  const batches = [];
+  let current = [];
+  let bytes = 0;
+
+  for (const item of items) {
+    const full =
+      current.length >= maxFiles ||
+      (maxBytes > 0 && bytes + item.file.size > maxBytes && current.length > 0);
+    if (current.length && full) {
+      batches.push(current);
+      current = [];
+      bytes = 0;
+    }
+    current.push(item);
+    bytes += item.file.size;
+  }
+  if (current.length) batches.push(current);
+  return batches;
+}
+
+/** 递归读取拖入的目录项；readEntries 一次只给一批，要循环到返回空数组。 */
+function readEntry(entry) {
+  if (entry.isFile) {
+    return new Promise((resolve) => {
+      entry.file((file) => resolve([file]), () => resolve([]));
+    });
+  }
+  if (entry.isDirectory) {
+    const reader = entry.createReader();
+    const readBatch = () =>
+      new Promise((resolve) => {
+        reader.readEntries((batch) => resolve(batch), () => resolve([]));
+      });
+    return (async () => {
+      const children = [];
+      for (;;) {
+        const batch = await readBatch();
+        if (!batch.length) break;
+        children.push(...batch);
       }
-      const index = state.jobs.indexOf(uploadJob);
-      if (index >= 0) state.jobs.splice(index, 1, payload);
-      startPolling();
-    } else {
-      uploadJob.status = "failed";
-      uploadJob.error = payload.error || `上传失败 (${request.status})`;
-      renderJobs();
+      const nested = await Promise.all(children.map((child) => readEntry(child)));
+      return nested.flat();
+    })();
+  }
+  return Promise.resolve([]);
+}
+
+/** 拖拽来源：优先走 webkitGetAsEntry（能拿到文件夹内容），否则退回扁平 files。 */
+async function collectDroppedFiles(dataTransfer) {
+  const items = dataTransfer?.items;
+  if (items?.length && typeof items[0].webkitGetAsEntry === "function") {
+    const entries = [];
+    for (const item of items) {
+      const entry = item.webkitGetAsEntry?.();
+      if (entry) entries.push(entry);
     }
-  });
+    if (entries.length) {
+      const collected = await Promise.all(entries.map((entry) => readEntry(entry)));
+      return collected.flat();
+    }
+  }
+  return Array.from(dataTransfer?.files || []);
+}
 
-  request.addEventListener("error", () => {
-    uploadJob.status = "failed";
-    uploadJob.error = "网络中断，文件未入队";
+/** 发一批；返回的 Promise 在请求结束后 resolve，好让下一批顺序跟上。 */
+function sendBatch(items, label) {
+  return new Promise((resolve) => {
+    const form = new FormData();
+    for (const { file, name } of items) {
+      form.append("files", file, name);
+    }
+    if (el.structurizeCheckbox.checked) form.append("structurize", "on");
+
+    const uploadJob = {
+      id: `upload-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      filenames: items.map((item) => item.name),
+      label,
+      status: "uploading",
+      progress: 0,
+      files: items.length,
+      documents: 0,
+      chunks: 0,
+      error: "",
+    };
+    state.jobs.unshift(uploadJob);
     renderJobs();
-  });
 
-  request.send(form);
+    const request = new XMLHttpRequest();
+    request.open("POST", "/api/documents/upload");
+    request.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable) {
+        uploadJob.progress = Math.round((event.loaded / event.total) * 100);
+        renderJobs();
+      }
+    });
+
+    const finish = () => resolve();
+
+    request.addEventListener("load", () => {
+      let payload = {};
+      try {
+        payload = JSON.parse(request.responseText);
+      } catch (_) {
+        payload = { error: "服务返回无效响应" };
+      }
+
+      if (request.status >= 200 && request.status < 300) {
+        if (payload.staged) {
+          // Non-admin submission: parked for review, so it is not an index job.
+          const index = state.jobs.indexOf(uploadJob);
+          if (index >= 0) state.jobs.splice(index, 1);
+          renderJobs();
+          showToast("已提交，等待管理员审核");
+          loadStaging();
+          finish();
+          return;
+        }
+        const index = state.jobs.indexOf(uploadJob);
+        if (index >= 0) state.jobs.splice(index, 1, { ...payload, label });
+        startPolling();
+      } else {
+        uploadJob.status = "failed";
+        uploadJob.error = payload.error || `上传失败 (${request.status})`;
+        renderJobs();
+      }
+      finish();
+    });
+
+    request.addEventListener("error", () => {
+      uploadJob.status = "failed";
+      uploadJob.error = "网络中断，文件未入队";
+      renderJobs();
+      finish();
+    });
+
+    request.send(form);
+  });
+}
+
+async function uploadFiles(fileList) {
+  const { accepted, skippedUnsupported, oversized } = prepareUploads(fileList);
+  const notes = [];
+  if (skippedUnsupported) notes.push(`已跳过 ${skippedUnsupported} 个不支持的文件`);
+  if (oversized.length) {
+    const limitMb = Math.round((state.status?.max_upload_bytes || 0) / 1024 / 1024);
+    notes.push(`单个文件超过 ${limitMb}MB 上限，已跳过：${oversized.join("、")}`);
+  }
+
+  if (!accepted.length) {
+    if (notes.length) showJobError(notes.join("；"));
+    return;
+  }
+
+  const batches = batchUploads(accepted);
+  if (batches.length > 1) {
+    notes.push(`共 ${accepted.length} 个文件，分 ${batches.length} 批上传`);
+  }
+  if (notes.length) showToast(notes.join("；"));
+
+  // 顺序发：避免一次占满上传队列（max_upload_jobs），任务列表也好读。
+  for (let index = 0; index < batches.length; index += 1) {
+    const label = batches.length > 1 ? `第 ${index + 1}/${batches.length} 批` : "";
+    await sendBatch(batches[index], label);
+  }
 }
 
 // --- jobs -----------------------------------------------------------------
@@ -1013,8 +1174,10 @@ export default {
         el.dropZone.classList.remove("dragging");
       });
     }
-    el.dropZone.addEventListener("drop", (event) => {
-      uploadFiles(event.dataTransfer ? event.dataTransfer.files : null);
+    el.dropZone.addEventListener("drop", async (event) => {
+      if (!event.dataTransfer) return;
+      const files = await collectDroppedFiles(event.dataTransfer);
+      uploadFiles(files);
     });
 
     el.reloadDocumentsButton.addEventListener("click", () => emit("documents:refresh"));
@@ -1056,7 +1219,8 @@ export default {
     });
     on("status", (status) => {
       if (!status) return;
-      el.uploadLimit.textContent = `PDF / MD / TXT · 单次最多 ${status.max_upload_files} 个`;
+      el.uploadLimit.textContent =
+        `PDF / MD / TXT / 视频 / 音频 · 每批最多 ${status.max_upload_files} 个，超出自动分批`;
       el.structurizeLabel.textContent = status.mineru_configured
         ? "结构化提取（MinerU 在线解析）"
         : "结构化提取（需配置 MinerU Token）";
@@ -1091,3 +1255,8 @@ export default {
     renderDocuments();
   },
 };
+    el.chooseFolderButton.addEventListener("click", openFolderPicker);
+    el.folderInput.addEventListener("change", () => {
+      uploadFiles(el.folderInput.files);
+      el.folderInput.value = "";
+    });

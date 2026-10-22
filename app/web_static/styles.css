@@ -769,6 +769,12 @@ svg {
   color: var(--ink);
 }
 
+.upload-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .item-list {
   display: flex;
   flex-direction: column;
