@@ -843,6 +843,28 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             return user, True
         return user, user is not None and policy.is_admin(user)
 
+    def _handle_upload_job_cancel(self, job_id: str) -> None:
+        from app.uploads import get_upload_store
+
+        self._require_admin()
+        try:
+            job = get_upload_store().request_cancel(job_id)
+        except KeyError as exc:
+            raise RequestError(HTTPStatus.NOT_FOUND, str(exc)) from exc
+        self._send_json(job)
+
+    def _handle_upload_job_retry(self, job_id: str) -> None:
+        from app.uploads import get_upload_store
+
+        self._require_admin()
+        try:
+            job = get_upload_store().retry_failed(job_id)
+        except KeyError as exc:
+            raise RequestError(HTTPStatus.NOT_FOUND, str(exc)) from exc
+        except (ValueError, RuntimeError) as exc:
+            raise RequestError(HTTPStatus.CONFLICT, str(exc)) from exc
+        self._send_json(job, status=HTTPStatus.ACCEPTED)
+
     def _handle_document_upload(self) -> None:
         from app import audit
         from app.uploads import get_upload_store
@@ -1479,28 +1501,6 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             "fusion_alpha": fusion_alpha,
         }
 
-    def _send_json(
-        self,
-        payload: dict[str, object],
-        status: int = HTTPStatus.OK,
-        headers: dict[str, str] | None = None,
-    ) -> None:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        for key, value in (headers or {}).items():
-            self.send_header(key, value)
-        self._send_security_headers()
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _send_static_file(self, path: Path, content_type: str) -> None:
-        resolved = path.resolve()
-        if not resolved.is_file() or STATIC_DIR.resolve() not in resolved.parents:
-            self._send_error(HTTPStatus.NOT_FOUND, "Not found")
-            return
     @staticmethod
     def _read_aggregate_params(payload: dict[str, object]) -> dict[str, object]:
         params = WebRequestHandler._read_retrieval_params(payload)
@@ -1538,6 +1538,28 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             "top_categories": top_categories,
         }
 
+    def _send_json(
+        self,
+        payload: dict[str, object],
+        status: int = HTTPStatus.OK,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
+        self._send_security_headers()
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_static_file(self, path: Path, content_type: str) -> None:
+        resolved = path.resolve()
+        if not resolved.is_file() or STATIC_DIR.resolve() not in resolved.parents:
+            self._send_error(HTTPStatus.NOT_FOUND, "Not found")
+            return
 
         body = resolved.read_bytes()
         self.send_response(HTTPStatus.OK)

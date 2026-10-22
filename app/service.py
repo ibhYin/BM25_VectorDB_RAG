@@ -17,6 +17,7 @@ from app.access import (
 )
 from app import audit
 from rag.bm25_index import rebuild_bm25_index
+from rag import markdown_cache
 from rag.indexer import build_vector_index
 from rag.index_manifest import write_index_manifest
 from rag.loaders import load_document_file
@@ -96,11 +97,18 @@ class IngestResult:
     data_dir: Path
 
 
+FileProgressCallback = Callable[
+    [str, int, int, str, dict[str, object] | None], None
+]
+
+
 @dataclass(frozen=True)
 class FileIngestResult:
     files: int
     documents: int
     chunks: int
+    failed_files: tuple[str, ...] = ()
+    cancelled: bool = False
 
 
 def ingest_knowledge_base(
@@ -176,25 +184,67 @@ def ingest_files(
     paths: list[Path],
     structurize: bool = False,
     actor: str = "",
+    progress: FileProgressCallback | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+    continue_on_error: bool = False,
 ) -> FileIngestResult:
     """Incrementally index uploaded files without rebuilding the whole directory.
 
     When structurize is True, files are converted to Markdown via MinerU
-    before chunking.
+    before chunking. ``progress`` reports per-file state, ``should_cancel`` is
+    polled between files, and ``continue_on_error`` keeps the batch going after
+    one file fails.
     """
 
     if not paths:
         raise ValueError("At least one file is required")
 
+    total = len(paths)
     filenames = [Path(path).name for path in paths]
     documents: list = []
     chunks: list = []
+    failed_files: list[str] = []
+    file_details: list[dict[str, object]] = []
+    cancelled = False
+    processed = 0
+    current_file = ""
     stage = "load"
+
+    def notify(detail: dict[str, object] | None = None) -> None:
+        if progress is not None:
+            progress(stage, processed, total, current_file, detail)
+
     try:
         with knowledge_base_lock.write():
-            for path in paths:
-                documents.extend(
-                    load_document_file(
+            for index, path in enumerate(paths):
+                if should_cancel is not None and should_cancel():
+                    cancelled = True
+                    break
+
+                stage = "load"
+                current_file = path.name
+                started = perf_counter()
+                detail: dict[str, object] = {
+                    "index": index,
+                    "name": path.name,
+                    "size_bytes": path.stat().st_size if path.is_file() else 0,
+                    "status": "loading",
+                    "cache_hit": False,
+                    "documents": 0,
+                    "chunks": 0,
+                    "duration_ms": 0,
+                    "stage": "load",
+                    "error": "",
+                }
+                file_details.append(detail)
+                notify(detail)
+
+                try:
+                    if structurize:
+                        detail["cache_hit"] = markdown_cache.has_entry(
+                            path, MINERU, settings.mineru_model_version
+                        )
+                    loaded = load_document_file(
                         path,
                         openai_api_key=settings.openai_api_key,
                         openai_base_url=settings.openai_base_url,
@@ -215,59 +265,107 @@ def ingest_files(
                         aliyun_oss_endpoint=settings.aliyun_oss_endpoint,
                         aliyun_oss_prefix=settings.aliyun_oss_prefix,
                     )
-                )
+                    if not loaded:
+                        raise ValueError(f"No text was extracted from {path.name}")
+                    if any(
+                        document.metadata.get("ocr_required")
+                        for document in loaded
+                    ):
+                        raise ValueError(
+                            f"OCR is required for uploaded file: {path.name}"
+                        )
+                    ocr_errors = [
+                        str(document.metadata["ocr_error"])
+                        for document in loaded
+                        if document.metadata.get("ocr_error")
+                    ]
+                    if ocr_errors:
+                        raise RuntimeError(f"OCR failed: {ocr_errors[0]}")
 
-            stage = "ocr"
-            ocr_required = {
-                str(document.metadata.get("source", "unknown"))
-                for document in documents
-                if document.metadata.get("ocr_required")
-            }
-            if ocr_required:
-                raise ValueError(
-                    "OCR is required for uploaded files: "
-                    + ", ".join(sorted(ocr_required))
-                )
-            ocr_errors = {
-                str(document.metadata.get("source", "unknown")): str(
-                    document.metadata["ocr_error"]
-                )
-                for document in documents
-                if document.metadata.get("ocr_error")
-            }
-            if ocr_errors:
-                details = "; ".join(
-                    f"{source}: {error}" for source, error in ocr_errors.items()
-                )
-                raise RuntimeError(f"OCR failed: {details}")
+                    detail["documents"] = len(loaded)
+                    detail["stage"] = "split"
+                    stage = "split"
+                    file_chunks = split_documents(
+                        loaded,
+                        chunk_size=settings.chunk_size,
+                        chunk_overlap=settings.chunk_overlap,
+                        knowledge_base_id=settings.knowledge_base_id,
+                        access_policy=load_access_policy(settings.access_policy_file),
+                    )
+                    if not file_chunks:
+                        raise ValueError(
+                            f"Uploaded document contained no indexable text: "
+                            f"{path.name}"
+                        )
+                    detail["chunks"] = len(file_chunks)
+                    detail["status"] = "done"
+                    detail["stage"] = "done"
+                    detail["duration_ms"] = round((perf_counter() - started) * 1000)
+                    documents.extend(loaded)
+                    chunks.extend(file_chunks)
+                except Exception as exc:
+                    detail["status"] = "failed"
+                    detail["stage"] = (
+                        "split" if detail["stage"] == "split" else "load"
+                    )
+                    detail["duration_ms"] = round((perf_counter() - started) * 1000)
+                    detail["error"] = str(exc)
+                    failed_files.append(path.name)
+                    processed += 1
+                    notify(detail)
+                    if not continue_on_error:
+                        raise
+                else:
+                    processed += 1
+                    notify(detail)
 
-            stage = "split"
-            chunks = split_documents(
-                documents,
-                chunk_size=settings.chunk_size,
-                chunk_overlap=settings.chunk_overlap,
-                knowledge_base_id=settings.knowledge_base_id,
-                access_policy=load_access_policy(settings.access_policy_file),
-            )
-            if not chunks:
+            if cancelled:
+                stage = "cancelled"
+                for skipped_index in range(processed, total):
+                    skipped_path = Path(paths[skipped_index])
+                    current_file = skipped_path.name
+                    skipped: dict[str, object] = {
+                        "index": skipped_index,
+                        "name": skipped_path.name,
+                        "size_bytes": 0,
+                        "status": "skipped",
+                        "cache_hit": False,
+                        "documents": 0,
+                        "chunks": 0,
+                        "duration_ms": 0,
+                        "stage": "cancelled",
+                        "error": "",
+                    }
+                    file_details.append(skipped)
+                    notify(skipped)
+
+            if chunks:
+                stage = "vector_write"
+                current_file = ""
+                notify()
+                replace_documents(
+                    documents=chunks,
+                    persist_dir=settings.chroma_persist_dir,
+                    embedding_model=settings.embedding_model,
+                    embedding_api_key=settings.embedding_api_key,
+                    embedding_base_url=settings.embedding_base_url,
+                    knowledge_base_id=settings.knowledge_base_id,
+                )
+                write_index_manifest(
+                    settings.chroma_persist_dir, settings.embedding_model
+                )
+                rebuild_bm25_index(
+                    settings.chroma_persist_dir,
+                    settings.embedding_model,
+                    settings.embedding_api_key,
+                    settings.embedding_base_url,
+                )
+            elif continue_on_error and (failed_files or cancelled):
+                stage = "cancelled" if cancelled else "failed"
+                current_file = ""
+                notify()
+            else:
                 raise ValueError("Uploaded documents contained no indexable text")
-
-            stage = "vector_write"
-            replace_documents(
-                documents=chunks,
-                persist_dir=settings.chroma_persist_dir,
-                embedding_model=settings.embedding_model,
-                embedding_api_key=settings.embedding_api_key,
-                embedding_base_url=settings.embedding_base_url,
-                knowledge_base_id=settings.knowledge_base_id,
-            )
-            write_index_manifest(settings.chroma_persist_dir, settings.embedding_model)
-            rebuild_bm25_index(
-                settings.chroma_persist_dir,
-                settings.embedding_model,
-                settings.embedding_api_key,
-                settings.embedding_base_url,
-            )
     except Exception as exc:
         # 原异常仍原样抛给上传任务（任务页继续显示失败）；审计只写清洗后的原因，
         # 不含 traceback / Token / 预签名 URL。
@@ -291,7 +389,16 @@ def ingest_files(
         )
         raise
 
-    result = FileIngestResult(len(paths), len(documents), len(chunks))
+    successful_files = sum(
+        1 for detail in file_details if detail["status"] == "done"
+    )
+    result = FileIngestResult(
+        files=successful_files,
+        documents=len(documents),
+        chunks=len(chunks),
+        failed_files=tuple(failed_files),
+        cancelled=cancelled,
+    )
     # Chunks carry the doc_id that split_documents assigned; the log uses it to
     # correlate an ingest with the access policy.
     doc_ids = sorted(
@@ -306,6 +413,17 @@ def ingest_files(
         actor=actor,
         knowledge_base_id=settings.knowledge_base_id,
         files=filenames,
+        failed_files=sorted(failed_files),
+        cancelled=cancelled,
+        status=(
+            "cancelled"
+            if cancelled
+            else (
+                "partial"
+                if failed_files and successful_files
+                else ("failed" if failed_files else "success")
+            )
+        ),
         doc_ids=doc_ids,
         documents=result.documents,
         chunks=result.chunks,

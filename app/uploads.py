@@ -122,7 +122,52 @@ class UploadJobStore:
         )
         self._load()
 
-    def create(self, filenames: list[str], paths: list[Path]) -> dict[str, Any]:
+    def _new_job(
+        self,
+        filenames: list[str],
+        paths: list[Path],
+        structurize: bool = False,
+        actor: str = "",
+    ) -> dict[str, Any]:
+        return {
+            "id": uuid.uuid4().hex,
+            "filenames": list(filenames),
+            "paths": [str(path) for path in paths],
+            "structurize": structurize,
+            "actor": actor,
+            "status": "queued",
+            "stage": "queued",
+            "error": "",
+            "files": 0,
+            "documents": 0,
+            "chunks": 0,
+            "failed_files": [],
+            "progress_done": 0,
+            "progress_total": len(paths),
+            "current_file": "",
+            "file_details": [],
+            "continue_on_error": True,
+            "cancel_requested": False,
+            "runtime": {
+                "embedding_model": self._settings.embedding_model,
+                "knowledge_base_id": self._settings.knowledge_base_id,
+                "structurize_provider": "mineru" if structurize else "",
+                "mineru_model_version": (
+                    self._settings.mineru_model_version if structurize else ""
+                ),
+            },
+            "created_at": utc_now(),
+            "started_at": "",
+            "finished_at": "",
+        }
+
+    def create(
+        self,
+        filenames: list[str],
+        paths: list[Path],
+        structurize: bool = False,
+        actor: str = "",
+    ) -> dict[str, Any]:
         with self._lock:
             active = [
                 job
@@ -140,25 +185,12 @@ class UploadJobStore:
                 if str(path.resolve()) in queued_paths:
                     raise ValueError(f"File is already queued: {path.name}")
 
-            job_id = uuid.uuid4().hex
-            job: dict[str, Any] = {
-                "id": job_id,
-                "filenames": filenames,
-                "paths": [str(path) for path in paths],
-                "status": "queued",
-                "error": "",
-                "files": 0,
-                "documents": 0,
-                "chunks": 0,
-                "created_at": utc_now(),
-                "started_at": "",
-                "finished_at": "",
-            }
-            self._jobs[job_id] = job
+            job = self._new_job(filenames, paths, structurize, actor)
+            self._jobs[job["id"]] = job
             self._save_locked()
 
-        self._executor.submit(self._run, job_id)
-        return self.snapshot_job(job_id)
+        self._executor.submit(self._run, job["id"])
+        return self.snapshot_job(job["id"])
 
     def create_uploaded(
         self,
@@ -204,45 +236,54 @@ class UploadJobStore:
                 for path in paths:
                     path.unlink(missing_ok=True)
                 raise
-            job_id = uuid.uuid4().hex
-            job: dict[str, Any] = {
-                "id": job_id,
-                "filenames": [filename for filename, _ in files],
-                "paths": [str(path) for path in paths],
-                "structurize": structurize,
-                "actor": actor,
-                "status": "queued",
-                "error": "",
-                "files": 0,
-                "documents": 0,
-                "chunks": 0,
-                "created_at": utc_now(),
-                "started_at": "",
-                "finished_at": "",
-            }
-            self._jobs[job_id] = job
+            job = self._new_job(
+                [filename for filename, _ in files], paths, structurize, actor
+            )
+            self._jobs[job["id"]] = job
             self._save_locked()
 
-        self._executor.submit(self._run, job_id)
-        return self.snapshot_job(job_id)
+        self._executor.submit(self._run, job["id"])
+        return self.snapshot_job(job["id"])
 
     def snapshot_job(self, job_id: str) -> dict[str, Any]:
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None:
                 raise KeyError("Upload job not found")
-            return dict(job)
+            return self._snapshot(job)
 
     def snapshot(self) -> list[dict[str, Any]]:
         with self._lock:
             return [
-                dict(job)
+                self._snapshot(job)
                 for job in sorted(
                     self._jobs.values(),
                     key=lambda job: job["created_at"],
                     reverse=True,
                 )
             ]
+
+    def _snapshot(self, job: dict[str, Any]) -> dict[str, Any]:
+        snapshot = dict(job)
+        snapshot["file_details"] = [
+            dict(item) for item in job.get("file_details", [])
+        ]
+        snapshot["runtime"] = dict(job.get("runtime") or {})
+        snapshot["failed_files"] = list(job.get("failed_files") or [])
+        snapshot["queue_position"] = self._queue_position_locked(job)
+        return snapshot
+
+    def _queue_position_locked(self, job: dict[str, Any]) -> int:
+        """How many active jobs were created before this one (0 while running)."""
+
+        if job.get("status") != "queued":
+            return 0
+        return sum(
+            1
+            for other in self._jobs.values()
+            if other.get("status") in {"queued", "indexing"}
+            and other.get("created_at", "") < job.get("created_at", "")
+        )
 
     def recover(self) -> None:
         with self._lock:
@@ -254,45 +295,165 @@ class UploadJobStore:
             for job_id in pending:
                 job = self._jobs[job_id]
                 job["status"] = "queued"
+                job["stage"] = "queued"
                 job["started_at"] = ""
                 job["error"] = ""
+                job["progress_done"] = 0
+                job["progress_total"] = len(job.get("paths", []))
+                job["current_file"] = ""
+                job["file_details"] = []
+                job["failed_files"] = []
+                job["cancel_requested"] = False
             if pending:
                 self._save_locked()
         for job_id in pending:
             self._executor.submit(self._run, job_id)
 
+    def request_cancel(self, job_id: str) -> dict[str, Any]:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise KeyError("Upload job not found")
+            if job.get("status") == "queued":
+                job["status"] = "cancelled"
+                job["stage"] = "cancelled"
+                job["cancel_requested"] = True
+                job["finished_at"] = utc_now()
+                self._prune_locked()
+                self._save_locked()
+            elif job.get("status") == "indexing":
+                job["cancel_requested"] = True
+                self._save_locked()
+            return self._snapshot(job)
+
+    def retry_failed(self, job_id: str) -> dict[str, Any]:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise KeyError("Upload job not found")
+            failed = [
+                detail
+                for detail in job.get("file_details", [])
+                if detail.get("status") == "failed"
+            ]
+            if not failed:
+                raise ValueError("No failed files to retry")
+            paths: list[Path] = []
+            for detail in failed:
+                index = int(detail.get("index", -1))
+                if index < 0 or index >= len(job.get("paths", [])):
+                    raise ValueError("Failed file path is no longer available")
+                path = Path(job["paths"][index])
+                if not path.is_file():
+                    raise ValueError(f"File no longer exists: {path.name}")
+                paths.append(path)
+            filenames = [path.name for path in paths]
+            structurize = bool(job.get("structurize", False))
+            actor = str(job.get("actor", ""))
+
+        return self.create(filenames, paths, structurize, actor)
+
     def _run(self, job_id: str) -> None:
         from app.service import ingest_files
 
         with self._lock:
-            job = self._jobs[job_id]
+            job = self._jobs.get(job_id)
+            if job is None:
+                return
+            if job.get("cancel_requested") or job.get("status") == "cancelled":
+                job["status"] = "cancelled"
+                job["stage"] = "cancelled"
+                job["finished_at"] = utc_now()
+                self._save_locked()
+                return
             job["status"] = "indexing"
+            job["stage"] = "load"
             job["started_at"] = utc_now()
             self._save_locked()
             paths = [Path(path) for path in job["paths"]]
             structurize = job.get("structurize", False)
             actor = job.get("actor", "")
+            continue_on_error = bool(job.get("continue_on_error", True))
+
+        def should_cancel() -> bool:
+            with self._lock:
+                current = self._jobs.get(job_id)
+                return bool(current and current.get("cancel_requested"))
+
+        def progress(
+            stage: str,
+            done: int,
+            total: int,
+            current_file: str,
+            file_detail: dict[str, object] | None,
+        ) -> None:
+            with self._lock:
+                current = self._jobs.get(job_id)
+                if current is None:
+                    return
+                current["stage"] = stage
+                current["progress_done"] = done
+                current["progress_total"] = total
+                current["current_file"] = current_file
+                if file_detail is not None:
+                    details = current.setdefault("file_details", [])
+                    index = int(file_detail.get("index", len(details)))
+                    while len(details) <= index:
+                        details.append({})
+                    details[index] = dict(file_detail)
+                self._save_locked()
 
         try:
-            result = ingest_files(self._settings, paths, structurize, actor)
+            result = ingest_files(
+                self._settings,
+                paths,
+                structurize,
+                actor,
+                progress=progress,
+                should_cancel=should_cancel,
+                continue_on_error=continue_on_error,
+            )
         except Exception as exc:
             with self._lock:
-                job = self._jobs[job_id]
-                job["status"] = "failed"
-                job["error"] = str(exc)
-                job["finished_at"] = utc_now()
-                self._save_locked()
+                job = self._jobs.get(job_id)
+                if job is not None:
+                    job["status"] = "failed"
+                    job["stage"] = "failed"
+                    job["error"] = str(exc)
+                    job["finished_at"] = utc_now()
+                    self._save_locked()
             return
 
         with self._lock:
-            job = self._jobs[job_id]
+            job = self._jobs.get(job_id)
+            if job is None:
+                return
+            if result.cancelled:
+                status = "cancelled"
+            elif result.failed_files and result.files:
+                status = "partial"
+            elif result.failed_files:
+                status = "failed"
+            else:
+                status = "completed"
             job.update(
-                status="completed",
+                status=status,
+                stage=(
+                    "cancelled"
+                    if result.cancelled
+                    else ("failed" if status == "failed" else "done")
+                ),
                 files=result.files,
                 documents=result.documents,
                 chunks=result.chunks,
+                failed_files=list(result.failed_files),
+                progress_done=len(job.get("file_details", [])),
+                progress_total=len(paths),
+                current_file="",
                 finished_at=utc_now(),
             )
+            if status == "failed" and not job.get("error"):
+                job["error"] = "所有文件处理失败"
             self._prune_locked()
             self._save_locked()
 
@@ -302,11 +463,23 @@ class UploadJobStore:
         try:
             payload = json.loads(self._state_path.read_text(encoding="utf-8"))
             if isinstance(payload, list):
-                self._jobs = {
-                    str(job.get("id")): job
-                    for job in payload
-                    if isinstance(job, dict) and job.get("id")
-                }
+                self._jobs = {}
+                for job in payload:
+                    if not isinstance(job, dict) or not job.get("id"):
+                        continue
+                    job.setdefault(
+                        "stage",
+                        "queued" if job.get("status") == "queued" else "done",
+                    )
+                    job.setdefault("progress_done", 0)
+                    job.setdefault("progress_total", len(job.get("paths", [])))
+                    job.setdefault("current_file", "")
+                    job.setdefault("file_details", [])
+                    job.setdefault("failed_files", [])
+                    job.setdefault("continue_on_error", True)
+                    job.setdefault("cancel_requested", False)
+                    job.setdefault("runtime", {})
+                    self._jobs[str(job["id"])] = job
         except (OSError, json.JSONDecodeError):
             # A corrupt UI queue must not prevent document ingestion.
             self._jobs = {}
@@ -325,7 +498,7 @@ class UploadJobStore:
             (
                 job
                 for job in self._jobs.values()
-                if job["status"] in {"completed", "failed"}
+                if job["status"] in {"completed", "failed", "partial", "cancelled"}
             ),
             key=lambda job: job["finished_at"],
             reverse=True,

@@ -9,6 +9,32 @@ from langchain_openai import OpenAIEmbeddings
 
 COLLECTION_NAME = "knowledge_base"
 
+# Chroma 的 embeddings queue 单次最多接受 max_batch_size 条（本机 5461）。一次
+# 入库可能产生上万切片，所以所有写操作都按这个保守批大小切分。
+CHROMA_WRITE_BATCH_SIZE = 1000
+
+
+def _batches(values: list, size: int | None = None):
+    batch_size = max(1, size or CHROMA_WRITE_BATCH_SIZE)
+    for start in range(0, len(values), batch_size):
+        yield values[start : start + batch_size]
+
+
+def _add_documents(
+    vector_store: Chroma, documents: list[Document], ids: list[str]
+) -> None:
+    batch_size = max(1, CHROMA_WRITE_BATCH_SIZE)
+    for start in range(0, len(documents), batch_size):
+        vector_store.add_documents(
+            documents[start : start + batch_size],
+            ids=ids[start : start + batch_size],
+        )
+
+
+def _delete_ids(vector_store: Chroma, ids: list[str]) -> None:
+    for batch in _batches(ids):
+        vector_store.delete(ids=batch)
+
 # chromadb 用进程级引用计数共享一个 System（按 persist_directory 索引）。每次调用都
 # 新建 Chroma 意味着每次创建都 +2、每次回收都可能 -2 归零，于是 System 被反复
 # stop()；而「创建客户端」这一步要打开 sqlite 校验 tenant，和并发写入撞上就会
@@ -110,11 +136,11 @@ def ingest_documents(
             kwargs["where"] = {"knowledge_base_id": knowledge_base_id}
         existing_ids = set(vector_store.get(**kwargs).get("ids", []))
     if documents:
-        vector_store.add_documents(documents, ids=document_ids)
+        _add_documents(vector_store, documents, document_ids)
     stale_ids = existing_ids.difference(document_ids)
     if stale_ids:
         # Delete stale records only after all new embeddings were written successfully.
-        vector_store.delete(ids=sorted(stale_ids))
+        _delete_ids(vector_store, sorted(stale_ids))
 
     return vector_store
 
@@ -157,10 +183,10 @@ def replace_documents(
         old_ids = set(existing.get("ids", []))
 
     if documents:
-        vector_store.add_documents(documents, ids=document_ids)
+        _add_documents(vector_store, documents, document_ids)
     stale_ids = old_ids.difference(document_ids)
     if stale_ids:
-        vector_store.delete(ids=sorted(stale_ids))
+        _delete_ids(vector_store, sorted(stale_ids))
 
     return vector_store
 
@@ -190,7 +216,7 @@ def delete_documents(
     existing = vector_store.get(where=where, include=[])
     stale_ids = sorted(existing.get("ids", []))
     if stale_ids:
-        vector_store.delete(ids=stale_ids)
+        _delete_ids(vector_store, stale_ids)
     return len(stale_ids)
 
 
@@ -251,5 +277,10 @@ def set_document_access_group(
 
     # ponytail: langchain_chroma exposes no public metadata-only update, so reach
     # through to the underlying chromadb collection.
-    vector_store._collection.update(ids=ids, metadatas=updated)
+    batch_size = max(1, CHROMA_WRITE_BATCH_SIZE)
+    for start in range(0, len(ids), batch_size):
+        vector_store._collection.update(
+            ids=ids[start : start + batch_size],
+            metadatas=updated[start : start + batch_size],
+        )
     return len(ids)

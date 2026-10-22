@@ -76,6 +76,17 @@ def read(file_path: Path, provider: str, model_version: str = "") -> str | None:
     return markdown if isinstance(markdown, str) and markdown else None
 
 
+def has_entry(file_path: Path, provider: str, model_version: str = "") -> bool:
+    """Whether a usable cached conversion exists, without reading it back."""
+
+    if _disabled() or not Path(file_path).is_file():
+        return False
+    try:
+        return _entry_path(file_path, provider, model_version).is_file()
+    except OSError:
+        return False
+
+
 def write(
     file_path: Path,
     provider: str,

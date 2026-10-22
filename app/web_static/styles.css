@@ -894,6 +894,118 @@ svg {
   transition: width 200ms ease;
 }
 
+.job-item.partial .job-badge {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.job-item.cancelled .job-badge {
+  background: var(--bg);
+  color: var(--ink-faint);
+}
+
+.job-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.job-progress-text,
+.job-progress-time {
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+.job-progress-time {
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.job-files {
+  margin-top: 4px;
+  font-size: 11.5px;
+}
+
+.job-files > summary {
+  cursor: pointer;
+  color: var(--ink-soft);
+}
+
+.job-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--line);
+}
+
+.job-file-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.job-file-row.failed {
+  background: var(--danger-soft);
+}
+
+.job-file-row.skipped {
+  opacity: 0.7;
+}
+
+.job-file-name {
+  min-width: 0;
+  font-weight: 600;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-file-status {
+  flex: none;
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+.job-file-row.failed .job-file-status,
+.job-file-row.failed .job-file-error {
+  color: var(--danger);
+}
+
+.job-file-meta {
+  flex: 1 1 100%;
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+
+.job-file-error {
+  flex: 1 1 100%;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.job-runtime {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--ink-faint);
+  overflow-wrap: anywhere;
+}
+
+.job-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 4px;
+}
+
 .empty-list,
 .loading-state {
   padding: 14px 10px;
@@ -1877,6 +1989,18 @@ svg {
   border-color: var(--danger);
   background: var(--danger-soft);
   color: var(--danger);
+}
+
+.audit-result.partial {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.audit-result.cancelled {
+  border-color: var(--line);
+  background: var(--bg);
+  color: var(--ink-faint);
 }
 
 .audit-error {

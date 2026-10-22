@@ -78,9 +78,18 @@ function operationType(entry) {
   return "other";
 }
 
+const STATUS_LABELS = {
+  success: "成功",
+  failed: "失败",
+  partial: "部分完成",
+  cancelled: "已取消",
+};
+
 function entryStatus(entry) {
-  // 历史日志没有 status，按成功兼容；只有显式 failed 才算失败。
-  return entry.status === "failed" ? "failed" : "success";
+  // 历史日志没有 status，按成功兼容；只有显式异常状态才改变展示。
+  return ["failed", "partial", "cancelled"].includes(entry.status)
+    ? entry.status
+    : "success";
 }
 
 function createRow(entry) {
@@ -98,7 +107,7 @@ function createRow(entry) {
   event.textContent = EVENT_LABELS[entry.event] || String(entry.event || "");
   const result = document.createElement("span");
   result.className = `audit-result ${status}`;
-  result.textContent = status === "failed" ? "失败" : "成功";
+  result.textContent = STATUS_LABELS[status] || status;
   headMain.append(event, result);
   const time = document.createElement("span");
   time.className = "audit-time";

@@ -338,8 +338,12 @@ async function pollJobs() {
     const previous = new Map(state.jobs.map((job) => [job.id, job.status]));
     state.jobs = [...payload.jobs, ...localUploads];
 
-    const completed = state.jobs.filter((job) => job.status === "completed");
-    const changed = completed.some((job) => previous.get(job.id) !== "completed");
+    const completed = state.jobs.filter((job) =>
+      ["completed", "partial"].includes(job.status),
+    );
+    const changed = completed.some(
+      (job) => previous.get(job.id) !== job.status,
+    );
     renderJobs();
     if (changed) {
       emit("documents:refresh");
@@ -376,8 +380,250 @@ function jobStatusText(status) {
     queued: "排队",
     indexing: "索引中",
     completed: "完成",
+    partial: "部分完成",
     failed: "失败",
+    cancelled: "已取消",
   }[status] || status;
+}
+
+function formatDuration(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  const minutes = Math.floor(total / 60);
+  const rest = total % 60;
+  return `${minutes}:${String(rest).padStart(2, "0")}`;
+}
+
+function jobStageText(job) {
+  return {
+    queued: "等待处理",
+    load: job.structurize ? "正在解析文件（MinerU）" : "正在解析文件",
+    split: "正在切片",
+    vector_write: "正在写入向量并重建索引",
+    done: "完成",
+    cancelled: "已取消",
+    failed: "失败",
+  }[job.stage] || "正在处理";
+}
+
+function jobElapsed(job) {
+  const started = new Date(job.started_at || job.created_at || "").getTime();
+  if (Number.isNaN(started)) return "";
+  const elapsed = Math.max(0, Math.round((Date.now() - started) / 1000));
+  const done = (job.file_details || []).filter(
+    (detail) => detail.status === "done",
+  );
+  const total = Number(job.progress_total) || 0;
+  const parts = [`已用时 ${formatDuration(elapsed)}`];
+  if (done.length && total > done.length) {
+    const totalMs = done.reduce(
+      (sum, detail) => sum + (Number(detail.duration_ms) || 0),
+      0,
+    );
+    const average = totalMs / done.length;
+    parts.push(
+      `预计剩余 ${formatDuration((average * (total - done.length)) / 1000)}`,
+    );
+  } else if (total) {
+    parts.push("预计剩余 估算中");
+  }
+  return parts.join(" · ");
+}
+
+function jobProgress(job) {
+  const total = Number(job.progress_total) || 0;
+  const done = Number(job.progress_done) || 0;
+  const percent = total ? Math.min(100, Math.round((done / total) * 100)) : 0;
+
+  const wrap = document.createElement("div");
+  wrap.className = "job-progress";
+
+  const bar = document.createElement("div");
+  bar.className = "progress";
+  const fill = document.createElement("span");
+  fill.style.width = `${percent}%`;
+  bar.append(fill);
+  wrap.append(bar);
+
+  const line = document.createElement("div");
+  line.className = "job-progress-text";
+  const bits = [
+    `${jobStageText(job)} · 已处理 ${done}/${total} 个文件`,
+  ];
+  if (job.current_file) bits.push(`当前：${job.current_file}`);
+  line.textContent = bits.join(" · ");
+  wrap.append(line);
+
+  const timing = jobElapsed(job);
+  if (timing) {
+    const time = document.createElement("div");
+    time.className = "job-progress-time";
+    time.textContent = timing;
+    wrap.append(time);
+  }
+
+  const completed = (job.file_details || []).filter(
+    (detail) => detail.status === "done",
+  );
+  const documents = completed.reduce(
+    (sum, detail) => sum + (Number(detail.documents) || 0),
+    0,
+  );
+  const chunks = completed.reduce(
+    (sum, detail) => sum + (Number(detail.chunks) || 0),
+    0,
+  );
+  if (documents || chunks) {
+    const totals = document.createElement("div");
+    totals.className = "job-progress-time";
+    totals.textContent = `已解析 ${documents} 页/文档 · ${chunks} 切片`;
+    wrap.append(totals);
+  }
+  return wrap;
+}
+
+function createFileDetails(job) {
+  const details = job.file_details || [];
+  if (!details.length) return null;
+
+  const box = document.createElement("details");
+  box.className = "job-files";
+  const summary = document.createElement("summary");
+  const failed = details.filter((detail) => detail.status === "failed").length;
+  const skipped = details.filter((detail) => detail.status === "skipped").length;
+  summary.textContent = [
+    `文件明细（${details.length}）`,
+    failed ? `${failed} 失败` : "",
+    skipped ? `${skipped} 跳过` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  const list = document.createElement("div");
+  list.className = "job-file-list";
+  for (const detail of details) {
+    const row = document.createElement("div");
+    row.className = `job-file-row ${detail.status || ""}`;
+
+    const name = document.createElement("span");
+    name.className = "job-file-name";
+    name.textContent = detail.name || "未命名文件";
+
+    const status = document.createElement("span");
+    status.className = "job-file-status";
+    status.textContent =
+      {
+        pending: "等待",
+        loading: "解析中",
+        done: "完成",
+        failed: "失败",
+        skipped: "已跳过",
+      }[detail.status] || detail.status || "";
+
+    const meta = document.createElement("span");
+    meta.className = "job-file-meta";
+    meta.textContent = [
+      detail.size_bytes ? formatBytes(detail.size_bytes) : "",
+      detail.documents ? `${detail.documents} 页/文档` : "",
+      detail.chunks ? `${detail.chunks} 切片` : "",
+      detail.duration_ms
+        ? `${(Number(detail.duration_ms) / 1000).toFixed(1)}s`
+        : "",
+      detail.cache_hit ? "缓存命中" : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+
+    row.append(name, status, meta);
+    if (detail.error) {
+      const error = document.createElement("span");
+      error.className = "job-file-error";
+      error.textContent = detail.error;
+      row.append(error);
+    }
+    list.append(row);
+  }
+  box.append(summary, list);
+  return box;
+}
+
+function jobRuntime(job) {
+  const runtime = job.runtime || {};
+  const bits = [
+    job.actor ? `操作者 ${job.actor}` : "",
+    runtime.structurize_provider
+      ? `${runtime.structurize_provider}${
+          runtime.mineru_model_version
+            ? ` ${runtime.mineru_model_version}`
+            : ""
+        }`
+      : "",
+    runtime.embedding_model ? `嵌入 ${runtime.embedding_model}` : "",
+    runtime.knowledge_base_id ? `KB ${runtime.knowledge_base_id}` : "",
+  ].filter(Boolean);
+  if (!bits.length) return null;
+  const footer = document.createElement("div");
+  footer.className = "job-runtime";
+  footer.textContent = bits.join(" · ");
+  return footer;
+}
+
+function jobActions(job) {
+  const actions = document.createElement("div");
+  actions.className = "job-actions";
+
+  if (job.status === "queued" || job.status === "indexing") {
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "text-button";
+    cancel.textContent =
+      job.status === "queued"
+        ? "取消排队"
+        : "取消（当前文件结束后生效）";
+    cancel.addEventListener("click", async () => {
+      cancel.disabled = true;
+      try {
+        await requestJson(`/api/upload-jobs/${job.id}/cancel`, {
+          method: "POST",
+        });
+        await pollJobs();
+      } catch (error) {
+        showToast(error.message, "error");
+      } finally {
+        cancel.disabled = false;
+      }
+    });
+    actions.append(cancel);
+  }
+
+  const hasFailed = (job.file_details || []).some(
+    (detail) => detail.status === "failed",
+  );
+  if (
+    hasFailed &&
+    ["partial", "failed", "cancelled"].includes(job.status)
+  ) {
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "ghost-button";
+    retry.textContent = "重试失败文件";
+    retry.addEventListener("click", async () => {
+      retry.disabled = true;
+      try {
+        await requestJson(`/api/upload-jobs/${job.id}/retry`, {
+          method: "POST",
+        });
+        startPolling();
+        await pollJobs();
+      } catch (error) {
+        showToast(error.message, "error");
+      } finally {
+        retry.disabled = false;
+      }
+    });
+    actions.append(retry);
+  }
+
+  return actions.children.length ? actions : null;
 }
 
 function renderJobs() {
@@ -405,10 +651,11 @@ function renderJobs() {
     const header = document.createElement("div");
     header.className = "job-header";
     const title = document.createElement("strong");
-    title.textContent =
+    const summary =
       job.filenames.length > 1
         ? `${job.filenames[0]} 等 ${job.filenames.length} 个文件`
-        : job.filenames[0];
+        : job.filenames[0] || "上传";
+    title.textContent = job.label ? `${job.label} · ${summary}` : summary;
     const badge = document.createElement("span");
     badge.className = "job-badge";
     badge.textContent = jobStatusText(job.status);
@@ -426,12 +673,31 @@ function renderJobs() {
     } else if (job.status === "failed") {
       detail.textContent = job.error || "处理失败";
     } else if (job.status === "completed") {
-      detail.textContent = `${job.files} 文件 · ${job.documents} 文档页 · ${job.chunks} 切片`;
+      detail.textContent = `${job.files} 文件 · ${job.documents} 页/文档 · ${job.chunks} 切片`;
+    } else if (job.status === "partial") {
+      const failed = (job.file_details || []).filter(
+        (row) => row.status === "failed",
+      ).length;
+      detail.textContent = `成功 ${job.files} 文件 · ${job.chunks} 切片 · ${failed} 个文件失败`;
+    } else if (job.status === "cancelled") {
+      detail.textContent = `已取消 · 成功入库 ${job.files} 文件 · ${job.chunks} 切片`;
+    } else if (job.status === "queued") {
+      detail.textContent = job.queue_position
+        ? `排队中 · 前面还有 ${job.queue_position} 个任务`
+        : "等待处理";
     } else {
-      detail.textContent = job.status === "indexing" ? "正在解析并生成向量" : "等待处理";
+      detail.textContent = "正在解析并生成向量";
     }
 
     item.append(header, detail);
+    if (job.status === "indexing") item.append(jobProgress(job));
+    const files = createFileDetails(job);
+    if (files) item.append(files);
+    const runtime = jobRuntime(job);
+    if (runtime) item.append(runtime);
+    const actions = jobActions(job);
+    if (actions) item.append(actions);
+
     el.jobList.append(item);
   }
 }
@@ -1150,6 +1416,7 @@ export default {
     mounted = true;
 
     el.chooseFilesButton.addEventListener("click", openFilePicker);
+    el.chooseFolderButton.addEventListener("click", openFolderPicker);
     el.dropZone.addEventListener("click", openFilePicker);
     el.dropZone.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
@@ -1160,6 +1427,10 @@ export default {
     el.fileInput.addEventListener("change", () => {
       uploadFiles(el.fileInput.files);
       el.fileInput.value = "";
+    });
+    el.folderInput.addEventListener("change", () => {
+      uploadFiles(el.folderInput.files);
+      el.folderInput.value = "";
     });
 
     for (const eventName of ["dragenter", "dragover"]) {
@@ -1255,8 +1526,3 @@ export default {
     renderDocuments();
   },
 };
-    el.chooseFolderButton.addEventListener("click", openFolderPicker);
-    el.folderInput.addEventListener("change", () => {
-      uploadFiles(el.folderInput.files);
-      el.folderInput.value = "";
-    });
