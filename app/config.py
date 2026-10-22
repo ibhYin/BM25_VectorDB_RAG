@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     fusion_alpha: float = 0.5
     candidate_pool_size: int = 100
     similarity_threshold: float = 0.35
+    # 聚合统计（语义归类计数）默认参数。
+    aggregate_sample_size: int = 200
+    aggregate_batch_size: int = 10
+    aggregate_max_workers: int = 4
+    aggregate_similarity_threshold: float = 0.85
     # 2 核小内存服务器：并发 LLM 调用过多会 CPU 过度订阅并抬高峰值内存，默认调低。
     max_concurrent_answers: int = 3
     max_request_bytes: int = 1_048_576
@@ -115,6 +120,16 @@ class Settings(BaseSettings):
             raise ValueError("FUSION_K must be greater than zero")
         if not 0.0 <= self.fusion_alpha <= 1.0:
             raise ValueError("FUSION_ALPHA must be between 0 and 1")
+        if not 10 <= self.aggregate_sample_size <= 500:
+            raise ValueError("AGGREGATE_SAMPLE_SIZE must be between 10 and 500")
+        if not 1 <= self.aggregate_batch_size <= 20:
+            raise ValueError("AGGREGATE_BATCH_SIZE must be between 1 and 20")
+        if not 1 <= self.aggregate_max_workers <= 8:
+            raise ValueError("AGGREGATE_MAX_WORKERS must be between 1 and 8")
+        if not 0.0 <= self.aggregate_similarity_threshold <= 1.0:
+            raise ValueError(
+                "AGGREGATE_SIMILARITY_THRESHOLD must be between 0 and 1"
+            )
         if self.max_concurrent_answers <= 0:
             raise ValueError("MAX_CONCURRENT_ANSWERS must be greater than zero")
         if self.ocr_max_pages is not None and self.ocr_max_pages <= 0:

@@ -168,6 +168,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"jobs": get_upload_store().snapshot()})
         elif parsed.path.startswith("/api/answer-jobs/"):
             self._handle_answer_job(parsed.path.rsplit("/", 1)[-1])
+        elif parsed.path.startswith("/api/aggregate-jobs/"):
+            self._handle_aggregate_job(parsed.path.rsplit("/", 1)[-1])
         elif parsed.path.startswith("/static/"):
             static_path = STATIC_DIR / parsed.path.removeprefix("/static/")
             self._send_static_file(static_path, self._content_type(static_path))
@@ -201,6 +203,18 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._handle_staging_decision(item_id, action)
         elif parsed.path == "/api/answer-jobs":
             self._handle_create_answer_job()
+        elif parsed.path == "/api/aggregate-jobs":
+            self._handle_create_aggregate_job()
+        elif parsed.path.startswith("/api/upload-jobs/"):
+            job_id, _, action = parsed.path.removeprefix(
+                "/api/upload-jobs/"
+            ).partition("/")
+            if action == "cancel":
+                self._handle_upload_job_cancel(job_id)
+            elif action == "retry":
+                self._handle_upload_job_retry(job_id)
+            else:
+                raise RequestError(HTTPStatus.NOT_FOUND, "Not found")
         elif parsed.path == "/api/conversations":
             self._handle_create_conversation()
         elif parsed.path == "/api/users":
@@ -382,6 +396,38 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         user = self._current_user(get_settings())
         try:
             job = get_answer_store().get_for_user(job_id, user)
+        except KeyError as exc:
+            raise RequestError(HTTPStatus.NOT_FOUND, str(exc)) from exc
+        except PermissionError as exc:
+            raise RequestError(HTTPStatus.FORBIDDEN, str(exc)) from exc
+        self._send_json(job)
+
+    def _handle_create_aggregate_job(self) -> None:
+        from app.aggregate_jobs import get_aggregate_store
+
+        payload = self._read_json()
+        settings = get_settings()
+        user = self._current_user(settings)
+        question_value = payload.get("question", "")
+        if not isinstance(question_value, str):
+            raise RequestError(HTTPStatus.BAD_REQUEST, "question must be a string")
+        question = question_value.strip()
+        if not question:
+            raise RequestError(HTTPStatus.BAD_REQUEST, "Question is required")
+
+        params = self._read_aggregate_params(payload)
+        try:
+            job = get_aggregate_store().create(question, params, user=user)
+        except ValueError as exc:
+            raise RequestError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+        self._send_json(job, status=HTTPStatus.ACCEPTED)
+
+    def _handle_aggregate_job(self, job_id: str) -> None:
+        from app.aggregate_jobs import get_aggregate_store
+
+        user = self._current_user(get_settings())
+        try:
+            job = get_aggregate_store().get_for_user(job_id, user)
         except KeyError as exc:
             raise RequestError(HTTPStatus.NOT_FOUND, str(exc)) from exc
         except PermissionError as exc:
@@ -1455,6 +1501,43 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         if not resolved.is_file() or STATIC_DIR.resolve() not in resolved.parents:
             self._send_error(HTTPStatus.NOT_FOUND, "Not found")
             return
+    @staticmethod
+    def _read_aggregate_params(payload: dict[str, object]) -> dict[str, object]:
+        params = WebRequestHandler._read_retrieval_params(payload)
+        # 聚合用 sample_size 控制召回量，top_k 不参与。
+        params.pop("top_k", None)
+
+        sample_size = payload.get("sample_size")
+        if sample_size is None:
+            sample_size = get_settings().aggregate_sample_size
+        else:
+            if isinstance(sample_size, bool) or not isinstance(sample_size, int):
+                raise RequestError(
+                    HTTPStatus.BAD_REQUEST, "sample_size must be an integer"
+                )
+            if not 10 <= sample_size <= 500:
+                raise RequestError(
+                    HTTPStatus.BAD_REQUEST,
+                    "sample_size must be between 10 and 500",
+                )
+
+        top_categories = payload.get("top_categories", 3)
+        if isinstance(top_categories, bool) or not isinstance(top_categories, int):
+            raise RequestError(
+                HTTPStatus.BAD_REQUEST, "top_categories must be an integer"
+            )
+        if not 1 <= top_categories <= 10:
+            raise RequestError(
+                HTTPStatus.BAD_REQUEST,
+                "top_categories must be between 1 and 10",
+            )
+
+        return {
+            **params,
+            "sample_size": sample_size,
+            "top_categories": top_categories,
+        }
+
 
         body = resolved.read_bytes()
         self.send_response(HTTPStatus.OK)

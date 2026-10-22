@@ -2929,3 +2929,141 @@ svg {
   outline-offset: -1px;
   border-radius: var(--radius);
 }
+
+/* ============================ 聚合统计 ============================ */
+
+.aggregate-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.aggregate-question-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.aggregate-question-field textarea {
+  width: 100%;
+  min-height: 78px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.aggregate-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+}
+
+.aggregate-options select {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.aggregate-status {
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+
+.aggregate-note {
+  margin-bottom: 14px;
+  padding: 8px 12px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 12px;
+}
+
+.aggregate-warning {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.aggregate-category-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.aggregate-category-head strong {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.aggregate-category-meta {
+  font-size: 12px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+.aggregate-bar {
+  height: 6px;
+  margin: 10px 0;
+  border-radius: 999px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.aggregate-bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.aggregate-category details > summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+
+.aggregate-evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.aggregate-evidence-item {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.aggregate-evidence-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.aggregate-evidence-item p {
+  margin: 6px 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+

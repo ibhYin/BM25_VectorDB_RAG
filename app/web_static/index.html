@@ -22,6 +22,7 @@
         <a class="nav-link" href="#/library" data-route="library">
           知识库<span id="nav-library-badge" class="nav-badge" hidden>0</span>
         </a>
+        <a class="nav-link" href="#/aggregate" data-route="aggregate">聚合</a>
         <a class="nav-link" id="nav-settings" href="#/settings" data-route="settings">设置</a>
         <a class="nav-link" id="nav-audit" href="#/audit" data-route="audit" hidden>审计</a>
         <a class="nav-link" id="nav-eval" href="#/eval" data-route="eval" hidden>评估</a>
@@ -194,8 +195,8 @@
               <span id="drop-zone-description">或选择后自动上传并入向量库；文件夹会递归收集其中的文档；视频/音频会自动转写语音</span>
             </div>
             <input id="file-input" class="visually-hidden" type="file" multiple accept=".pdf,.md,.txt,.mp4,.mkv,.mov,.webm,.avi,.mp3,.wav,.m4a,.aac,.flac,.ogg" />
-            <label class="upload-option">
             <input id="folder-input" class="visually-hidden" type="file" webkitdirectory multiple />
+            <label class="upload-option">
               <input id="structurize-checkbox" type="checkbox" />
               <span id="structurize-label">结构化提取</span>
             </label>
@@ -269,6 +270,43 @@
           <button id="doc-load-more" class="ghost-button" type="button" hidden>加载更多</button>
         </div>
       </div>
+    </section>
+
+    <!-- ============================ 聚合统计 ============================ -->
+    <section class="page" id="page-aggregate" hidden aria-label="聚合统计">
+      <div class="page-head">
+        <h2>聚合统计</h2>
+        <p>对召回样本做语义归类计数，例如「出现违约条款最多的三种情况」</p>
+      </div>
+
+      <form id="aggregate-form" class="panel aggregate-form">
+        <label class="aggregate-question-field">
+          <span>聚合问题</span>
+          <textarea id="aggregate-question" rows="3" required placeholder="例如：知识库里的历史合同，出现违约条款最多的三种情况是什么？"></textarea>
+        </label>
+        <div class="aggregate-options">
+          <label class="mini-field">
+            <span>样本片段数</span>
+            <input id="aggregate-sample-size" type="number" min="10" max="500" step="10" value="200" required />
+          </label>
+          <label class="mini-field">
+            <span>返回类别数</span>
+            <input id="aggregate-top-categories" type="number" min="1" max="10" step="1" value="3" required />
+          </label>
+          <label class="mini-field">
+            <span>检索方式</span>
+            <select id="aggregate-method">
+              <option value="hybrid">混合</option>
+              <option value="vector">向量</option>
+              <option value="bm25">BM25</option>
+            </select>
+          </label>
+          <button id="aggregate-submit" class="primary-button" type="submit">开始聚合</button>
+        </div>
+        <p id="aggregate-status" class="aggregate-status" role="status" aria-live="polite">就绪</p>
+      </form>
+
+      <div id="aggregate-output"></div>
     </section>
 
     <!-- ============================ 设置 ============================ -->
