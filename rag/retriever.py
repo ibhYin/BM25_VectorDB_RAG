@@ -163,46 +163,58 @@ def _search_bm25_index(
     user: UserContext | None,
     access_policy: AccessPolicy | None,
 ) -> list[dict[str, object]]:
-    """持久化索引快路径：索引给排名，正文/元数据仍从 Chroma 按 chunk_id 定向取。"""
+    """持久化索引快路径：索引给排名，正文/元数据仍从 Chroma 按 chunk_id 定向取。
 
-    from rag.bm25_index import query_bm25_index
+    有权限过滤时不能只取全局 top_k——无权限结果会占满配额；索引按页读，
+    补足到 top_k 条允许结果为止。
+    """
 
-    ranked = query_bm25_index(persist_dir, question, top_k)
-    if not ranked:
-        return []
+    from rag.bm25_index import iter_bm25_matches
 
     import chromadb
 
     from rag.vector_store import COLLECTION_NAME, metadata_client
+
+    needs_filter = access_policy is not None and user is not None
+    page_size = max(top_k, 100) if needs_filter else top_k
 
     with metadata_client(persist_dir) as client:
         try:
             collection = client.get_collection(COLLECTION_NAME, embedding_function=None)
         except chromadb.errors.NotFoundError:
             return []
-        records = collection.get(
-            where={"chunk_id": {"$in": [chunk_id for chunk_id, _ in ranked]}},
-            include=["documents", "metadatas"],
-        )
-    by_id = {
-        str(metadata.get("chunk_id", "")): (text or "", metadata or {})
-        for text, metadata in zip(
-            records["documents"] or [], records["metadatas"] or []
-        )
-    }
-    if not by_id:
-        return []
 
-    documents: list[tuple[Document, float]] = []
-    for chunk_id, score in ranked:
-        if chunk_id not in by_id:
-            continue
-        text, metadata = by_id[chunk_id]
-        if access_policy is not None and user is not None and not access_policy.can_access(
-            metadata, user, knowledge_base_id
-        ):
-            continue
-        documents.append((Document(page_content=text, metadata=metadata), score))
+        documents: list[tuple[Document, float]] = []
+        matches = iter_bm25_matches(persist_dir, question, page_size=page_size)
+        try:
+            for page in matches:
+                records = collection.get(
+                    where={"chunk_id": {"$in": [chunk_id for chunk_id, _ in page]}},
+                    include=["documents", "metadatas"],
+                )
+                by_id = {
+                    str(metadata.get("chunk_id", "")): (text or "", metadata or {})
+                    for text, metadata in zip(
+                        records["documents"] or [], records["metadatas"] or []
+                    )
+                }
+                for chunk_id, score in page:
+                    if chunk_id not in by_id:
+                        continue
+                    text, metadata = by_id[chunk_id]
+                    if needs_filter and not access_policy.can_access(
+                        metadata, user, knowledge_base_id
+                    ):
+                        continue
+                    documents.append(
+                        (Document(page_content=text, metadata=metadata), score)
+                    )
+                    if len(documents) >= top_k:
+                        break
+                if len(documents) >= top_k:
+                    break
+        finally:
+            matches.close()
 
     return build_vector_hits(documents, retrieval_method="bm25")
 

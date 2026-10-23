@@ -277,6 +277,46 @@ def test_persisted_index_respects_access_filter(tmp_path):
     assert [hit["chunk_id"] for hit in hits] == ["pub#chunk_001"]
 
 
+def test_persisted_index_fills_top_k_after_access_filter(tmp_path):
+    """无权限结果排在前面时，不能让它吃掉 top_k 配额。"""
+
+    _make_collection(
+        tmp_path,
+        [
+            ("ZXQ7429", {"chunk_id": "private#chunk_001", "groups": ["secret"]}),
+            ("ZXQ7429 " + "附加内容 " * 40,
+             {"chunk_id": "allowed#chunk_001", "groups": ["public"]}),
+        ],
+    )
+    from rag.bm25_index import rebuild_bm25_index
+
+    rebuild_bm25_index(tmp_path, embedding_model="test")
+
+    class Allowed:
+        def can_access(self, metadata, user, knowledge_base_id):
+            return "secret" not in (metadata.get("groups") or [])
+
+    hits = search_bm25("ZXQ7429", tmp_path, 1, "default", user="bob",
+                       access_policy=Allowed())
+
+    assert [hit["chunk_id"] for hit in hits] == ["allowed#chunk_001"]
+
+
+def test_bm25_index_pages_are_complete(tmp_path):
+    _make_collection(
+        tmp_path,
+        [(f"注意力 {index}", {"chunk_id": f"doc#chunk_00{index}"}) for index in range(3)],
+    )
+    from rag.bm25_index import iter_bm25_matches, query_bm25_index, rebuild_bm25_index
+
+    rebuild_bm25_index(tmp_path, embedding_model="test")
+
+    pages = list(iter_bm25_matches(tmp_path, "注意力", page_size=2))
+    assert [len(page) for page in pages] == [2, 1]
+    paged = [chunk_id for page in pages for chunk_id, _ in page]
+    assert paged == [chunk_id for chunk_id, _ in query_bm25_index(tmp_path, "注意力", 10)]
+
+
 def test_rebuild_recovers_after_failed_temporary_write(tmp_path, monkeypatch):
     """一次分词失败不能留下同名临时库，否则下一次重建永久失败。"""
 

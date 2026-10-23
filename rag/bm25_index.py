@@ -92,28 +92,57 @@ def rebuild_bm25_index(
         temporary.unlink(missing_ok=True)
 
 
+def iter_bm25_matches(
+    persist_dir: Path, question: str, page_size: int = 100
+):
+    """按分数降序逐页产出 `(chunk_id, score)`，一个只读连接内翻页。
+
+    调用方需要「过滤掉一部分结果后仍取满 top_k」时必须逐页读，而不是先取全局
+    top_k 再过滤——权限过滤会把配额吃掉。
+    """
+
+    terms = list(dict.fromkeys(tokenize(question)))
+    if not terms:
+        return
+    page_size = max(1, page_size)
+    connection = sqlite3.connect(
+        f"file:{bm25_index_path(persist_dir)}?mode=ro", uri=True
+    )
+    try:
+        offset = 0
+        while True:
+            rows = connection.execute(
+                "SELECT chunk_id, bm25(bm25) FROM bm25 WHERE bm25 MATCH ?"
+                " ORDER BY bm25(bm25) ASC, chunk_id ASC LIMIT ? OFFSET ?",
+                (" OR ".join(f'"{term}"' for term in terms), page_size, offset),
+            ).fetchall()
+            if not rows:
+                return
+            yield [
+                (chunk_id, -score)
+                for chunk_id, score in rows
+                if score is not None
+            ]
+            if len(rows) < page_size:
+                return
+            offset += len(rows)
+    finally:
+        connection.close()
+
+
 def query_bm25_index(
     persist_dir: Path, question: str, top_k: int
 ) -> list[tuple[str, float]]:
     """按 BM25 分数从持久化索引取 top_k 个 (chunk_id, score)，已按分数降序。"""
 
-    terms = list(dict.fromkeys(tokenize(question)))
-    if not terms:
-        return []
-    connection = sqlite3.connect(
-        f"file:{bm25_index_path(persist_dir)}?mode=ro", uri=True
-    )
+    ranked: list[tuple[str, float]] = []
+    matches = iter_bm25_matches(persist_dir, question, page_size=max(top_k, 100))
     try:
-        matches = connection.execute(
-            "SELECT chunk_id, bm25(bm25) FROM bm25 WHERE bm25 MATCH ?",
-            (' OR '.join(f'"{term}"' for term in terms),),
-        ).fetchall()
+        for page in matches:
+            ranked.extend(page)
+            if len(ranked) >= top_k:
+                break
     finally:
-        connection.close()
+        matches.close()
 
-    # FTS5 的 bm25() 越低越优，取负转成"越高越好"（与内存路径 _bm25_scores 一致）。
-    ranked = sorted(
-        ((chunk_id, -score) for chunk_id, score in matches if score is not None),
-        key=lambda item: (-item[1], item[0]),
-    )
     return ranked[:top_k]
