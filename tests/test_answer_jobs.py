@@ -71,6 +71,43 @@ def test_answer_job_exposes_stage_progress_and_vector_hits(
     assert "vector_hits" not in result["stages"]["vector_search"]["detail"]
 
 
+def test_answer_job_persists_light_retrieval_summary(monkeypatch, tmp_path) -> None:
+    from app.conversations import ConversationStore
+
+    finished = Event()
+
+    def fake_answer(question, settings, progress, **kwargs):
+        progress("vector_search", "completed", {
+            "retrieval_method": "hybrid",
+            "matches": 1,
+            "vector_candidates": 2,
+            "bm25_candidates": 1,
+            "union_candidates": 3,
+            "retrieval_trace": {"candidates": [{"chunk_id": "x"}]},
+            "vector_hits": [{"chunk_id": "x", "text": "正文"}],
+        })
+        finished.set()
+        return {"answer": "答案", "vector_hits": [{"chunk_id": "x"}]}
+
+    conversations = ConversationStore(tmp_path / "conversations.json")
+    conversation = conversations.create("open-mode")
+    monkeypatch.setattr("app.service.answer_question", fake_answer)
+    monkeypatch.setattr(
+        "app.conversations.get_conversation_store", lambda: conversations
+    )
+    store = AnswerJobStore(Settings(_env_file=None, max_concurrent_answers=1))
+
+    store.create("测试问题", conversation_id=conversation["id"])
+    store._executor.shutdown(wait=True)
+
+    assert finished.is_set()
+    turn = conversations.get(conversation["id"], "open-mode")["turns"][0]
+    assert turn["retrieval"]["union_candidates"] == 3
+    assert turn["retrieval"]["bm25_candidates"] == 1
+    assert "retrieval_trace" not in turn["retrieval"]
+    assert "vector_hits" not in turn["retrieval"]
+
+
 def test_answer_job_streams_partial_answer_into_job(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

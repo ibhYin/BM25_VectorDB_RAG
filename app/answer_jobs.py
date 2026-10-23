@@ -192,6 +192,10 @@ class AnswerJobStore:
                 vector_hits=result.get("vector_hits", []),
                 finished_at=utc_now(),
             )
+            # 对话记录只存轻量摘要；完整候选轨迹留在 job 里给当前页面用。
+            retrieval_detail = dict(
+                (job["stages"].get("vector_search") or {}).get("detail") or {}
+            )
 
         # 写对话放在任务锁之外：append 会全量重写文件，占着锁会阻塞状态轮询。
         # 失败只记日志——异常在这里抛出会被 executor 的 future 吞掉，那一轮就静默丢了。
@@ -204,6 +208,7 @@ class AnswerJobStore:
                     result.get("answer", ""),
                     retrieval_method=result.get("retrieval_method", retrieval_method),
                     hits=result.get("vector_hits"),
+                    retrieval=retrieval_detail,
                 )
             except Exception:
                 logger.warning("Could not append turn to conversation", exc_info=True)

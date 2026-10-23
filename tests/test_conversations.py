@@ -64,6 +64,10 @@ def test_hits_keep_references_but_drop_the_body(store) -> None:
                 "chunk_id": "doc#chunk_001",
                 "title": "文档",
                 "similarity": 0.7,
+                "vector_rank": 2,
+                "bm25_rank": 1,
+                "sources": ["vector", "bm25"],
+                "rrf_score": 0.03,
                 "text": "这一整段正文不应该被存进对话文件",
                 "unknown_field": "也不该出现",
             }
@@ -73,8 +77,43 @@ def test_hits_keep_references_but_drop_the_body(store) -> None:
     hit = store.get(conversation["id"], "alice")["turns"][0]["hits"][0]
     assert hit["chunk_id"] == "doc#chunk_001"
     assert hit["rank"] == 1
+    assert hit["vector_rank"] == 2 and hit["bm25_rank"] == 1
+    assert hit["sources"] == ["vector", "bm25"]
+    assert hit["rrf_score"] == 0.03
     assert "text" not in hit
     assert "unknown_field" not in hit
+
+
+def test_turn_keeps_light_retrieval_summary(store) -> None:
+    conversation = store.create("alice")
+
+    store.append_turn(
+        conversation["id"],
+        "alice",
+        "q",
+        "a",
+        retrieval_method="hybrid",
+        hits=[{"chunk_id": "doc#chunk_001", "vector_rank": 2, "bm25_rank": 1}],
+        retrieval={
+            "retrieval_method": "hybrid",
+            "vector_candidates": 100,
+            "bm25_candidates": 87,
+            "union_candidates": 152,
+            "matches": 20,
+            "retrieval_trace": {"candidates": [{"chunk_id": "doc#chunk_001"}]},
+            "vector_hits": [{"chunk_id": "doc#chunk_001", "text": "正文"}],
+            "unknown_field": "不该出现",
+        },
+    )
+
+    turn = store.get(conversation["id"], "alice")["turns"][0]
+    assert turn["retrieval"] == {
+        "retrieval_method": "hybrid",
+        "vector_candidates": 100,
+        "bm25_candidates": 87,
+        "union_candidates": 152,
+        "matches": 20,
+    }
 
 
 def test_long_answers_are_truncated(store) -> None:

@@ -41,7 +41,31 @@ HIT_FIELDS = (
     "distance",
     "similarity",
     "bm25_score",
+    "vector_rank",
+    "bm25_rank",
+    "sources",
+    "rrf_score",
+    "weighted_score",
     "retrieval_method",
+)
+
+# Per-turn retrieval summary. Deliberately excludes the full candidate trace:
+# history only needs the counts and each final hit's provenance.
+RETRIEVAL_FIELDS = (
+    "retrieval_method",
+    "top_k",
+    "pool",
+    "similarity_threshold",
+    "fusion_method",
+    "fusion_k",
+    "fusion_alpha",
+    "matches",
+    "recall",
+    "vector_candidates",
+    "bm25_candidates",
+    "union_candidates",
+    "vector_ms",
+    "bm25_ms",
 )
 
 
@@ -67,6 +91,12 @@ def _slim_hits(hits: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
             continue
         slim.append({key: hit[key] for key in HIT_FIELDS if key in hit})
     return slim
+
+
+def _slim_retrieval(retrieval: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(retrieval, dict):
+        return {}
+    return {key: retrieval[key] for key in RETRIEVAL_FIELDS if key in retrieval}
 
 
 class ConversationStore:
@@ -103,6 +133,7 @@ class ConversationStore:
         answer: str,
         retrieval_method: str = "",
         hits: list[dict[str, Any]] | None = None,
+        retrieval: dict[str, Any] | None = None,
     ) -> bool:
         """Record one completed turn. Returns False if it no longer applies."""
 
@@ -112,16 +143,19 @@ class ConversationStore:
                 # Deleted or reassigned while the answer was in flight.
                 return False
 
+            turn: dict[str, Any] = {
+                "question": question,
+                "answer": answer[:MAX_ANSWER_CHARS],
+                "retrieval_method": retrieval_method,
+                "hits": _slim_hits(hits),
+                "created_at": utc_now(),
+            }
+            summary = _slim_retrieval(retrieval)
+            if summary:
+                turn["retrieval"] = summary
+
             turns = conversation["turns"]
-            turns.append(
-                {
-                    "question": question,
-                    "answer": answer[:MAX_ANSWER_CHARS],
-                    "retrieval_method": retrieval_method,
-                    "hits": _slim_hits(hits),
-                    "created_at": utc_now(),
-                }
-            )
+            turns.append(turn)
             del turns[:-MAX_TURNS_PER_CONVERSATION]
             if conversation["title"] == DEFAULT_TITLE:
                 conversation["title"] = _title_from(question)
