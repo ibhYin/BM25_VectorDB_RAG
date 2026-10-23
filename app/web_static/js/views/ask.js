@@ -12,7 +12,7 @@ import {
   showToast,
   state,
 } from "../core.js";
-import { createVectorHitCard } from "../hits.js";
+import { createVectorHitCard, setUsedBadge } from "../hits.js";
 import { createModelPicker } from "../model-picker.js";
 import { enableResize } from "../resizer.js";
 import { resetSelectSearch } from "../select-search.js";
@@ -36,8 +36,9 @@ const el = {
   similarityThresholdValue: document.querySelector("#similarity-threshold-value"),
   processList: document.querySelector("#process-list"),
   processToggle: document.querySelector("#process-toggle"),
-  contextList: document.querySelector("#context-list"),
-  contextCount: document.querySelector("#context-count"),
+  retrievalStages: document.querySelector("#retrieval-stages"),
+  retrievalCount: document.querySelector("#retrieval-count"),
+  retrievalToggle: document.querySelector("#retrieval-toggle"),
   kbPicker: document.querySelector(".kb-picker"),
   kbStatus: document.querySelector("#kb-status"),
   kbMenu: document.querySelector("#kb-menu"),
@@ -66,6 +67,8 @@ let processExpanded = false;
 // 点聊天消息 pin 到某一轮：非 null 时证据栏显示该轮的切片，否则跟最新。
 let selectedTurnHits = null;
 let selectedTurnAnswer = "";
+let selectedTurnRetrieval = null;
+let selectedTurnKey = "";
 let selectedTurnEl = null;
 // 最新一轮的 question 消息元素，答案完成后给它也挂上该轮数据。
 let lastQuestionEl = null;
@@ -384,7 +387,18 @@ function finalizeAnswer(job) {
   else streamingAnswerEl.replaceChildren(renderAnswer(text));
 
   // 把该轮数据挂到答案与对应的问题消息上，点击任一可查看这轮的检索详情。
-  const turn = { hits: job.vector_hits || [], answer: job.answer || "" };
+  // 这一份留在内存里，所以还带着完整候选轨迹；写进对话文件的是轻量摘要。
+  const detail = job.stages?.vector_search?.detail || {};
+  const turn = {
+    key: `job:${job.id || ""}`,
+    hits: job.vector_hits || [],
+    answer: job.answer || "",
+    retrieval: {
+      ...detail,
+      retrieval_method: job.retrieval_method,
+      fusion_method: job.fusion_method,
+    },
+  };
   streamingAnswerEl._turn = turn;
   if (lastQuestionEl) lastQuestionEl._turn = turn;
 
@@ -400,57 +414,348 @@ function finalizeAnswer(job) {
   lastStreamedAnswer = "";
 }
 
-// --- evidence -------------------------------------------------------------
+// --- retrieval chain ------------------------------------------------------
 
-function renderContext() {
-  // pin 到某一轮时显示那一轮的切片，否则跟最新（answerJob）。
-  const items = selectedTurnHits ?? (state.vectorHits || []);
-  // 答案还没生成（answer 为空）时是「候选」，标不出来谁被用，先给中性态；
-  // 答案一旦出现（流式开始），引用了的翻「已用」、其余「未用」并实时更新。
-  const answerText = selectedTurnHits
-    ? selectedTurnAnswer
-    : state.answerJob?.answer || "";
-  const resolved = Boolean(answerText);
-  const cited = resolved ? extractCitedChunkIds(answerText) : null;
-  const usedCount = cited
-    ? items.filter((item) => cited.has(item.chunk_id)).length
-    : 0;
-  el.contextCount.textContent = items.length
-    ? ` · ${items.length} 条` + (resolved && usedCount ? ` · 已用 ${usedCount}` : "")
-    : "";
-  el.contextList.replaceChildren();
-
-  if (!items.length) {
-    const empty = document.createElement("div");
-    empty.className = "empty-list";
-    empty.textContent = "暂无上下文";
-    el.contextList.append(empty);
-    return;
+// 当前要展示的是「钉住的那一轮」还是最新任务。
+function retrievalSource() {
+  if (selectedTurnHits) {
+    return {
+      key: selectedTurnKey || "pinned",
+      hits: selectedTurnHits,
+      answer: selectedTurnAnswer,
+      retrieval: selectedTurnRetrieval || {},
+      pinned: true,
+    };
   }
-  for (const item of items) {
-    const used =
-      cited === null ? "candidate" : cited.has(item.chunk_id) ? "used" : "unused";
-    el.contextList.append(
-      createVectorHitCard(item, {
-        compact: true,
-        used,
-        onOpenOriginal: openHitInOriginal,
-      }),
-    );
+  const job = state.answerJob;
+  const detail = job?.stages?.vector_search?.detail || {};
+  return {
+    key: job?.id || "live",
+    hits: state.vectorHits || [],
+    answer: job?.answer || "",
+    retrieval: {
+      ...detail,
+      retrieval_method: job?.retrieval_method,
+      fusion_method: job?.fusion_method,
+    },
+    pinned: false,
+  };
+}
+
+let retrievalStructureKey = "";
+// chunk_id → { card, used }：结构不变时只更新已用/未用徽标，不重建 DOM，
+// 免得 300ms 一次的轮询把用户展开的 <details> 收掉。
+let retrievalCards = new Map();
+
+function fmt(value, digits = 2) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(digits) : "—";
+}
+
+function chunkLabel(chunkId) {
+  const match = /chunk_(\d+)$/.exec(String(chunkId || ""));
+  return match ? `¶${match[1]}` : String(chunkId || "");
+}
+
+function pageLabel(hit) {
+  if (hit.page_label) return `第 ${hit.page_label} 页`;
+  if (hit.page !== null && hit.page !== undefined) return `第 ${Number(hit.page) + 1} 页`;
+  return "";
+}
+
+function fusionNote(retrieval) {
+  const fusion = retrieval.retrieval_trace?.fusion || {};
+  const method = fusion.method || retrieval.fusion_method || "rrf";
+  if (method === "weighted") {
+    const alpha = fusion.alpha ?? retrieval.fusion_alpha;
+    return `加权融合 α=${fmt(alpha)}：α·相似度 + (1−α)·归一化 BM25；相似度未校准，属近似排序。`;
+  }
+  const k = fusion.k ?? retrieval.fusion_k;
+  return `RRF k=${k ?? "—"}：只按两路名次组合，缺席路贡献为零，分数不能与相似度/BM25 比较。当前是融合排序，未接入独立 rerank 模型。`;
+}
+
+function buildStages(method, source, trace, hits) {
+  const retrieval = source.retrieval;
+  const finalRankById = new Map(hits.map((hit) => [hit.chunk_id, hit.rank]));
+
+  if (method === "hybrid") {
+    const candidates = trace && Array.isArray(trace.candidates) ? trace.candidates : null;
+    const vectorRows = (candidates
+      ? candidates.filter((item) => item.vector_rank != null)
+      : hits.filter((hit) => hit.vector_rank != null)
+    ).slice().sort((a, b) => a.vector_rank - b.vector_rank);
+    const bm25Rows = (candidates
+      ? candidates.filter((item) => item.bm25_rank != null)
+      : hits.filter((hit) => hit.bm25_rank != null)
+    ).slice().sort((a, b) => a.bm25_rank - b.bm25_rank);
+    const vectorCount = trace
+      ? trace.vector_count
+      : (retrieval.vector_candidates ?? vectorRows.length);
+    const bm25Count = trace
+      ? trace.bm25_count
+      : (retrieval.bm25_candidates ?? bm25Rows.length);
+    const unionCount = trace ? trace.union_count : retrieval.union_candidates;
+    const historyNote = candidates
+      ? ""
+      : " 历史记录只保留最终结果的名次，候选池未保存。";
+    return [
+      {
+        key: "vector",
+        index: "①",
+        title: "向量召回",
+        stat: `${vectorCount ?? vectorRows.length} 条`,
+        note: `按 L2 距离换算分排序，是候选来源之一。${historyNote}`,
+        rows: vectorRows,
+        score: (row) => `相似度 ${fmt(row.similarity)}`,
+        rankOf: (row) => row.vector_rank,
+        finalRankById,
+      },
+      {
+        key: "bm25",
+        index: "②",
+        title: "BM25 召回",
+        stat: `${bm25Count ?? bm25Rows.length} 条`,
+        note: `在持久化 FTS5 索引上检索全库，与向量路相互独立，不是对①的重排。${historyNote}`,
+        rows: bm25Rows,
+        score: (row) => `BM25 ${fmt(row.bm25_score)}`,
+        rankOf: (row) => row.bm25_rank,
+        finalRankById,
+      },
+      {
+        key: "fusion",
+        index: "③",
+        title: "融合",
+        stat: unionCount != null
+          ? `并集 ${unionCount} → 最终 ${hits.length}`
+          : `最终 ${hits.length}`,
+        note: fusionNote(retrieval),
+        rows: hits,
+        cards: true,
+        finalRankById,
+      },
+    ];
+  }
+
+  if (method === "bm25") {
+    return [{
+      key: "single",
+      index: "①",
+      title: "BM25 关键词召回",
+      stat: `${hits.length} 条`,
+      note: "在持久化 FTS5 索引上检索全库。",
+      rows: hits,
+      cards: true,
+      finalRankById,
+    }];
+  }
+
+  if (method === "vector") {
+    const threshold = retrieval.similarity_threshold;
+    return [{
+      key: "single",
+      index: "①",
+      title: "向量召回",
+      stat: `${hits.length} 条`,
+      note: `按距离换算分取 Top-K${threshold != null ? `，阈值 ≥ ${fmt(threshold)}` : ""}。`,
+      rows: hits,
+      cards: true,
+      finalRankById,
+    }];
+  }
+
+  return [];
+}
+
+function createStageRow(row, stage) {
+  const item = document.createElement("details");
+  item.className = "stage-row";
+  const head = document.createElement("summary");
+  head.className = "stage-row-head";
+
+  const rank = document.createElement("span");
+  rank.className = "stage-rank";
+  rank.textContent = `#${stage.rankOf(row) ?? "—"}`;
+  const title = document.createElement("span");
+  title.className = "stage-row-title";
+  title.textContent = `${row.title || "未命名文档"} · ${chunkLabel(row.chunk_id)}`;
+  const score = document.createElement("span");
+  score.className = "stage-score";
+  score.textContent = stage.score(row);
+  const final = document.createElement("span");
+  final.className = "stage-final";
+  const finalRank = stage.finalRankById.get(row.chunk_id);
+  if (finalRank) {
+    final.textContent = `→ 最终 #${finalRank}`;
+  } else {
+    final.textContent = "未入选";
+    final.classList.add("dropped");
+  }
+  head.append(rank, title, score, final);
+
+  const body = document.createElement("div");
+  body.className = "stage-row-body";
+  const meta = document.createElement("div");
+  meta.className = "vector-hit-meta";
+  meta.textContent = [row.doc_id, pageLabel(row), row.section_path]
+    .filter(Boolean)
+    .join(" · ");
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "ghost-button";
+  open.textContent = "在原文查看";
+  open.addEventListener("click", (event) => {
+    event.preventDefault();
+    openHitInOriginal(row);
+  });
+  body.append(meta, open);
+  item.append(head, body);
+  return item;
+}
+
+function createStageCard(hit, cited) {
+  const used = cited === null ? "candidate" : cited.has(hit.chunk_id) ? "used" : "unused";
+  const card = createVectorHitCard(hit, {
+    compact: true,
+    used,
+    onOpenOriginal: openHitInOriginal,
+  });
+  retrievalCards.set(hit.chunk_id, { card, used });
+  return card;
+}
+
+function renderStage(stage, cited) {
+  const details = document.createElement("details");
+  details.className = "retrieval-stage";
+  details.dataset.stage = stage.key;
+  // 两路候选默认收起，把空间留给最终结果；单路模式只有一段，直接展开。
+  details.open = stage.key !== "vector" && stage.key !== "bm25";
+
+  const head = document.createElement("summary");
+  head.className = "stage-head";
+  const index = document.createElement("span");
+  index.className = "stage-index";
+  index.textContent = stage.index;
+  const title = document.createElement("strong");
+  title.textContent = stage.title;
+  const stat = document.createElement("span");
+  stat.className = "stage-stat";
+  stat.textContent = stage.stat;
+  const chevron = document.createElement("span");
+  chevron.className = "stage-chevron";
+  chevron.setAttribute("aria-hidden", "true");
+  chevron.textContent = "▾";
+  head.append(index, title, stat, chevron);
+
+  const note = document.createElement("p");
+  note.className = "stage-note";
+  note.textContent = stage.note;
+
+  const list = document.createElement("ol");
+  list.className = "stage-list";
+  if (!stage.rows.length) {
+    const empty = document.createElement("li");
+    empty.className = "stage-empty";
+    empty.textContent = stage.key === "bm25" ? "BM25 这一路没有命中" : "这一路没有结果";
+    list.append(empty);
+  }
+  for (const row of stage.rows) {
+    const item = document.createElement("li");
+    item.className = "stage-item";
+    item.append(stage.cards ? createStageCard(row, cited) : createStageRow(row, stage));
+    list.append(item);
+  }
+
+  details.append(head, note, list);
+  return details;
+}
+
+function updateUsedBadges(cited) {
+  for (const [chunkId, entry] of retrievalCards) {
+    const used = cited === null
+      ? "candidate"
+      : cited.has(chunkId) ? "used" : "unused";
+    if (entry.used === used) continue;
+    entry.used = used;
+    setUsedBadge(entry.card, used);
   }
 }
 
-function renderContextLoading() {
-  el.contextList.replaceChildren();
+function renderRetrieval() {
+  const source = retrievalSource();
+  const method = source.retrieval.retrieval_method || getRetrievalMethod();
+  const hits = source.hits || [];
+  const trace = source.retrieval.retrieval_trace || null;
+  const cited = source.answer ? extractCitedChunkIds(source.answer) : null;
+
+  el.retrievalCount.textContent = hits.length ? ` · ${hits.length} 条` : "";
+
+  const key = [
+    source.key,
+    method,
+    hits.map((hit) => hit.chunk_id).join("␟"),
+    trace ? trace.candidates.length : 0,
+    source.pinned ? "pinned" : "live",
+  ].join("|");
+
+  if (key === retrievalStructureKey) {
+    updateUsedBadges(cited);
+    return;
+  }
+  retrievalStructureKey = key;
+  retrievalCards = new Map();
+  el.retrievalStages.replaceChildren();
+
+  if (!hits.length && !trace) {
+    const empty = document.createElement("div");
+    empty.className = "empty-list";
+    empty.textContent = method === "system"
+      ? "本次由系统状态直接回答，未检索知识库。"
+      : "暂无上下文";
+    el.retrievalStages.append(empty);
+    return;
+  }
+
+  const stages = buildStages(method, source, trace, hits);
+  if (!stages.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-list";
+    empty.textContent = "暂无上下文";
+    el.retrievalStages.append(empty);
+    return;
+  }
+  for (const stage of stages) {
+    el.retrievalStages.append(renderStage(stage, cited));
+  }
+  updateUsedBadges(cited);
+  el.retrievalToggle.textContent = "展开全部";
+  el.retrievalToggle.setAttribute("aria-expanded", "false");
+}
+
+function renderRetrievalLoading() {
+  retrievalStructureKey = "";
+  retrievalCards = new Map();
+  el.retrievalCount.textContent = "";
+  el.retrievalStages.replaceChildren();
   const loading = document.createElement("div");
   loading.className = "loading-state";
   loading.append(createSpinner(), document.createTextNode("检索中"));
-  el.contextList.append(loading);
+  el.retrievalStages.append(loading);
+}
+
+function toggleRetrievalStages() {
+  const stages = [...el.retrievalStages.querySelectorAll("details.retrieval-stage")];
+  if (!stages.length) return;
+  const expand = stages.some((stage) => !stage.open);
+  for (const stage of stages) stage.open = expand;
+  el.retrievalToggle.textContent = expand ? "收起全部" : "展开全部";
+  el.retrievalToggle.setAttribute("aria-expanded", String(expand));
 }
 
 function clearSelectedTurn() {
   selectedTurnHits = null;
   selectedTurnAnswer = "";
+  selectedTurnRetrieval = null;
+  selectedTurnKey = "";
   if (selectedTurnEl) {
     selectedTurnEl.classList.remove("selected");
     selectedTurnEl = null;
@@ -556,15 +861,23 @@ function stageDetail(key, stage) {
     return `${detail.model || "Embedding"} · ${detail.dimensions || 0} 维${duration}${preview}`;
   }
   if (key === "vector_search") {
+    const fusionLabels = { rrf: "RRF", weighted: "加权" };
+    const fusion = fusionLabels[detail.fusion_method]
+      ? ` · ${fusionLabels[detail.fusion_method]}`
+      : "";
+    if (detail.retrieval_method === "hybrid") {
+      const vector = detail.vector_candidates ?? detail.recall ?? 0;
+      const bm25 = detail.bm25_candidates ?? 0;
+      const union = detail.union_candidates != null
+        ? ` → 去重 ${detail.union_candidates}`
+        : "";
+      return `向量 ${vector} + BM25 ${bm25}${union} → 最终 ${detail.matches || 0}${fusion}${duration}`;
+    }
     const pool = detail.pool ? ` · 池 ${detail.pool}` : "";
     const recall = detail.recall != null
       && detail.recall !== detail.matches && detail.recall !== detail.pool
       ? ` · 召回 ${detail.recall}` : "";
-    const fusionLabels = { rrf: "RRF 融合", weighted: "加权融合" };
-    const fusion = fusionLabels[detail.fusion_method]
-      ? ` · ${fusionLabels[detail.fusion_method]}`
-      : "";
-    return `${detail.matches || 0} 个结果 · Top ${detail.top_k || 0}${pool}${recall}${fusion}${duration}`;
+    return `${detail.matches || 0} 个结果 · Top ${detail.top_k || 0}${pool}${recall}${duration}`;
   }
   if (key === "answer") return `${detail.model || "LLM"}${duration}`;
   if (key === "condense") {
@@ -618,7 +931,7 @@ async function waitForAnswer(jobId, epoch) {
     state.answerJob = job;
     if (job.stages?.vector_search?.status === "completed") {
       state.vectorHits = job.vector_hits || [];
-      renderContext();
+      renderRetrieval();
     }
     // 答案还在生成就边生成边显示（流式）。
     if (job.status !== "completed" && job.answer) renderStreamingAnswer(job.answer);
@@ -658,7 +971,7 @@ async function ask(event) {
   state.answerJob = { retrieval_method: getRetrievalMethod() };
   state.vectorHits = [];
   renderProcess();
-  renderContextLoading();
+  renderRetrievalLoading();
 
   let epoch = convState.epoch;
   try {
@@ -698,12 +1011,12 @@ async function ask(event) {
     if (convState.epoch !== epoch) return;
 
     state.vectorHits = result.vector_hits || [];
-    renderContext();
+    renderRetrieval();
     setRunStatusLoading(false, "回答完成");
   } catch (error) {
     if (error instanceof StaleAnswer) return;
     addChatMessage("error", error.message);
-    renderContext();
+    renderRetrieval();
     setRunStatusLoading(false, "回答失败");
   } finally {
     el.askButton.disabled = false;
@@ -795,7 +1108,7 @@ function resetChatStream() {
   state.vectorHits = [];
   state.answerJob = null;
   renderProcess();
-  renderContext();
+  renderRetrieval();
   el.runStatus.textContent = "就绪";
 }
 
@@ -839,13 +1152,22 @@ async function openConversation(conversationId) {
     if (empty) empty.remove();
 
     const turns = conversation.turns || [];
-    for (const turn of turns) {
-      const turnData = { hits: turn.hits || [], answer: turn.answer || "" };
+    turns.forEach((turn, index) => {
+      const turnData = {
+        key: `history:${conversationId}:${index}`,
+        hits: turn.hits || [],
+        answer: turn.answer || "",
+        retrieval: {
+          ...(turn.retrieval || {}),
+          retrieval_method: turn.retrieval_method
+            || turn.retrieval?.retrieval_method,
+        },
+      };
       const questionEl = addChatMessage("question", turn.question, turnData);
       const answerEl = addChatMessage("answer", turn.answer || "（未记录答案）", turnData);
       renderRetrievedDocs(answerEl, turnData.hits, turnData.answer);
       questionEl._turn = turnData;
-    }
+    });
     const last = turns.at(-1);
     state.vectorHits = last?.hits || [];
     // pin 到最后一轮，让 used 标记基于该轮答案（而不是空的 answerJob）。
@@ -853,13 +1175,18 @@ async function openConversation(conversationId) {
     if (last) {
       selectedTurnHits = last.hits || [];
       selectedTurnAnswer = last.answer || "";
+      selectedTurnRetrieval = {
+        ...(last.retrieval || {}),
+        retrieval_method: last.retrieval_method || last.retrieval?.retrieval_method,
+      };
+      selectedTurnKey = `history:${conversationId}:${turns.length - 1}`;
       const lastAnswerEl = el.chatStream.lastElementChild;
       if (lastAnswerEl) {
         selectedTurnEl = lastAnswerEl;
         lastAnswerEl.classList.add("selected");
       }
     }
-    renderContext();
+    renderRetrieval();
     el.chatStream.scrollTop = el.chatStream.scrollHeight;
   } catch (error) {
     showToast(error.message, "error");
@@ -1140,10 +1467,11 @@ export default {
 
     // Empty states for the evidence rail before the first question.
     renderProcess();
-    renderContext();
+    renderRetrieval();
 
     el.askForm.addEventListener("submit", ask);
     el.processToggle.addEventListener("click", toggleProcess);
+    el.retrievalToggle.addEventListener("click", toggleRetrievalStages);
     el.clearChatButton.addEventListener("click", clearChat);
     el.newConversation.addEventListener("click", newConversation);
     // 点某条问答：右侧证据栏切到那一轮的检索切片（再点同一条取消）。
@@ -1152,7 +1480,7 @@ export default {
       if (!message || !message._turn) return;
       if (selectedTurnEl === message) {
         clearSelectedTurn();
-        renderContext();
+        renderRetrieval();
         return;
       }
       if (selectedTurnEl) selectedTurnEl.classList.remove("selected");
@@ -1160,7 +1488,9 @@ export default {
       message.classList.add("selected");
       selectedTurnHits = message._turn.hits || [];
       selectedTurnAnswer = message._turn.answer || "";
-      renderContext();
+      selectedTurnRetrieval = message._turn.retrieval || {};
+      selectedTurnKey = message._turn.key || "";
+      renderRetrieval();
     });
     el.question.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {

@@ -1,19 +1,116 @@
-// 召回卡片的共享渲染：问答页的「匹配内容」与评估页的标注都用它。
-//
-// 放在这里而不是留在 ask.js 里，是因为评估页也要用同一张卡片——视图之间互相 import
-// 会把两页耦在一起，而且以后卡片样式一改，两处显示就分叉了。
+// 召回卡片的共享渲染：问答页的检索链路与评估页的标注都用它。
 //
 // options（缺省时保持旧行为，评估页不受影响）：
-//   compact       默认收起全文，提供「展开全文/收起」切换
+//   compact       正文默认收成 3 行预览，提供「展开全文/收起」切换
 //   used          "used" | "unused" | "candidate"，标题旁加对应徽标；不传不显示
 //   onOpenOriginal(hit)  提供时卡片加「在原文查看」按钮
+//
+// 混合检索的卡片会显示「向量 → BM25 → 融合」名次轨迹；缺少新字段的旧数据
+// （历史对话）只显示已有的分数。
 
 const USED_BADGE_LABELS = { used: "已用", unused: "未用", candidate: "候选" };
+const SOURCE_LABELS = { vector: "向量", bm25: "BM25" };
+
+export function setUsedBadge(card, used) {
+  const badge = card.querySelector(".used-badge");
+  if (!badge) return;
+  badge.className = `used-badge ${used}`;
+  badge.textContent = USED_BADGE_LABELS[used] || "";
+}
+
+function fmt(value, digits = 2) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(digits) : "—";
+}
+
+function sourceLabel(sources) {
+  if (!Array.isArray(sources) || !sources.length) return "";
+  if (sources.length > 1) return "两路";
+  return SOURCE_LABELS[sources[0]] || String(sources[0]);
+}
+
+function scoreParts(hit) {
+  const parts = [];
+  const hasVectorRank = hit.vector_rank !== undefined && hit.vector_rank !== null;
+  const hasBm25Rank = hit.bm25_rank !== undefined && hit.bm25_rank !== null;
+
+  if (hit.retrieval_method === "hybrid") {
+    if (hasVectorRank) {
+      parts.push({
+        label: "向量",
+        text: `#${hit.vector_rank} · ${fmt(hit.similarity)}`,
+        title: "向量召回名次 · 由 L2 距离换算的相似度（0–1，非概率，不跨查询可比）",
+      });
+    } else if (hit.similarity !== undefined) {
+      parts.push({
+        label: "向量",
+        text: fmt(hit.similarity),
+        title: "由 L2 距离换算的相似度（0–1，非概率）",
+      });
+    }
+    if (hasBm25Rank) {
+      parts.push({
+        label: "BM25",
+        text: `#${hit.bm25_rank} · ${fmt(hit.bm25_score)}`,
+        title: "BM25 关键词召回名次 · 原始分数（无固定上限，只与同次检索比较）",
+      });
+    } else if (hit.bm25_score !== undefined) {
+      parts.push({
+        label: "BM25",
+        text: fmt(hit.bm25_score),
+        title: "BM25 关键词匹配分，越高越相关，不是概率",
+      });
+    }
+    const fusionValue = hit.rrf_score !== undefined
+      ? ` · RRF ${Number(hit.rrf_score).toFixed(4)}`
+      : hit.weighted_score !== undefined
+        ? ` · 加权 ${Number(hit.weighted_score).toFixed(3)}`
+        : "";
+    parts.push({
+      label: "融合",
+      text: `#${hit.rank}${fusionValue}`,
+      title: "最终名次 · 融合分只反映排序，不能与相似度或 BM25 比大小",
+    });
+    return parts;
+  }
+
+  if (hit.retrieval_method === "bm25") {
+    parts.push({
+      label: "BM25",
+      text: fmt(hit.bm25_score),
+      title: "BM25 关键词匹配分，越高越相关，不是概率",
+    });
+    return parts;
+  }
+
+  parts.push({
+    label: "相似度",
+    text: fmt(hit.similarity),
+    title: "由 Chroma L2 距离换算的相似度（0–1，非概率），越大越接近",
+  });
+  if (hit.distance !== undefined) {
+    parts.push({
+      label: "距离",
+      text: fmt(hit.distance, 4),
+      title: "Chroma 返回的原始 L2 距离（越小越近）",
+    });
+  }
+  return parts;
+}
+
+function movement(hit) {
+  if (hit.retrieval_method !== "hybrid") return "";
+  if (hit.vector_rank === undefined || hit.vector_rank === null) return "";
+  const delta = Number(hit.vector_rank) - Number(hit.rank);
+  if (!Number.isFinite(delta) || delta === 0) return "";
+  return delta > 0 ? `↑${delta}` : `↓${Math.abs(delta)}`;
+}
 
 export function createVectorHitCard(hit, options = {}) {
   const { compact = false, used, onOpenOriginal } = options;
   const card = document.createElement("article");
   card.className = "vector-hit";
+  card.dataset.chunkId = hit.chunk_id || "";
 
   const header = document.createElement("div");
   header.className = "vector-hit-header";
@@ -29,34 +126,42 @@ export function createVectorHitCard(hit, options = {}) {
     badge.textContent = badgeLabel;
     titleRow.append(badge);
   }
-  const distance = document.createElement("span");
-  distance.className = "distance-value";
-  if (hit.retrieval_method === "hybrid") {
-    const similarity = Number(hit.similarity) || 0;
-    const bm25 = Number(hit.bm25_score) || 0;
-    const weighted = hit.weighted_score !== undefined ? Number(hit.weighted_score) : null;
-    const rrf = hit.rrf_score !== undefined ? Number(hit.rrf_score) : null;
-    distance.title = weighted !== null
-      ? "混合检索（加权融合）：融合分 = α·向量相似度 + (1-α)·归一化 BM25"
-      : "混合检索（RRF 融合）：相似度为向量语义相关性，BM25 为关键词匹配分";
-    distance.textContent = [
-      similarity > 0 ? `相似度 ${similarity.toFixed(2)}` : "",
-      bm25 > 0 ? `BM25 ${bm25.toPrecision(4)}` : "",
-      weighted !== null ? `融合 ${weighted.toFixed(3)}` : "",
-      rrf !== null ? `RRF ${rrf.toFixed(4)}` : "",
-    ].filter(Boolean).join(" · ") || "混合";
-  } else if (hit.retrieval_method === "bm25") {
-    distance.title = "BM25 关键词匹配分数，越高越相关，不是概率";
-    distance.textContent = `BM25 ${Number(hit.bm25_score).toPrecision(4)}`;
-  } else {
-    distance.title = "Chroma L2 距离（越小越近）· 相似度分数（越大越近）";
-    const similarity = hit.similarity !== undefined ? Number(hit.similarity) : null;
-    distance.textContent = [
-      `距离 ${Number(hit.distance).toFixed(4)}`,
-      similarity !== null ? `相似度 ${similarity.toFixed(2)}` : "",
-    ].filter(Boolean).join(" · ");
+  const source = sourceLabel(hit.sources);
+  if (source) {
+    const sourceChip = document.createElement("span");
+    sourceChip.className = "source-chip";
+    sourceChip.textContent = source;
+    sourceChip.title = "这一条由哪一路或哪两路召回";
+    titleRow.append(sourceChip);
   }
-  header.append(titleRow, distance);
+  header.append(titleRow);
+
+  const trail = document.createElement("div");
+  trail.className = "hit-trail";
+  scoreParts(hit).forEach((part, index) => {
+    if (index) {
+      const arrow = document.createElement("span");
+      arrow.className = "trail-arrow";
+      arrow.textContent = "→";
+      trail.append(arrow);
+    }
+    const chip = document.createElement("span");
+    chip.className = "trail-chip";
+    chip.title = part.title;
+    const label = document.createElement("span");
+    label.className = "trail-label";
+    label.textContent = part.label;
+    chip.append(label, document.createTextNode(part.text));
+    trail.append(chip);
+  });
+  const move = movement(hit);
+  if (move) {
+    const moveChip = document.createElement("span");
+    moveChip.className = `trail-move ${move.startsWith("↑") ? "up" : "down"}`;
+    moveChip.textContent = move;
+    moveChip.title = "最终名次相对向量召回名次的升降";
+    trail.append(moveChip);
+  }
 
   const metadata = document.createElement("div");
   metadata.className = "vector-hit-meta";
@@ -66,15 +171,15 @@ export function createVectorHitCard(hit, options = {}) {
     .filter(Boolean)
     .join(" · ");
 
-  const source = document.createElement("div");
-  source.className = "vector-hit-source";
-  source.textContent = hit.source || "未知来源";
+  const sourceLine = document.createElement("div");
+  sourceLine.className = "vector-hit-source";
+  sourceLine.textContent = hit.source || "未知来源";
 
   const text = document.createElement("div");
   text.className = "vector-hit-text";
   // 服务端存的只是切片引用，回看历史对话时没有正文。
   text.textContent = hit.text || "（历史记录只保留切片引用，正文请在知识库页查看）";
-  if (compact) text.hidden = true;
+  if (compact) text.classList.add("clamped");
 
   const actions = document.createElement("div");
   actions.className = "vector-hit-actions";
@@ -84,9 +189,8 @@ export function createVectorHitCard(hit, options = {}) {
     toggle.className = "text-button";
     toggle.textContent = "展开全文";
     toggle.addEventListener("click", () => {
-      const isHidden = text.hidden;
-      text.hidden = !isHidden;
-      toggle.textContent = isHidden ? "收起" : "展开全文";
+      const clamped = text.classList.toggle("clamped");
+      toggle.textContent = clamped ? "展开全文" : "收起";
     });
     actions.append(toggle);
   }
@@ -102,6 +206,6 @@ export function createVectorHitCard(hit, options = {}) {
     actions.append(open);
   }
 
-  card.append(header, metadata, source, actions, text);
+  card.append(header, trail, metadata, sourceLine, actions, text);
   return card;
 }

@@ -3297,3 +3297,248 @@ svg {
 @media (max-width: 720px) {
   .doc-row .doc-title-cell { grid-area: title; }
 }
+
+/* ==================== 检索参数分组与检索链路 ==================== */
+
+.param-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  padding-right: 12px;
+  border-right: 1px solid var(--line);
+}
+
+.param-group:last-child {
+  padding-right: 0;
+  border-right: none;
+}
+
+.param-group-label {
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  color: var(--ink-faint);
+}
+
+.rail-section.grow .retrieval-stages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.retrieval-stage {
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.retrieval-stage > summary,
+.stage-row > summary {
+  list-style: none;
+}
+
+.retrieval-stage > summary::-webkit-details-marker,
+.stage-row > summary::-webkit-details-marker {
+  display: none;
+}
+
+.stage-head {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 9px 10px;
+  cursor: pointer;
+  user-select: none;
+  border-radius: var(--radius);
+}
+
+.stage-head:focus-visible,
+.stage-row-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.stage-index {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent-strong);
+}
+
+.stage-head strong {
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+.stage-stat {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-faint);
+}
+
+.stage-chevron {
+  color: var(--ink-faint);
+  font-size: 10px;
+  transition: transform 120ms ease;
+}
+
+.retrieval-stage[open] > .stage-head .stage-chevron {
+  transform: rotate(180deg);
+}
+
+.stage-note {
+  padding: 0 10px 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+
+.stage-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stage-item {
+  min-width: 0;
+}
+
+.stage-empty {
+  padding: 8px 4px;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+
+.stage-row {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.stage-row-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.stage-rank {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--accent-strong);
+}
+
+.stage-row-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+}
+
+.stage-score {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+.stage-final {
+  font-size: 10px;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.stage-final.dropped {
+  color: var(--danger);
+}
+
+.stage-row-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 8px 8px;
+}
+
+.stage-row-body .ghost-button {
+  flex: none;
+  font-size: 11px;
+}
+
+/* 卡片里的「向量 → BM25 → 融合」轨迹：每段独立 chip，量纲不混排 */
+.hit-trail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: 2px 0 6px;
+}
+
+.trail-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg);
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+.trail-label {
+  font-size: 9.5px;
+  color: var(--ink-faint);
+}
+
+.trail-arrow {
+  color: var(--ink-faint);
+  font-size: 10px;
+}
+
+.trail-move {
+  margin-left: 2px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.trail-move.up {
+  color: #1f7a49;
+}
+
+.trail-move.down {
+  color: var(--danger);
+}
+
+.source-chip {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--accent-line);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  font-size: 9.5px;
+  color: var(--accent-strong);
+}
+
+/* compact 模式：正文 3 行预览，点「展开全文」取消截断 */
+.vector-hit-text.clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-height: none;
+}

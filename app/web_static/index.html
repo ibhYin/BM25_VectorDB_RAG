@@ -111,36 +111,45 @@
           <div class="resizer-row" id="resizer-bar" role="separator" aria-orientation="horizontal" aria-label="调整检索参数栏高度" tabindex="0"></div>
 
           <div class="settings-bar" role="group" aria-label="检索参数">
-            <div class="segmented" id="retrieval-method" role="radiogroup" aria-label="检索方式">
-              <label><input type="radio" name="retrieval-method" value="vector" form="ask-form" checked /><span>向量</span></label>
-              <label><input type="radio" name="retrieval-method" value="bm25" form="ask-form" /><span>BM25</span></label>
-              <label><input type="radio" name="retrieval-method" value="hybrid" form="ask-form" /><span>混合</span></label>
+            <div class="param-group" role="group" aria-label="召回">
+              <span class="param-group-label">召回</span>
+              <div class="segmented" id="retrieval-method" role="radiogroup" aria-label="检索方式">
+                <label><input type="radio" name="retrieval-method" value="vector" form="ask-form" checked /><span>向量</span></label>
+                <label><input type="radio" name="retrieval-method" value="bm25" form="ask-form" /><span>BM25</span></label>
+                <label><input type="radio" name="retrieval-method" value="hybrid" form="ask-form" /><span>混合</span></label>
+              </div>
+              <label class="mini-field" title="仅混合模式：向量粗筛与 BM25 各自召回多少条候选">
+                <span>候选池</span>
+                <input id="candidate-pool" type="number" form="ask-form" min="20" max="500" step="1" value="100" required placeholder="100" />
+              </label>
             </div>
-            <label class="mini-field">
-              <span>Top-K</span>
-              <input id="retrieval-top-k" type="number" form="ask-form" min="1" max="100" step="1" value="20" required placeholder="20" />
-            </label>
-            <label class="mini-field">
-              <span>候选池</span>
-              <input id="candidate-pool" type="number" form="ask-form" min="20" max="500" step="1" value="100" required placeholder="100" />
-            </label>
-            <div class="segmented" id="fusion-method" role="radiogroup" aria-label="融合方式">
-              <label><input type="radio" name="fusion-method" value="rrf" form="ask-form" checked /><span>RRF</span></label>
-              <label><input type="radio" name="fusion-method" value="weighted" form="ask-form" /><span>加权</span></label>
+            <div class="param-group" role="group" aria-label="排序与融合">
+              <span class="param-group-label">排序与融合</span>
+              <label class="mini-field" title="最终交给回答模型的切片数">
+                <span>Top-K</span>
+                <input id="retrieval-top-k" type="number" form="ask-form" min="1" max="100" step="1" value="20" required placeholder="20" />
+              </label>
+              <div class="segmented" id="fusion-method" role="radiogroup" aria-label="融合方式">
+                <label><input type="radio" name="fusion-method" value="rrf" form="ask-form" checked /><span>RRF</span></label>
+                <label><input type="radio" name="fusion-method" value="weighted" form="ask-form" /><span>加权</span></label>
+              </div>
+              <label class="mini-field" id="fusion-k-field" title="RRF 平滑常数：越大，两路名次的影响越平缓">
+                <span>k</span>
+                <input id="fusion-k" type="number" form="ask-form" min="1" max="200" step="1" value="60" placeholder="60" />
+              </label>
+              <label class="mini-field" id="fusion-alpha-field" hidden title="向量分数权重 α：1 只看向量，0 只看归一化 BM25">
+                <span>α</span>
+                <input id="fusion-alpha" type="number" form="ask-form" min="0" max="1" step="0.05" value="0.5" placeholder="0.5" />
+              </label>
             </div>
-            <label class="mini-field" id="fusion-k-field">
-              <span>k</span>
-              <input id="fusion-k" type="number" form="ask-form" min="1" max="200" step="1" value="60" placeholder="60" />
-            </label>
-            <label class="mini-field" id="fusion-alpha-field" hidden>
-              <span>α</span>
-              <input id="fusion-alpha" type="number" form="ask-form" min="0" max="1" step="0.05" value="0.5" placeholder="0.5" />
-            </label>
-            <label class="mini-field threshold-field">
-              <span>阈值</span>
-              <input id="similarity-threshold" type="range" form="ask-form" min="0" max="1" step="0.01" value="0.35" />
-              <output id="similarity-threshold-value" for="similarity-threshold">0.35</output>
-            </label>
+            <div class="param-group" role="group" aria-label="过滤">
+              <span class="param-group-label">过滤</span>
+              <label class="mini-field threshold-field" title="仅向量模式：低于该相似度的切片不返回；混合模式不使用阈值">
+                <span>阈值</span>
+                <input id="similarity-threshold" type="range" form="ask-form" min="0" max="1" step="0.01" value="0.35" />
+                <output id="similarity-threshold-value" for="similarity-threshold">0.35</output>
+              </label>
+            </div>
           </div>
 
           <div class="resizer-row" id="resizer-form" role="separator" aria-orientation="horizontal" aria-label="调整输入区高度" tabindex="0"></div>
@@ -165,8 +174,11 @@
             <div class="process-list" id="process-list" aria-live="polite"></div>
           </section>
           <section class="rail-section grow">
-            <div class="section-head"><h2>匹配内容<span id="context-count" class="rail-count"></span></h2></div>
-            <div class="context-list" id="context-list" aria-live="polite"></div>
+            <div class="section-head">
+              <h2>检索链路<span id="retrieval-count" class="rail-count"></span></h2>
+              <button id="retrieval-toggle" class="text-button" type="button" aria-expanded="false">展开全部</button>
+            </div>
+            <div class="retrieval-stages" id="retrieval-stages"></div>
           </section>
         </aside>
       </div>
