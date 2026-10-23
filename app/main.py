@@ -120,10 +120,10 @@ def _snapshot_config(settings, method, top_k, pool, threshold) -> dict:
     import inspect
 
     from rag.index_manifest import read_index_embedding_model
-    from rag.retriever import rrf_fuse
+    from rag.retriever import rrf_fuse_paths
 
     try:
-        rrf_k = inspect.signature(rrf_fuse).parameters["k"].default
+        rrf_k = inspect.signature(rrf_fuse_paths).parameters["k"].default
     except (KeyError, ValueError):  # 签名变了也别让快照写不出来
         rrf_k = None
 

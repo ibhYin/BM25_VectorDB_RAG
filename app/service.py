@@ -24,10 +24,9 @@ from rag.loaders import load_document_file
 from rag.retriever import (
     build_vector_hits,
     format_vector_hits,
-    rrf_fuse,
-    rerank_bm25_scores,
+    rrf_fuse_paths,
     search_bm25,
-    weighted_fuse,
+    weighted_fuse_paths,
 )
 from rag.splitter import split_documents
 from rag.structurizer import MINERU
@@ -1072,6 +1071,12 @@ def _retrieve_locked(
     """
 
     recall: int | None = None
+    effective_pool: int | None = None
+    bm25_hits: list[dict[str, object]] = []
+    fused: list[dict[str, object]] = []
+    trace: dict[str, object] | None = None
+    vector_ms: int | None = None
+    bm25_ms: int | None = None
 
     if method == "bm25":
         report("encode", "skipped", retrieval_method=method)
@@ -1140,15 +1145,58 @@ def _retrieve_locked(
                 query_embedding, k=effective_pool, filter=access_filter
             )
         vector_hits = build_vector_hits(matches)
-        bm25_scores = rerank_bm25_scores(
-            [match[0].page_content for match in matches],
+        vector_ms = round((perf_counter() - started) * 1000)
+
+        # 关键词路必须独立检索全库：只在向量候选里打分，关键词独有结果永远召不回。
+        bm25_started = perf_counter()
+        bm25_hits = search_bm25(
             question,
+            settings.chroma_persist_dir,
+            effective_pool,
+            settings.knowledge_base_id,
+            user,
+            access_policy,
         )
+        bm25_ms = round((perf_counter() - bm25_started) * 1000)
+
         if fusion_method == "weighted":
-            hits = weighted_fuse(vector_hits, bm25_scores, alpha=fusion_alpha)[:top_k]
+            fused = weighted_fuse_paths(vector_hits, bm25_hits, alpha=fusion_alpha)
         else:
-            hits = rrf_fuse(vector_hits, bm25_scores, k=fusion_k)[:top_k]
-        recall = len(matches)
+            fused = rrf_fuse_paths(vector_hits, bm25_hits, k=fusion_k)
+        hits = fused[:top_k]
+        recall = len(vector_hits)
+
+        final_ranks = {str(hit["chunk_id"]): int(hit["rank"]) for hit in hits}
+        trace = {
+            "method": "hybrid",
+            "fusion": {
+                "method": fusion_method,
+                "k": fusion_k if fusion_method == "rrf" else None,
+                "alpha": fusion_alpha if fusion_method == "weighted" else None,
+            },
+            "pool": effective_pool,
+            "vector_count": len(vector_hits),
+            "bm25_count": len(bm25_hits),
+            "union_count": len(fused),
+            "final_count": len(hits),
+            "candidates": [
+                {
+                    "chunk_id": item["chunk_id"],
+                    "doc_id": item["doc_id"],
+                    "title": item["title"],
+                    "page_label": item["page_label"],
+                    "section_path": item["section_path"],
+                    "vector_rank": item["vector_rank"],
+                    "similarity": item.get("similarity"),
+                    "bm25_rank": item["bm25_rank"],
+                    "bm25_score": item.get("bm25_score"),
+                    "sources": item["sources"],
+                    "fusion_score": item.get("rrf_score", item.get("weighted_score")),
+                    "final_rank": final_ranks.get(str(item["chunk_id"])),
+                }
+                for item in fused
+            ],
+        }
     else:
         embeddings = get_embeddings(
             settings.embedding_model,
@@ -1199,6 +1247,18 @@ def _retrieve_locked(
         similarity_threshold=threshold if method == "vector" else None,
         pool=effective_pool if method == "hybrid" else None,
         fusion_method=fusion_method if method == "hybrid" else None,
+        fusion_k=fusion_k if method == "hybrid" else None,
+        fusion_alpha=fusion_alpha if method == "hybrid" else None,
+        vector_candidates=recall,
+        bm25_candidates=(
+            len(bm25_hits) if method == "hybrid"
+            else len(hits) if method == "bm25"
+            else None
+        ),
+        union_candidates=len(fused) if method == "hybrid" else None,
+        vector_ms=vector_ms,
+        bm25_ms=bm25_ms,
+        retrieval_trace=trace,
         vector_hits=hits,
     )
     return hits

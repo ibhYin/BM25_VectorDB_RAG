@@ -262,79 +262,111 @@ def rerank_bm25_scores(texts: list[str], question: str) -> list[float]:
     return _bm25_scores(texts, question)
 
 
-def rrf_fuse(
+def _chunk_key(hit: dict[str, object]) -> str:
+    return str(hit.get("chunk_id", ""))
+
+
+def _merge_paths(
     vector_hits: list[dict[str, object]],
-    bm25_scores: list[float],
-    k: int = 60,
+    bm25_hits: list[dict[str, object]],
 ) -> list[dict[str, object]]:
-    """Reciprocal Rank Fusion of the vector order with candidate BM25 scores."""
+    """按 chunk_id 合并两路召回，保留各自的名次与分数。
 
-    if len(vector_hits) != len(bm25_scores):
-        raise ValueError("vector_hits and bm25_scores must have the same length")
-
-    bm25_order = sorted(
-        (index for index, score in enumerate(bm25_scores) if score > 0),
-        key=lambda index: (-bm25_scores[index], index),
-    )
-    bm25_rank = {index: rank + 1 for rank, index in enumerate(bm25_order)}
-
-    fused: list[tuple[float, int, dict[str, object]]] = []
-    for index, hit in enumerate(vector_hits):
-        score = 1.0 / (k + index + 1)
-        if index in bm25_rank:
-            score += 1.0 / (k + bm25_rank[index])
-        merged = dict(hit)
-        merged["retrieval_method"] = "hybrid"
-        merged["bm25_score"] = float(bm25_scores[index])
-        merged["rrf_score"] = score
-        fused.append((score, index, merged))
-
-    fused.sort(key=lambda item: (-item[0], item[1]))
-    # 重新编号。排序变了，而 `build_vector_hits` 给的 `rank` 还是**向量候选里的**
-    # 名次——直接用会让界面上第一张卡片写着「#4」。评估页正是靠这个名次判断检索
-    # 好坏的，糊弄不得。
-    return [
-        {**hit, "rank": position}
-        for position, (_, _, hit) in enumerate(fused, start=1)
-    ]
-
-
-def weighted_fuse(
-    vector_hits: list[dict[str, object]],
-    bm25_scores: list[float],
-    alpha: float = 0.5,
-) -> list[dict[str, object]]:
-    """按归一化分数加权融合向量与 BM25 两个信号。
-
-    RRF 只看名次、不看分数差距；加权融合保留分数，适合「向量分和 BM25 分都能
-    反映相关度」的场景。向量侧用 `build_vector_hits` 产出的 similarity（已 clamp
-    到 [0,1]），BM25 侧先 min-max 归一化到 [0,1]，再 `alpha·sim + (1-alpha)·bm25`。
+    某一路没有命中某条时，该路的 rank 为 None、分数字段缺失——不补 0，也不伪造
+    名次。顺序是「向量路在前，BM25 独有结果按 BM25 名次追加」，融合排序的并列项
+    按这个顺序稳定排列。
     """
 
-    if len(vector_hits) != len(bm25_scores):
-        raise ValueError("vector_hits and bm25_scores must have the same length")
+    merged: dict[str, dict[str, object]] = {}
+    order: list[str] = []
 
-    bm25_positive = [score for score in bm25_scores if score > 0]
-    bm25_max = max(bm25_positive) if bm25_positive else 0.0
-    normalized = [
-        (float(score) / bm25_max) if bm25_max > 0 else 0.0 for score in bm25_scores
-    ]
+    for rank, hit in enumerate(vector_hits, start=1):
+        key = _chunk_key(hit)
+        if not key or key in merged:
+            continue
+        item = dict(hit)
+        item.pop("rank", None)  # 最终名次由融合重新编号
+        item["retrieval_method"] = "hybrid"
+        item["vector_rank"] = rank
+        item["bm25_rank"] = None
+        item["sources"] = ["vector"]
+        merged[key] = item
+        order.append(key)
 
-    fused: list[tuple[float, int, dict[str, object]]] = []
-    for index, hit in enumerate(vector_hits):
-        vector_score = float(hit.get("similarity") or 0.0)
-        score = alpha * vector_score + (1.0 - alpha) * normalized[index]
-        merged = dict(hit)
-        merged["retrieval_method"] = "hybrid"
-        merged["bm25_score"] = float(bm25_scores[index])
-        merged["weighted_score"] = score
-        fused.append((score, index, merged))
+    for rank, hit in enumerate(bm25_hits, start=1):
+        key = _chunk_key(hit)
+        if not key:
+            continue
+        item = merged.get(key)
+        if item is None:
+            item = dict(hit)
+            item.pop("rank", None)
+            item["retrieval_method"] = "hybrid"
+            item["vector_rank"] = None
+            item["sources"] = ["bm25"]
+            merged[key] = item
+            order.append(key)
+        else:
+            item["sources"] = list(item["sources"]) + ["bm25"]
+        item["bm25_rank"] = rank
+        item["bm25_score"] = float(hit.get("bm25_score") or 0.0)
 
-    fused.sort(key=lambda item: (-item[0], item[1]))
+    return [merged[key] for key in order]
+
+
+def _assign_fusion_ranks(
+    items: list[dict[str, object]], score_key: str
+) -> list[dict[str, object]]:
+    ranked = sorted(
+        enumerate(items),
+        key=lambda pair: (-float(pair[1][score_key]), pair[0]),
+    )
     return [
-        {**hit, "rank": position}
-        for position, (_, _, hit) in enumerate(fused, start=1)
+        {**item, "rank": position}
+        for position, (_, item) in enumerate(ranked, start=1)
     ]
+
+
+def rrf_fuse_paths(
+    vector_hits: list[dict[str, object]],
+    bm25_hits: list[dict[str, object]],
+    k: int = 60,
+) -> list[dict[str, object]]:
+    """对两路独立召回做 RRF；某一路缺席时该路贡献为零。"""
+
+    items = _merge_paths(vector_hits, bm25_hits)
+    for item in items:
+        score = 0.0
+        if item["vector_rank"] is not None:
+            score += 1.0 / (k + int(item["vector_rank"]))
+        if item["bm25_rank"] is not None:
+            score += 1.0 / (k + int(item["bm25_rank"]))
+        item["rrf_score"] = score
+    return _assign_fusion_ranks(items, "rrf_score")
+
+
+def weighted_fuse_paths(
+    vector_hits: list[dict[str, object]],
+    bm25_hits: list[dict[str, object]],
+    alpha: float = 0.5,
+) -> list[dict[str, object]]:
+    """按归一化分数融合两路独立召回；某一路缺席时该路贡献为零。
+
+    约定：向量侧用 `build_vector_hits` 产出的 similarity（由 L2 距离换算、已
+    clamp 到 [0,1]）；BM25 侧用该路最高分归一化（`bm25_score / max`）。相似度
+    本身未校准，因此这是近似排序；默认仍用 RRF。
+    """
+
+    items = _merge_paths(vector_hits, bm25_hits)
+    bm25_max = max(
+        (float(hit.get("bm25_score") or 0.0) for hit in bm25_hits), default=0.0
+    )
+    for item in items:
+        similarity = float(item.get("similarity") or 0.0)
+        bm25_score = float(item.get("bm25_score") or 0.0)
+        normalized = bm25_score / bm25_max if bm25_max > 0 else 0.0
+        item["weighted_score"] = alpha * similarity + (1.0 - alpha) * normalized
+    return _assign_fusion_ranks(items, "weighted_score")
 
 
 def format_vector_hits(hits: list[dict[str, object]]) -> list[str]:
