@@ -1,3 +1,4 @@
+import logging
 import math
 import sqlite3
 from contextlib import closing
@@ -6,6 +7,9 @@ from pathlib import Path
 from langchain_core.documents import Document
 
 from app.access import AccessPolicy, UserContext
+
+
+logger = logging.getLogger(__name__)
 
 
 def format_documents(documents: list[Document]) -> list[str]:
@@ -83,14 +87,32 @@ def search_bm25(
     if not (persist_dir / "chroma.sqlite3").is_file():
         return []
 
-    from rag.bm25_index import bm25_index_path, query_bm25_index
+    from rag.bm25_index import bm25_index_path
 
     if bm25_index_path(persist_dir).is_file():
-        return _search_bm25_index(
-            question, persist_dir, top_k, knowledge_base_id, user, access_policy
-        )
+        try:
+            return _search_bm25_index(
+                question, persist_dir, top_k, knowledge_base_id, user, access_policy
+            )
+        except sqlite3.DatabaseError:
+            # 索引损坏（含旧版本留下的半写文件）时退回内存重建，别让检索整个失败。
+            logger.warning("BM25 索引无法读取，回退到内存重建", exc_info=True)
 
-    # 回退路径：没有持久化索引（如测试的裸 chroma 目录、首次启动）时走内存全量重建。
+    return _search_bm25_memory(
+        question, persist_dir, top_k, knowledge_base_id, user, access_policy
+    )
+
+
+def _search_bm25_memory(
+    question: str,
+    persist_dir: Path,
+    top_k: int,
+    knowledge_base_id: str,
+    user: UserContext | None,
+    access_policy: AccessPolicy | None,
+) -> list[dict[str, object]]:
+    """回退路径：没有持久化索引（如测试的裸 chroma 目录、首次启动）时走内存全量重建。"""
+
     import chromadb
 
     from rag.vector_store import COLLECTION_NAME, metadata_client

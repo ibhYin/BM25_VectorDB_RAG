@@ -275,3 +275,31 @@ def test_persisted_index_respects_access_filter(tmp_path):
     policy = Allowed()
     hits = search_bm25("内容", tmp_path, 20, "default", user="bob", access_policy=policy)
     assert [hit["chunk_id"] for hit in hits] == ["pub#chunk_001"]
+
+
+def test_rebuild_recovers_after_failed_temporary_write(tmp_path, monkeypatch):
+    """一次分词失败不能留下同名临时库，否则下一次重建永久失败。"""
+
+    _make_collection(tmp_path, [("ZXQ7429", {"chunk_id": "doc#chunk_001"})])
+    from rag import bm25_index
+
+    def boom(text):
+        raise RuntimeError("simulated interruption")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(bm25_index, "tokenize", boom)
+        with pytest.raises(RuntimeError, match="simulated interruption"):
+            bm25_index.rebuild_bm25_index(tmp_path)
+
+    assert list(tmp_path.glob("*.tmp")) == []
+    bm25_index.rebuild_bm25_index(tmp_path)
+    assert search_bm25("ZXQ7429", tmp_path, 1)[0]["chunk_id"] == "doc#chunk_001"
+
+
+def test_corrupt_index_falls_back_to_memory(tmp_path):
+    _make_collection(tmp_path, [("注意力", {"chunk_id": "doc#chunk_001"})])
+    (tmp_path / "bm25.sqlite3").write_bytes(b"not a sqlite database")
+
+    hits = search_bm25("注意力", tmp_path, 20)
+
+    assert [hit["chunk_id"] for hit in hits] == ["doc#chunk_001"]

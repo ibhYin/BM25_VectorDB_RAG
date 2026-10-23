@@ -7,8 +7,10 @@
 
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
+import uuid
 from pathlib import Path
 
 import chromadb
@@ -44,42 +46,50 @@ def rebuild_bm25_index(
     embedding_api_key: str = "",
     embedding_base_url: str = "",
 ) -> None:
-    """从 Chroma 全量重建 BM25 索引；原子写，读方永不看到半写文件。"""
+    """从 Chroma 全量重建 BM25 索引；原子写，读方永不看到半写文件。
+
+    每次用全新的临时文件，失败时删掉它——同名 `.tmp` 残留会让下一次重建撞上
+    `table bm25 already exists`，把一次可重试的失败变成永久失败。
+    """
 
     target = bm25_index_path(persist_dir)
-    temporary = target.with_name(target.name + ".tmp")
+    temporary = target.with_name(f"{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
 
-    with metadata_client(persist_dir) as client:
-        try:
-            collection = client.get_collection(COLLECTION_NAME, embedding_function=None)
-        except chromadb.errors.NotFoundError:
-            collection = None
+    try:
+        with metadata_client(persist_dir) as client:
+            try:
+                collection = client.get_collection(COLLECTION_NAME, embedding_function=None)
+            except chromadb.errors.NotFoundError:
+                collection = None
 
-        target.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(str(temporary))
-        try:
-            _create_index(connection)
-            if collection is not None:
-                records = collection.get(include=["documents", "metadatas"])
-                texts = records["documents"] or []
-                metadatas = records["metadatas"] or []
-                rows = [
-                    (
-                        " ".join(tokenize(text or "")),
-                        str(metadatas[index].get("chunk_id", "")),
+            target.parent.mkdir(parents=True, exist_ok=True)
+            connection = sqlite3.connect(str(temporary))
+            try:
+                _create_index(connection)
+                if collection is not None:
+                    records = collection.get(include=["documents", "metadatas"])
+                    texts = records["documents"] or []
+                    metadatas = records["metadatas"] or []
+                    rows = [
+                        (
+                            " ".join(tokenize(text or "")),
+                            str(metadatas[index].get("chunk_id", "")),
+                        )
+                        for index, text in enumerate(texts)
+                        if metadatas[index] and metadatas[index].get("chunk_id")
+                    ]
+                    connection.executemany(
+                        "INSERT INTO bm25(terms, chunk_id) VALUES (?, ?)", rows
                     )
-                    for index, text in enumerate(texts)
-                    if metadatas[index] and metadatas[index].get("chunk_id")
-                ]
-                connection.executemany(
-                    "INSERT INTO bm25(terms, chunk_id) VALUES (?, ?)", rows
-                )
-            connection.commit()
-        finally:
-            connection.close()
+                connection.commit()
+            finally:
+                connection.close()
 
-    # 原子替换：查询侧要么读到旧索引，要么读到新索引，绝无半写状态。
-    temporary.replace(target)
+        # 原子替换：查询侧要么读到旧索引，要么读到新索引，绝无半写状态。
+        temporary.replace(target)
+    finally:
+        # 成功替换后临时文件已不存在；失败时这里清掉半成品，保证下次能重建。
+        temporary.unlink(missing_ok=True)
 
 
 def query_bm25_index(
