@@ -94,13 +94,23 @@ class RagWebServer(ThreadingHTTPServer):
 
 def run_web_server(host: str = "127.0.0.1", port: int = 8000) -> None:
     from app.uploads import get_upload_store
+    from app.indexes import recover_migration
+    from rag import vector_store
 
-    get_upload_store().recover()
-    server = RagWebServer((host, port), WebRequestHandler)
-    try:
-        server.serve_forever()
-    finally:
-        server.server_close()
+    # A second web process must not recover/clean a live process's task file.
+    with vector_store.index_directory_lock(vector_store.INDEX_ROOT / ".service", exclusive=True):
+        uploads = get_upload_store()
+        server = RagWebServer((host, port), WebRequestHandler)
+        try:
+            recover_migration(get_settings(), uploads._jobs)
+            uploads.recover()
+            server.serve_forever()
+        finally:
+            server.server_close()
+            uploads._executor.shutdown(wait=True)
+            from app.service import knowledge_base_lock
+            with knowledge_base_lock.write():
+                vector_store.close_all_vector_stores()
 
 
 class WebRequestHandler(BaseHTTPRequestHandler):
@@ -155,6 +165,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._handle_conversation_detail(
                 parsed.path.removeprefix("/api/conversations/")
             )
+        elif parsed.path == "/api/index-rebuild/preview":
+            self._handle_rebuild_preview(parsed.query)
         elif parsed.path == "/api/documents":
             self._handle_documents()
         elif parsed.path.startswith("/api/documents/"):
@@ -189,6 +201,10 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._handle_update_config()
         elif parsed.path == "/api/models":
             self._handle_list_models()
+        elif parsed.path == "/api/index-rebuild":
+            self._handle_rebuild()
+        elif parsed.path == "/api/documents/delete-batch":
+            self._handle_document_delete_batch()
         elif parsed.path == "/api/documents/upload":
             self._handle_document_upload()
         elif parsed.path.startswith("/api/documents/"):
@@ -303,11 +319,25 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
         self._require_admin()
         settings = get_settings()
-        updates = self._read_config_updates(self._read_json())
+        payload = self._read_json()
+        section = payload.pop("section", None)
+        from app.config import CONFIG_SECTIONS
+        from app.service import knowledge_base_lock
+
+        if section is not None and (not isinstance(section, str) or section not in CONFIG_SECTIONS):
+            raise RequestError(HTTPStatus.BAD_REQUEST, "未知的配置分节")
+        allowed = CONFIG_SECTIONS.get(section) if section else set().union(*CONFIG_SECTIONS.values())
+        if allowed is None or set(payload) - allowed:
+            raise RequestError(HTTPStatus.BAD_REQUEST, "本节包含不允许保存的字段")
+        updates = self._read_config_updates(payload)
         try:
-            update_runtime_config(updates)
+            with knowledge_base_lock.mutation():
+                preserve = "llm" if section == "llm" or {"openai_base_url", "openai_api_key"}.intersection(updates) else section
+                update_runtime_config(updates, section=preserve)
         except ValueError as exc:
             raise RequestError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+        except RuntimeError as exc:
+            raise RequestError(HTTPStatus.CONFLICT, str(exc)) from exc
         # updated：本次真正写进去的字段名，前端拿它和「这次想改的字段」对比，
         # 有没生效的能当场暴露出来。
         self._send_json(
@@ -344,7 +374,11 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             if isinstance(raw_api_key, str) and raw_api_key.strip()
             else stored_api_key
         )
-        self._send_json({"target": target, **list_models(base_url, api_key)})
+        catalog = list_models(base_url, api_key)
+        if catalog.get("error"):
+            from app.rebuild import safe_error
+            catalog["error"] = safe_error(str(catalog["error"]).replace(api_key, "[REDACTED]") if api_key else catalog["error"], get_settings())
+        self._send_json({"target": target, **catalog})
 
     def _handle_create_answer_job(self) -> None:
         from app.answer_jobs import get_answer_store
@@ -849,6 +883,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         self._require_admin()
         try:
             job = get_upload_store().request_cancel(job_id)
+        except ValueError as exc:
+            raise RequestError(HTTPStatus.CONFLICT, str(exc)) from exc
         except KeyError as exc:
             raise RequestError(HTTPStatus.NOT_FOUND, str(exc)) from exc
         self._send_json(job)
@@ -971,19 +1007,73 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
         self._send_json(job, status=HTTPStatus.ACCEPTED)
 
+    def _handle_rebuild_preview(self, query: str) -> None:
+        from app.rebuild import prepare, preview
+
+        self._require_admin()
+        force = (parse_qs(query).get("force") or ["0"])[0] == "1"
+        try:
+            self._send_json(preview(prepare(get_settings(), force)))
+        except (ValueError, RuntimeError) as exc:
+            raise RequestError(HTTPStatus.CONFLICT, str(exc)) from exc
+        except Exception as exc:
+            from app.rebuild import safe_error
+            raise RequestError(HTTPStatus.INTERNAL_SERVER_ERROR, safe_error(exc, get_settings())) from exc
+
+    def _handle_rebuild(self) -> None:
+        from app.uploads import get_upload_store
+
+        user = self._require_admin()
+        payload = self._read_json()
+        force = self._read_bool(payload, "force_reparse")
+        plan_id = payload.get("plan_id")
+        if not isinstance(plan_id, str) or len(plan_id) != 64:
+            raise RequestError(HTTPStatus.BAD_REQUEST, "请先预检并确认重建范围")
+        try:
+            job = get_upload_store().create_rebuild(plan_id, force, _actor_name(user))
+        except (ValueError, RuntimeError) as exc:
+            raise RequestError(HTTPStatus.CONFLICT, str(exc)) from exc
+        except Exception as exc:
+            from app.rebuild import safe_error
+            raise RequestError(HTTPStatus.INTERNAL_SERVER_ERROR, safe_error(exc, get_settings())) from exc
+        self._send_json(job, status=HTTPStatus.ACCEPTED)
+
+    def _handle_document_delete_batch(self) -> None:
+        from app.service import delete_indexed_documents_batch
+
+        user = self._require_admin()
+        payload = self._read_json()
+        settings = get_settings()
+        if payload.get("knowledge_base_id") != settings.knowledge_base_id:
+            raise RequestError(HTTPStatus.BAD_REQUEST, "知识库已变化，请刷新后重试")
+        try:
+            result = delete_indexed_documents_batch(settings, payload.get("doc_ids"), _actor_name(user))
+        except ValueError as exc:
+            raise RequestError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+        except RuntimeError as exc:
+            raise RequestError(HTTPStatus.CONFLICT, str(exc)) from exc
+        except Exception as exc:
+            from app.rebuild import safe_error
+            raise RequestError(HTTPStatus.INTERNAL_SERVER_ERROR, safe_error(exc, get_settings())) from exc
+        self._send_json(result)
+
     def _handle_document_delete(self, raw_doc_id: str) -> None:
-        from app.service import delete_indexed_documents
 
         user = self._require_admin()
         doc_id = unquote(raw_doc_id).strip()
         if not doc_id:
             raise RequestError(HTTPStatus.BAD_REQUEST, "doc_id is required")
-        deleted_chunks = delete_indexed_documents(
-            get_settings(), [doc_id], _actor_name(user)
-        )
-        if not deleted_chunks:
+        from app.service import delete_indexed_documents_batch
+
+        try:
+            result = delete_indexed_documents_batch(get_settings(), [doc_id], _actor_name(user))
+        except RuntimeError as exc:
+            raise RequestError(HTTPStatus.CONFLICT, str(exc)) from exc
+        if result["failed"] or result["error"]:
+            raise RequestError(HTTPStatus.CONFLICT, result["error"] or "删除未完成，请刷新文档列表")
+        if not result["deleted"]:
             raise RequestError(HTTPStatus.NOT_FOUND, "Document not found")
-        self._send_json({"doc_id": doc_id, "deleted_chunks": deleted_chunks})
+        self._send_json({"doc_id": doc_id, "deleted_chunks": result["deleted_chunks"]})
 
     def _handle_document_detail(self, raw_doc_id: str, query: str) -> None:
         from app.service import get_indexed_document
@@ -1307,6 +1397,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         # 前端发了后端不认识的字段（通常是前后端版本不一致）：明确报错而不是
         # 静默丢弃——否则用户以为存上了、实际没生效。
         known = set(RUNTIME_CONFIG_FIELDS) | {"clear_mineru_api_token"}
+        known.discard("chroma_persist_dir")
         unknown = set(payload) - known
         if unknown:
             raise RequestError(
@@ -1315,6 +1406,12 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             )
 
         updates: dict[str, str] = {}
+        for field in ("chunk_size", "chunk_overlap", "embedding_max_input_bytes", "embedding_batch_size"):
+            if field in payload:
+                value = payload[field]
+                if isinstance(value, bool) or not isinstance(value, (str, int)) or not str(value).isdigit():
+                    raise RequestError(HTTPStatus.BAD_REQUEST, f"{field} 必须为整数")
+                updates[field] = str(value)
         for field in ("openai_base_url", "embedding_base_url"):
             if field in payload:
                 updates[field] = cls._clean_base_url(payload[field], field)
@@ -1413,6 +1510,9 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                     HTTPStatus.BAD_REQUEST, "aliyun_oss_prefix must be a string"
                 )
             updates["aliyun_oss_prefix"] = value.strip()
+        for key, value in updates.items():
+            if any(word in key for word in ("api_key", "token", "secret", "access_key", "appkey")) and ("•" in value or "***" in value or "已配置" in value):
+                raise RequestError(HTTPStatus.BAD_REQUEST, "密钥脱敏占位符不能作为新密钥保存")
         return updates
 
     @staticmethod

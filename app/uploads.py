@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from app.config import Settings
+from app.service import knowledge_base_lock
+from rag.index_manifest import ensure_index_embedding_model
 
 
 def utc_now() -> str:
@@ -161,6 +163,7 @@ class UploadJobStore:
             "finished_at": "",
         }
 
+    @knowledge_base_lock.mutation()
     def create(
         self,
         filenames: list[str],
@@ -192,6 +195,7 @@ class UploadJobStore:
         self._executor.submit(self._run, job["id"])
         return self.snapshot_job(job["id"])
 
+    @knowledge_base_lock.mutation()
     def create_uploaded(
         self,
         files: list[tuple[str, bytes]],
@@ -205,6 +209,9 @@ class UploadJobStore:
         MinerU before chunking. ``actor`` is recorded in the audit trail.
         """
 
+        ensure_index_embedding_model(
+            self._settings.chroma_persist_dir, self._settings.embedding_model
+        )
         with self._lock:
             active = [
                 job
@@ -244,6 +251,138 @@ class UploadJobStore:
 
         self._executor.submit(self._run, job["id"])
         return self.snapshot_job(job["id"])
+
+    def create_rebuild(self, plan_id: str, force_reparse: bool = False, actor: str = "") -> dict:
+        from app.rebuild import prepare
+        from app.indexes import generation_path
+
+        knowledge_base_lock.begin_rebuild()
+        job = None
+        try:
+            with self._lock:
+                if any(j["status"] in {"queued", "indexing"} for j in self._jobs.values()):
+                    raise RuntimeError("请等待现有上传/入库任务结束后再重建")
+            target = self._settings.model_copy(deep=True)
+            plan = prepare(target, force_reparse)
+            if plan_id != plan["plan_id"]:
+                raise ValueError("文档清单或目标配置已变化，请重新确认重建")
+            job = self._new_job([i["title"] for i in plan["items"]], [], actor=actor)
+            job.update(kind="rebuild", label="重建索引", progress_total=plan["documents"],
+                       original_model=plan["original_model"], force_reparse=force_reparse)
+            # Persist ownership BEFORE opening the candidate, including crash recovery.
+            generation_id = uuid.uuid4().hex
+            job.update(generation_id=generation_id,
+                       candidate_index_path=str(generation_path(target.knowledge_base_id, generation_id).absolute()),
+                       old_index_path=str(target.chroma_persist_dir.absolute()))
+            with self._lock:
+                self._jobs[job["id"]] = job
+                self._save_locked()
+            self._executor.submit(self._run_rebuild, job["id"], target, plan)
+            return self.snapshot_job(job["id"])
+        except Exception as exc:
+            if job is not None:
+                from app.rebuild import safe_error
+                with self._lock:
+                    job.update(status="failed", stage="failed", error=safe_error(exc, target), finished_at=utc_now())
+                    try:
+                        self._save_locked()
+                    except OSError:
+                        pass
+            knowledge_base_lock.end_rebuild()
+            raise
+
+    def maintain_indexes(self) -> None:
+        from app.indexes import maintain
+
+        def save():
+            with self._lock:
+                self._save_locked()
+        with self._lock:
+            jobs = dict(self._jobs)
+            # Do not remove evidence unless task status/error is durable first.
+            self._save_locked()
+        maintain(self._settings, jobs, save)
+
+    def _rebuild_committed(self, job: dict) -> bool:
+        from rag.index_manifest import read_index_embedding_model
+
+        candidate = job.get("candidate_index_path")
+        return bool(candidate and Path(candidate).resolve() == self._settings.chroma_persist_dir.resolve()
+                    and read_index_embedding_model(Path(candidate)) == job["runtime"].get("embedding_model"))
+
+    def _run_rebuild(self, job_id: str, target: Settings, plan: dict) -> None:
+        from app import audit
+        from app.config import update_runtime_config
+        from app.rebuild import execute, safe_error
+
+        def update(**fields):
+            with self._lock:
+                self._jobs[job_id].update(fields)
+                self._save_locked()
+
+        def progress(stage, done, total, current_file, detail):
+            with self._lock:
+                job = self._jobs[job_id]
+                job.update(stage=stage, progress_done=done, progress_total=total, current_file=current_file)
+                if detail is not None:
+                    rows = job["file_details"]
+                    index = detail["index"]
+                    while len(rows) <= index:
+                        rows.append({})
+                    rows[index] = dict(detail)
+                self._save_locked()
+
+        def publish(new_settings):
+            # No remote calls in this short commit. One atomic config file holds
+            # both target model settings and the active generation path.
+            with knowledge_base_lock.write():
+                rows = self._jobs[job_id]["file_details"]
+                update(files=plan["documents"],
+                       documents=plan["documents"], chunks=sum(int(row.get("chunks", 0)) for row in rows))
+                fields = ("chroma_persist_dir", "embedding_model", "embedding_base_url", "embedding_api_key", "chunk_size", "chunk_overlap", "embedding_max_input_bytes", "embedding_batch_size")
+                update_runtime_config({key: str(getattr(new_settings, key)) for key in fields})
+                self._settings.chroma_persist_dir = new_settings.chroma_persist_dir
+
+        try:
+            update(status="indexing", stage="check", started_at=utc_now())
+            from app.indexes import write_owner
+            write_owner(self._jobs[job_id])
+            result = execute(target, plan, progress, publish,
+                             candidate_dir=Path(self._jobs[job_id]["candidate_index_path"]))
+            update(**result, status="completed", stage="done", finished_at=utc_now(), current_file="")
+            audit.record("index.rebuild", actor=self._jobs[job_id]["actor"],
+                         knowledge_base_id=target.knowledge_base_id, embedding_model=target.embedding_model,
+                         doc_ids=[i["doc_id"] for i in plan["items"]], **result)
+        except Exception as exc:
+            error = safe_error(exc, target)
+            if self._rebuild_committed(self._jobs[job_id]):
+                # The atomic config switch is authoritative, even if the final
+                # task-file write fails. Recovery uses the same commit marker.
+                with self._lock:
+                    self._jobs[job_id].update(status="completed", stage="done", error="", state_warning="索引已切换；最终任务记录保存异常，请刷新核对", finished_at=utc_now())
+                    try:
+                        self._save_locked()
+                    except OSError:
+                        pass
+                audit.record("index.rebuild", actor=self._jobs[job_id]["actor"], knowledge_base_id=target.knowledge_base_id, embedding_model=target.embedding_model, state_warning="索引已切换，最终任务记录保存异常")
+            else:
+                update(status="failed", stage="failed", error=error, finished_at=utc_now())
+                audit.record("index.rebuild", actor=self._jobs[job_id]["actor"],
+                             knowledge_base_id=target.knowledge_base_id, **audit.failure_fields(error, "rebuild"))
+        finally:
+            try:
+                self.maintain_indexes()
+            except Exception as exc:
+                # A committed generation remains successful even if maintenance fails.
+                with self._lock:
+                    self._jobs[job_id]["cleanup_error"] = safe_error(exc, target)
+                    self._jobs[job_id]["cleanup_status"] = "pending"
+                    try:
+                        self._save_locked()
+                    except OSError:
+                        pass
+            finally:
+                knowledge_base_lock.end_rebuild()
 
     def snapshot_job(self, job_id: str) -> dict[str, Any]:
         with self._lock:
@@ -292,8 +431,16 @@ class UploadJobStore:
                 for job_id, job in self._jobs.items()
                 if job["status"] in {"queued", "indexing"}
             ]
-            for job_id in pending:
+            for job_id in list(pending):
                 job = self._jobs[job_id]
+                if job.get("kind") in {"rebuild", "migration"}:
+                    if self._rebuild_committed(job):
+                        job.update(status="completed", stage="done", error="", state_warning="已根据生效索引确认重建完成；请到评估页核对标注", finished_at=utc_now())
+                    else:
+                        job.update(status="failed", stage="failed", error="服务重启使重建中断；未完成的索引未启用，可重新发起", finished_at=utc_now())
+                    pending.remove(job_id)
+                    self._save_locked()
+                    continue
                 job["status"] = "queued"
                 job["stage"] = "queued"
                 job["started_at"] = ""
@@ -306,6 +453,8 @@ class UploadJobStore:
                 job["cancel_requested"] = False
             if pending:
                 self._save_locked()
+        # Recovery/cleanup runs before opening databases or resubmitting uploads.
+        self.maintain_indexes()
         for job_id in pending:
             self._executor.submit(self._run, job_id)
 
@@ -314,6 +463,8 @@ class UploadJobStore:
             job = self._jobs.get(job_id)
             if job is None:
                 raise KeyError("Upload job not found")
+            if job.get("kind") == "rebuild":
+                raise ValueError("重建任务不可取消；失败后可从重建入口重新发起")
             if job.get("status") == "queued":
                 job["status"] = "cancelled"
                 job["stage"] = "cancelled"
@@ -331,6 +482,8 @@ class UploadJobStore:
             job = self._jobs.get(job_id)
             if job is None:
                 raise KeyError("Upload job not found")
+            if job.get("kind") == "rebuild":
+                raise ValueError("请从重建索引入口重新发起，以重新检查全部文档")
             failed = [
                 detail
                 for detail in job.get("file_details", [])
@@ -419,7 +572,9 @@ class UploadJobStore:
                 if job is not None:
                     job["status"] = "failed"
                     job["stage"] = "failed"
-                    job["error"] = str(exc)
+                    from app.rebuild import safe_error
+
+                    job["error"] = safe_error(exc, self._settings)
                     job["finished_at"] = utc_now()
                     self._save_locked()
             return
@@ -499,6 +654,7 @@ class UploadJobStore:
                 job
                 for job in self._jobs.values()
                 if job["status"] in {"completed", "failed", "partial", "cancelled"}
+                and (not job.get("generation_id") or job.get("cleanup_status") == "cleaned")
             ),
             key=lambda job: job["finished_at"],
             reverse=True,

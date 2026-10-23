@@ -267,6 +267,7 @@ export async function loadIdentity() {
   }
   renderUserSwitcher();
   renderNavGating();
+  renderIndexWarning(state.status);
   emit("identity", state.identity);
   notifyViews("onIdentity", state.identity);
 }
@@ -384,9 +385,10 @@ export function renderIndexWarning(status) {
     el.indexWarning.hidden = true;
     return;
   }
-  el.indexWarning.textContent =
+  document.querySelector("#index-warning-text").textContent =
     `向量模型已变更：索引由 ${status.index_embedding_model} 建立，` +
-    `当前配置为 ${status.embedding_model}。检索结果可能失效，请重新入库文档。`;
+    `已保存目标为 ${status.embedding_model}。向量/混合检索已暂停；可查看文档。重建成功后切换，失败保留旧索引。`;
+  document.querySelector("#warning-rebuild").hidden = !state.identity.isAdmin;
   el.indexWarning.hidden = false;
 }
 
@@ -465,4 +467,73 @@ export function shortDocLabel(docId) {
   const found = state.documents.find((item) => item.doc_id === docId);
   const name = (found && found.title) || docId;
   return name.length > LIMIT ? `${name.slice(0, LIMIT)}…` : name;
+}
+
+let rebuildSubmitting = false;
+export async function requestIndexRebuild(force = false) {
+  const dialog = document.querySelector("#rebuild-dialog");
+  if (rebuildSubmitting || dialog.open) return;
+  rebuildSubmitting = true;
+  const buttons = ["#warning-rebuild", "#rebuild-index"].map(id => document.querySelector(id));
+  const title = document.querySelector("#rebuild-dialog-title");
+  const message = document.querySelector("#rebuild-dialog-message");
+  const close = document.querySelector("#rebuild-dialog-close");
+  const confirmButton = document.querySelector("#rebuild-dialog-confirm");
+  const trigger = document.activeElement;
+  let submitting = false;
+  close.onclick = () => dialog.close();
+  dialog.oncancel = event => { if (submitting) event.preventDefault(); };
+  dialog.onclose = () => { if (trigger?.isConnected) trigger.focus(); };
+  const report = (heading, text, busy = false) => {
+    title.textContent = heading;
+    message.textContent = text;
+    message.setAttribute("aria-busy", String(busy));
+  };
+  close.disabled = false;
+  close.textContent = "取消";
+  confirmButton.hidden = true;
+  buttons.forEach(button => { button.disabled = true; });
+  report("检查重建条件", "正在检查当前文档与缓存…", true);
+  dialog.showModal();
+  try {
+    const plan = await requestJson(`/api/index-rebuild/preview?force=${force ? 1 : 0}`);
+    if (!dialog.open) return;
+    report("确认重建索引", `知识库：${plan.knowledge_base_id}，共 ${plan.documents} 份已入库文档。\n原索引模型：${plan.original_model}\n目标模型：${plan.target_model}\n\n${force ? "已选择强制重新解析原文件。" : "默认复用切片正文或完整解析缓存。"}\n复用切片 ${plan.reuse_chunks} 份，缓存重切 ${plan.resplit} 份，读取原文件解析 ${plan.parse} 份。\n\n完成后切换；失败保留旧索引。\n重建期间暂停上传、删除和配置修改。`);
+    confirmButton.hidden = false;
+    const confirmed = await new Promise(resolve => {
+      const finish = value => {
+        confirmButton.removeEventListener("click", accept);
+        dialog.removeEventListener("close", cancel);
+        resolve(value);
+      };
+      const accept = () => finish(true);
+      const cancel = () => finish(false);
+      confirmButton.addEventListener("click", accept);
+      dialog.addEventListener("close", cancel);
+    });
+    if (!confirmed) return;
+    submitting = true;
+    confirmButton.hidden = true;
+    close.disabled = true;
+    report("提交重建任务", "正在提交，请稍候…", true);
+    const job = await requestJson("/api/index-rebuild", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ plan_id: plan.plan_id, force_reparse: force }),
+    });
+    report("重建任务已提交", "可在知识库的处理任务中查看阶段、进度与结果；刷新页面后仍可查看。任务完成后才会切换索引。");
+    state.jobs.unshift(job);
+    router.navigate("library");
+    emit("jobs:refresh");
+  } catch (error) {
+    if (dialog.open) report("无法确认重建任务", `${error.message}\n请先查看处理任务；若没有创建任务，关闭后可重新发起。`);
+  }
+  finally {
+    submitting = false;
+    close.disabled = false;
+    close.textContent = "关闭";
+    if (dialog.open) close.focus();
+    rebuildSubmitting = false;
+    const active = state.jobs.some(job => job.kind === "rebuild" && ["queued", "indexing"].includes(job.status));
+    buttons.forEach(button => { button.disabled = active; });
+  }
 }

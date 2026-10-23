@@ -93,14 +93,14 @@ def search_bm25(
     # 回退路径：没有持久化索引（如测试的裸 chroma 目录、首次启动）时走内存全量重建。
     import chromadb
 
-    from rag.vector_store import COLLECTION_NAME
+    from rag.vector_store import COLLECTION_NAME, metadata_client
 
-    client = chromadb.PersistentClient(path=str(persist_dir))
-    try:
-        collection = client.get_collection(COLLECTION_NAME, embedding_function=None)
-    except chromadb.errors.NotFoundError:
-        return []
-    records = collection.get(include=["documents", "metadatas"])
+    with metadata_client(persist_dir) as client:
+        try:
+            collection = client.get_collection(COLLECTION_NAME, embedding_function=None)
+        except chromadb.errors.NotFoundError:
+            return []
+        records = collection.get(include=["documents", "metadatas"])
     texts = records["documents"] or []
     metadatas = records["metadatas"] or []
     if access_policy is not None and user is not None:
@@ -151,17 +151,17 @@ def _search_bm25_index(
 
     import chromadb
 
-    from rag.vector_store import COLLECTION_NAME
+    from rag.vector_store import COLLECTION_NAME, metadata_client
 
-    client = chromadb.PersistentClient(path=str(persist_dir))
-    try:
-        collection = client.get_collection(COLLECTION_NAME, embedding_function=None)
-    except chromadb.errors.NotFoundError:
-        return []
-    records = collection.get(
-        where={"chunk_id": {"$in": [chunk_id for chunk_id, _ in ranked]}},
-        include=["documents", "metadatas"],
-    )
+    with metadata_client(persist_dir) as client:
+        try:
+            collection = client.get_collection(COLLECTION_NAME, embedding_function=None)
+        except chromadb.errors.NotFoundError:
+            return []
+        records = collection.get(
+            where={"chunk_id": {"$in": [chunk_id for chunk_id, _ in ranked]}},
+            include=["documents", "metadatas"],
+        )
     by_id = {
         str(metadata.get("chunk_id", "")): (text or "", metadata or {})
         for text, metadata in zip(

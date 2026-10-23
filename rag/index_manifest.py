@@ -2,7 +2,7 @@
 
 Vectors from different embedding models are not comparable, so pointing the app
 at a new model silently breaks retrieval. This manifest is written next to the
-Chroma data at index time and read back to warn about a mismatch.
+Chroma data at index time and checked before opening or appending to an index.
 """
 
 from __future__ import annotations
@@ -16,12 +16,27 @@ from pathlib import Path
 MANIFEST_NAME = "index_manifest.json"
 
 
+def ensure_index_embedding_model(persist_dir: Path, embedding_model: str) -> None:
+    recorded = read_index_embedding_model(persist_dir)
+    # ponytail: legacy indexes have no model identity; rebuild them in a new
+    # directory to enable verification rather than guessing from dimensions.
+    if recorded and recorded != embedding_model:
+        raise ValueError(
+            f"索引由 {recorded} 建立，当前向量模型为 {embedding_model}。"
+            "请切回原模型，或使用新的索引目录重新入库；禁止混用不同模型的向量。"
+        )
+
+
 def manifest_path(persist_dir: Path) -> Path:
     return Path(persist_dir) / MANIFEST_NAME
 
 
-def write_index_manifest(persist_dir: Path, embedding_model: str) -> None:
-    """Record the embedding model behind this index. Never blocks ingestion."""
+def write_index_manifest(
+    persist_dir: Path, embedding_model: str, *,
+    chunk_size: int | None = None, chunk_overlap: int | None = None,
+    strict: bool = False,
+) -> None:
+    """Record model/split identity; strict publication fails on a missing manifest."""
 
     if not embedding_model:
         return
@@ -34,6 +49,8 @@ def write_index_manifest(persist_dir: Path, embedding_model: str) -> None:
             json.dumps(
                 {
                     "embedding_model": embedding_model,
+                    "chunk_size": chunk_size,
+                    "chunk_overlap": chunk_overlap,
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 },
                 ensure_ascii=False,
@@ -43,8 +60,8 @@ def write_index_manifest(persist_dir: Path, embedding_model: str) -> None:
         )
         os.replace(temporary, target)
     except OSError:
-        # A missing manifest only costs the mismatch warning, never the ingest.
-        pass
+        if strict:
+            raise
 
 
 def read_index_embedding_model(persist_dir: Path) -> str:

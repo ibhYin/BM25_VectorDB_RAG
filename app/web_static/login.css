@@ -2,6 +2,8 @@
   box-sizing: border-box;
 }
 
+.required-mark { color: var(--danger); }
+
 :root {
   --bg: #f4f3ee;
   --surface: #ffffff;

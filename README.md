@@ -1,721 +1,186 @@
-# Local RAG Knowledge Workspace
+# DocuMind · 可追溯的本地 RAG 知识库
 
-面向中文 PDF、Markdown、TXT 以及视频/音频文件的本地知识库问答应用。文档通过 OpenAI-compatible Embedding 服务写入 Chroma，问题经过向量检索后交给 OpenAI-compatible Chat 模型生成带 `chunk_id` 引用的回答。
+一个面向中文文档的单人 RAG 演示项目：从导入、解析、切片和检索，到带原文引用的多轮问答，再到索引维护与检索评估。重点是把数据来源、任务状态和失败处理做清楚，方便复现和讲解。
 
-## 核心能力
+**实现边界：**Python 标准库 Web 服务 + LangChain + Chroma + SQLite FTS5/BM25 + 原生 JavaScript。主 Web 后端尚未迁移 FastAPI；可选本地向量服务使用 FastAPI/Uvicorn。当前没有 LangGraph 编排、独立双路召回或 Dockerfile/Compose，不把计划当成已实现功能。
 
-- 多轮对话：追问会先用对话历史改写成独立问题再检索（「它的优势是什么？」能正确解析指代），回答仍基于原问题与历史生成。
-- 对话记录保存在服务端并按用户隔离：左侧列表随时切回历史对话，刷新或换浏览器都不丢。
-- 页面按职责划分：**问答**、**聚合**、**知识库**、**设置**、**审计**、**评估**、**用户**（哈希路由，切换不刷新，问答记录保留）。
-- 浏览器拖拽上传，后台增量索引，同名文档安全替换旧切片。
-- **聚合统计**：对召回样本做语义归类计数（例如「财报里最常见的三类经营风险」），返回 Top-K 类别、文档数与可点击原文证据，并明确标注样本量；结果是样本估计，不是全库精确统计。
-- 上传任务卡展示逐文件进度、当前阶段、已用/预计剩余时间、缓存命中与逐文件失败原因；支持取消排队任务、索引中在当前文件结束后取消，以及只重试失败文件。
-- PDF 文本提取与扫描件 OCR 分流。
-- **可选的文档结构化提取**：上传或 CLI 入库时勾选「结构化提取」，把文档转成 Markdown 后再切片，
-  保留标题、列表、表格结构。引擎为 **MinerU 在线解析**（真实版面分析，适用 PDF 等复杂版面）。
-- 稳定的 `doc_id`、`chunk_id`、页码和章节元数据。
-- 结构化文档按 Markdown 标题层级切分，切片不跨章节，且每片都带真实章节路径。
-- 转换结果按内容哈希缓存，重新入库不会重复消耗 MinerU 额度。
-- 本地 Ollama Embedding 与远程 LLM 可独立配置。
-- 网页内直接配置 LLM / Embedding 的请求地址、API Key 与模型名，保存后立即生效，无需修改 `.env`。
-- 模型配置按端点分为「本地」和「云端」两组：本地组读取本机 Ollama 的模型目录并显示体积，云端组读取 OpenAI 兼容的 `/models`；两组列表互不混用。
-- 真实展示问题编码、向量搜索、答案生成的状态和耗时。
-- 答案按 Markdown 渲染成标题、列表、加粗和行内代码，而不是一整段纯文本。
-- 回答里的 `[source: doc_id#chunk_id]` 渲染成可点击标签，点击直接跳转到原文对应切片并高亮。
-- 展示 Top-K 的 Chroma 距离、来源和完整原始切片文本。
-- 页面下拉框可切换向量检索与 BM25 关键词检索，两者共用已入库切片和 Top-K。
-- Enter 发送，Shift+Enter 换行。
-- 多问答并发；索引写入与问答读取通过进程内读写锁隔离。
-- 可选的知识库级和文档级访问控制；权限在向量/BM25 检索前过滤。
-- 一个文档可同时属于多个访问组；管理员在「知识库」页弹层勾选（可切「按组」视图看每个组能
-  看到哪些文档），**只改元数据、不重新向量化**。
-- 无入库权限的用户可以提交文档，进入待审区由管理员审核通过后才入库。
-- 视频/音频文件（mp4/mp3 等）入库时自动抽音频并经 ASR 转写（OpenAI 兼容或阿里云录音文件
-  识别，可切换），按时间戳分段，答案引用带 `MM:SS` 时间范围。
-- 每次向量库写入都留审计记录，网页端可查看（仅管理员）。
+## 可以展示什么
 
-## 目录
+| 能力 | 实现与取舍 |
+|---|---|
+| 带证据的多轮问答 | 追问改写后检索；回答保留 `chunk_id` 引用，可跳转到原文位置；任务展示编码、检索、生成阶段 |
+| 三种检索方式 | 向量检索、独立 BM25 检索，以及“向量候选池 → BM25 重排 → RRF/加权融合”；混合模式的 BM25 只评价向量候选，无法补回候选池之外的漏召回 |
+| 文档导入 | PDF / Markdown / TXT；桌面浏览器可选文件、文件夹或拖拽，递归收集支持的文件，不支持的类型提示跳过；超过每批 10 个自动分批 |
+| 解析复用 | 普通文本直接处理；复杂版面可选 MinerU，内容缓存避免相同文件重复解析；扫描件 OCR、音视频 ASR 需另外配置 |
+| 安全重建索引 | 复用切片、复用完整解析文本重新切片、强制/必要时重解析；独立目录构建，全部校验后原子切换；失败保留旧库 |
+| 索引生命周期 | 正常保留当前与上一成功版本；关闭同目录所有缓存客户端后清理失败/更早版本；受阻时保留错误和清理待办 |
+| 可操作的任务与设置 | 上传/重建任务持久化；上传逐文件进度、取消与失败重试；设置按节保存/放弃，真实请求反馈；单控件搜索选择，搜索草稿不等于模型变更 |
+| 文档管理 | 当前列表多选批量删除，共享单条硬删除语义并统一更新 BM25；保留服务器原文件和解析缓存；管理员权限和知识库范围校验 |
+| 评估与审计 | Hit@K / MRR / Recall@K、正文指纹重新锚定、失效标注报告、快照指纹校验与逐题比较；索引变更留审计记录 |
+
+还提供访问组、待审核上传、用户管理，以及基于召回样本的语义聚合统计。它们是演示能力；项目未做多人压测、分布式任务或生产安全认证。聚合统计是样本估计，不代表全库精确计数。
+
+## 核心流程
+
+```mermaid
+flowchart TD
+    D[文件 / 文件夹] --> P[文本解析 / 可选 MinerU 或 ASR]
+    P --> C[完整解析缓存]
+    P --> S[带文档身份、来源和权限的切片]
+    S --> V[Chroma 向量索引]
+    S --> B[SQLite FTS5 / BM25]
+    Q[问题 + 有限对话历史] --> R[追问改写]
+    R --> M{检索方式}
+    M -->|vector| V
+    M -->|bm25| B
+    M -->|hybrid| H[向量候选池]
+    V --> H
+    H --> F[候选内 BM25 重排 + 融合]
+    V --> E[证据与访问校验]
+    B --> E
+    F --> E
+    E --> L[LangChain Prompt + Chat 模型]
+    L --> A[答案 + 可定位原文引用]
+```
+
+后台重建复用当前文档清单，在新版本内完成向量、BM25、模型清单、数量检查及评测重新锚定，再一次原子提交生效路径与配套配置。保存目标模型后，旧索引模型不一致时暂停向量/混合检索，管理读取继续可用，禁止混用向量。
+
+## 快速开始：两份自编资料
+
+要求 macOS 或 Linux（POSIX），Python 3.10+，索引维护需系统提供 `lsof`；前端检查另需 Node.js。从**全新克隆**开始，避免把示例配置覆盖到已有知识库。
+
+```sh
+git clone https://github.com/ibhYin/BM25_VectorDB_RAG.git
+cd BM25_VectorDB_RAG
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+cp .env.example .env
+mkdir -p data/raw
+cp -n examples/documents/* data/raw/
+```
+
+示例配置使用本地 Ollama 的 [qwen2.5:1.5b](https://ollama.com/library/qwen2.5:1.5b) 和 [bge-m3](https://ollama.com/library/bge-m3)。安装并启动 [Ollama](https://docs.ollama.com/api/openai-compatibility) 后，另开终端准备模型：
+
+```sh
+ollama pull qwen2.5:1.5b
+ollama pull bge-m3
+ollama serve
+```
+
+若桌面 Ollama 已在运行，不重复执行 `serve`。首次下载需要网络、磁盘及模型运行内存；这组模型用于短示例，不承诺硬件性能或回答质量。`ollama` 是本地兼容接口的 SDK 占位值，不是真实 API 密钥。也可以在 `.env` 配置已有的 OpenAI 兼容 Chat/Embedding 服务，二者可独立设置端点、模型和密钥；云端调用可能计费。
+
+回到项目终端，首次入库并整理到受管理目录，再启动服务：
+
+```sh
+python -m app.main ingest
+python -m app.main maintain-indexes --migrate-legacy
+python -m app.main ask "星河项目的试用期是多少天？"
+python -m app.main web --host 127.0.0.1 --port 8000
+```
+
+手动访问 <http://127.0.0.1:8000>。示例答案应根据原文回答“14 天”，并带上证据引用；点击引用核对原句。另有三个可核对问题在 [examples/evaluation.json](examples/evaluation.json)。
+
+- `ingest` 写入 `.env.example` 配置的首次 `.chroma` 目录；离线维护只移动已有索引并原子保存新路径，不重新解析或向量化。之后运行配置接管生效目录，无需手改路径。
+- `config/runtime_config.json` 优先于 `.env` 中同名字段。复现请使用新克隆，不能直接复制别人已保存的运行配置或私人向量库。
+- 默认没有访问策略时是本机开放模式，管理功能可用；保持 `127.0.0.1` 监听。不要把此模式直接暴露到公网。
+- 初次 Markdown/TXT 演示不使用 MinerU/OCR/ASR。PDF 结构化需自行提供 MinerU token；扫描件 OCR 需要可用视觉服务；音视频还需 `ffmpeg` 与转写配置，相关服务可能计费。
+
+### 可选：启用登录与访问组
+
+复制 [权限示例](config/access_policy.example.json) 到 `config/access_policy.json`；其中的账号只是策略身份，没有预置密码。停服后，可用以下命令在**不存在认证文件的新环境**建立管理员密码和随机会话密钥：
+
+```sh
+cp -n config/access_policy.example.json config/access_policy.json
+python - <<'PY'
+import json, os, secrets
+from getpass import getpass
+from pathlib import Path
+from app.web_auth import hash_password
+path = Path('config/web_auth.json')
+password = getpass('设置 demo-admin 密码（至少 8 位）: ')
+if len(password) < 8:
+    raise SystemExit('密码至少 8 位')
+payload = {'secret': secrets.token_urlsafe(32), 'users': {
+    'demo-admin': {'password_hash': hash_password(password)}
+}}
+# 独占创建，已有认证文件不会覆盖。
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, 'w') as output:
+    json.dump(payload, output)
+PY
+```
+
+重启后用自己设置的密码登录，在“用户”页创建其他账号、设置访问组。登录账号需同时存在于权限策略与认证文件。上述两个运行文件均已忽略，不能上传；API 密钥在本机运行配置中明文保存，页面不回显密钥。
+
+## 页面与最短验收
+
+| 页面 | 手动检查 |
+|---|---|
+| 问答 | 用星河示例提问，查看阶段、证据及引用跳转；再追问，检查问题改写 |
+| 知识库 | 导入两份公开样例；展开任务明细，刷新后不应被轮询自动折叠；勾选文档查看明确的批量删除范围 |
+| 设置 | 修改一节并保存，其他节未保存输入保留；搜索后不选择或重选同一模型不应产生变更；刷新模型列表有真实数量/错误反馈 |
+| 评估 | 人工确认证据后标注，查看失效标注与运行快照 |
+| 审计 / 用户 | 启用策略后检查管理员入口与权限反馈 |
+
+重建前确认会显示当前知识库、文档数、原/目标模型和复用策略；失败应保留旧索引与原因。删除确认明确“删索引、保留原文件和解析缓存”。这些改变真实数据的动作只在新建的示例知识库验收。
+
+仓库目前不附私人语料截图；可按 [示例说明](examples/README.md) 手动制作脱敏截图。流程图和功能表用于说明实现，不替代实际界面验收。
+
+## 检索评估与量化口径
+
+公开样例是 **2 份自编文档、4 个参考问题**，用于复现流程，不能据此宣传检索准确率提升。当前没有随仓库发布经人工核验的质量提升基准，不使用缺乏证据的 Hit@5、MRR 或端到端延迟数字。
+
+保留评测路径：对真实语料准备问题，收集向量/BM25/混合检索证据的并集并人工标注；固定语料、标注和模型配置，记录比较快照。先查看结果，再把实际 `chunk_id` 写入标注：
+
+```sh
+python -m app.main retrieve "星河项目的试用期是多少天？" --method hybrid --top-k 5
+# 将下面占位符换成上一条结果里人工确认的真实 chunk_id
+python -m app.main eval label "星河项目的试用期是多少天？" --relevant '<实际chunk_id>'
+python -m app.main eval run --method vector --k 1,3,5 --save reports/vector.json
+python -m app.main eval run --method hybrid --k 1,3,5 --save reports/hybrid.json
+python -m app.main eval compare reports/vector.json reports/hybrid.json
+```
+
+只检索不调用 Chat 生成，但向量/混合检索仍会调用 Embedding；更换为云端服务后仍可能计费。启用权限时根据需要加 `--user-id demo-admin`。
+
+指标以排名为依据，未标注或失效标签会明确报告并剔除。正文指纹用于重建后的重新锚定；语料/标注指纹变化时默认拒绝直接比较。标注不完整只能评价已确认的证据，不能代表总体召回率。示例过小、Top-K 接近全集时不适合评价算法收益；扩充问题集后再报告量化结果，并注明模型、语料、题数、人工标注与环境口径。
+
+## 验证
+
+```sh
+python -m pytest -q
+node tests/test_job_details.cjs
+node tests/test_form_controls.cjs
+node tests/test_settings_sections.cjs
+```
+
+测试使用临时目录与模拟模型，不覆盖真实索引，不访问收费模型。覆盖模型不一致管理读取、安全重建与失败保留、版本清理/连接关闭、文档范围与权限、缓存保留、评测锚定、设置隔离、搜索选择与真实反馈等。公开样例首次入库与问答另有 `tests/test_public_demo.py` 检查；它模拟模型，不能证明真实服务可用或回答质量。
+
+## 目录与部署
 
 ```text
-app/                    CLI、Web API、后台任务与业务服务
-app/web_static/         原生 HTML/CSS/JavaScript 页面
-  index.html            顶栏导航 + 各页面区块
-  styles.css            设计令牌、页面骨架、各页组件
-  js/core.js            共享状态、哈希路由、身份与外壳状态
-  js/views/*.js         问答 / 聚合 / 知识库 / 设置 / 审计 / 评估 / 用户视图
-  js/app.js             注册视图并启动路由
-chains/                 LLM 和回答 Prompt
-rag/                    文档加载、OCR、切片、Chroma 与检索结果
-data/raw/               本地知识库文件，不提交真实文档
-scripts/                macOS 双击启动/停止脚本
-tests/                  不访问真实外部服务的测试
+app/                     CLI、标准库 HTTP 服务、后台任务、权限与评估
+app/web_static/          原生 HTML/CSS/ES 模块，无前端构建步骤
+rag/                     加载、缓存、切片、Chroma、BM25 与检索
+chains/                  LangChain Prompt、回答/改写/聚合调用
+examples/                自编公开资料与参考证据
+deploy/                  需替换域名/路径的 systemd / Nginx 示例
+scripts/                 可选本地向量服务与 macOS 启停脚本
+tests/                   临时数据、模拟服务的回归检查
+data/                    本机数据说明及被忽略的运行数据
+docs/                    被忽略的临时协作记录，不作为发布文档
 ```
 
-主入口是 `app/main.py`，公共业务逻辑集中在 `app/service.py`。模型接入配置在
-`app/config.py`（运行时覆盖 + 持久化）和 `app/model_catalog.py`（模型发现）；
-索引建库用的 Embedding 模型记录在 `rag/index_manifest.py`。
+[部署模板](deploy/) 展示 Linux systemd 管理 Web/可选向量服务以及 Nginx 反向代理，配置中的域名/IP 为占位符，不能直接当作已验证部署。`requirements-server.txt` 和 `requirements-embedding.txt` 是特定环境/独立向量服务的依赖；常规本地运行使用 `requirements.txt`。可选向量服务的 FastAPI/Uvicorn 不等于主 Web 后端已经迁移，Docker 容器化也尚未实现。
 
-## 安装
+macOS 的 `scripts/start_web.command` 会自动打开 Chrome；只需启动后端时使用上文 CLI 命令。脚本不属于自动检查的执行范围。
 
-要求 Python 3.10+。本机使用 Conda 环境 `langchain`：
+## 运行数据与限制
 
-```bash
-conda activate langchain
-pip install -r requirements.txt
-```
-
-创建 `.env` 文件并配置 Chat 服务。Embedding 可以复用 Chat 服务，也可以独立指向本地 Ollama：
-
-```bash
-OPENAI_API_KEY=your-chat-key
-OPENAI_BASE_URL=https://your-chat-endpoint/v1
-LLM_MODEL=your-chat-model
-
-EMBEDDING_MODEL=bge-small-zh:q8_0
-EMBEDDING_API_KEY=ollama
-EMBEDDING_BASE_URL=http://127.0.0.1:11434/v1
-
-DATA_DIR=data/raw
-CHROMA_PERSIST_DIR=.chroma
-
-RETRIEVAL_METHOD=hybrid
-RETRIEVAL_TOP_K=20
-SIMILARITY_THRESHOLD=0.35
-CANDIDATE_POOL_SIZE=100
-
-# 可选：配置后「结构化提取」走 MinerU 在线版面分析
-MINERU_API_TOKEN=
-MINERU_MODEL_VERSION=vlm
-```
-
-也可以在网页右上角的「模型接入配置」里直接填写请求地址、API Key 和模型名。保存后写入
-`config/runtime_config.json`（已加入 `.gitignore`，明文保存），并覆盖 `.env` 中的
-对应项，重启后依然生效。留空表示沿用 `.env` 默认值；Embedding 的地址/Key 留空时
-会自动复用 LLM 的配置。启用权限隔离时，只有管理员能读写该配置。
-
-弹窗内分「对话模型（LLM）」和「向量模型（Embedding）」两组，每组右上角会标明该端点
-是**本地**还是**云端**（以主机是否为回环地址判断，如 `127.0.0.1`）。模型名是一个
-下拉框，末尾带「自定义…」选项用于手动输入：
-
-- **本地**端点（如本机 Ollama）通过 `/api/tags` 读取模型目录，下拉项会带上磁盘体积
-  （如 `bge-m3:q8_0 · 605.2 MB`）。
-- **云端**端点通过 OpenAI 兼容的 `/models` 读取，通常是模型 id 列表。
-- 端点不可达或不支持列表时，会自动切到「自定义…」的自由输入框并预填当前模型，
-  不会把配置卡死。
-
-两组的模型列表各自来自自己的端点，不会混在一起。**更换 Embedding 模型会改变向量空间，
-必须用新模型重新入库全部文档**，因此保存前会弹出二次确认，选中与已保存值不同的模型时
-该提示也会标红。
-
-每次入库（CLI `ingest` 或网页上传）都会在 Chroma 目录里写入 `index_manifest.json`，
-记录这次建库用的 Embedding 模型。弹窗里会显示「当前索引由 X 建立」；一旦它与当前配置
-不一致（例如直接改了 `.env` 而没重新入库），页面顶部会出现常驻红色告警，直到重新入库。
-升级到本版本之前建立的索引没有这份记录，需要在下一次入库后才会生效。
-
-Chat 端点指向 `opencode.ai` 时，程序会自动附加该网关要求的 `x-opencode-session` 头
-（进程内稳定，用于路由和 prompt 缓存）并发送自定义 `User-Agent`；其他 OpenAI 兼容端点
-不会收到这两个头。部分网关会拒绝通用 HTTP 库的 User-Agent，因此模型列表请求复用同一个
-`User-Agent`。
-
-启用权限隔离时，复制 `config/access_policy.example.json` 为
-`config/access_policy.json`，并设置 `KNOWLEDGE_BASE_ID` 和
-`ACCESS_POLICY_FILE`。策略中的用户通过 `groups` 关联到知识库和文档的访问组；
-文档权限使用索引生成的 `doc_id`。修改策略或新增知识库后，需要重新索引对应文件。
-当前一个运行实例通过 `KNOWLEDGE_BASE_ID` 选择一个知识库；多个知识库可以共用 Chroma
-集合，但生产环境还需要在认证层提供知识库选择/列表接口，并在服务层把选择值校验为该用户
-有权访问的知识库。
-
-账号能否登录由 `config/web_auth.json` 决定：顶层 `secret` 用于签发会话，`users` 里每个
-用户名对应一个 `password_hash`（pbkdf2_sha256，可用 `python -c "from app.web_auth import
-hash_password; print(hash_password('密码'))"` 生成）。一个账号要**同时**存在于
-`access_policy.json` 的 `users` 和 `web_auth.json` 的 `users` 才能登录。账号的创建、密码
-重置、所属组分配和删除都在网页「用户」页完成（仅管理员）；账号与密码由部署者自行配置，仓库不提供预置凭据。
-
-视频/音频文件（mp4/mkv/mov/webm/avi、mp3/wav/m4a/aac/flac/ogg）入库时先由 **ffmpeg**
-抽取音频，再经 ASR 转写成文字，按时间戳分段后切片入库——答案引用会带出 `MM:SS` 时间
-范围。转写服务在网页「设置」页的「语音识别（视频/音频转写）」里配置，**两种后端可切换**：
-
-- **OpenAI 兼容 `audio/transcriptions`**：请求地址留空复用对话模型地址，填好「转写模型」
-  即启用；未配置模型时上传媒体会明确报「语音识别未配置」。
-- **阿里云录音文件识别**：需要 accessKeyId / accessKeySecret / 项目 Appkey，以及一个承载
-  音频文件的 **OSS bucket**（识别服务要求音频走公网 URL，私有 bucket 用签名 URL）。设置页
-  填好「转写服务=阿里云录音文件识别」+ 阿里子组各字段后启用；缺项上传时会指出缺哪个。
-  依赖：Python 包 `oss2`、`aliyun-python-sdk-core`，服务器需能访问阿里云 API。
-
-两种转写都依赖服务器已安装 `ffmpeg`（macOS：`brew install ffmpeg`；Linux：`apt install ffmpeg`）。
-
-切换 Embedding 模型后必须使用新的 Chroma 目录重新建库，不要混用不同模型的向量。
-
-## 使用
-
-构建完整索引：
-
-```bash
-python -m app.main ingest
-```
-
-结构化提取（保留标题、列表、表格）：
-
-```bash
-python -m app.main ingest --structurize
-```
-
-删除当前数据目录中已经不存在的旧切片：
-
-```bash
-python -m app.main ingest --rebuild
-```
-
-命令行问答：
-
-```bash
-python -m app.main ask "Transformer 为什么使用注意力机制？"
-```
-
-启动 Web：
-
-```bash
-python -m app.main web
-```
-
-访问 <http://127.0.0.1:8000>。macOS 可以双击 `scripts/start_web.command` 启动并用 Google Chrome 打开，双击 `scripts/stop_web.command` 停止。启动脚本会在后端启动时记录代码版本，下次运行发现**代码更新了但旧进程还在**时自动按新代码重启，避免「设置页缺字段/配置存不进去」这类版本漂移问题；设置页「索引状态」的**运行版本**可以随时看到当前进程跑的是哪版代码。
-
-## 页面
-
-| 路由 | 内容 |
-|---|---|
-| `#/ask` | 默认落地页。左侧对话记录、中间对话流与检索参数、右侧证据栏（问答过程默认折叠、匹配内容精简卡片——标出「已用/未用」、点「展开全文」看正文、点「在原文查看」跳到文档查看器按已用/未用分色高亮）；三条分隔线都能拖，右下角还能直接切对话模型 |
-| `#/aggregate` | 聚合统计：输入一个聚合问题，对召回样本做语义归类计数，展示 Top-K 类别、文档数/占比与可点击原文证据；页面明确标注样本量与模型耗时 |
-| `#/library` | 索引统计、上传、处理任务、待审核、已入库文档（标题 / 来源 / 切片 / 切片方式 / 最近入库 / 访问组）；点文档原地打开查看器 |
-| `#/settings` | 模型接入配置（LLM / Embedding / MinerU / 语音识别）与索引状态（含运行版本）、运行目录 |
-| `#/audit` | 向量库写入记录，可按事件类型与操作者筛选（仅管理员） |
-| `#/eval` | 检索评估：给问题标出「本该被召回的切片」（仅管理员） |
-| `#/users` | 用户管理：建号、改密码、分配所属组、授予/收回管理员权限、删除（仅管理员） |
-
-导航在顶栏，`知识库` 上会显示待审数量角标；`设置`、`审计`、`评估`、`用户` 对非管理员隐藏。
-
-在问答页点答案里的引用会**跳到知识库页**并打开对应文档、定位并高亮那个切片——文档
-查看器不再占据问答区。
-
-前端用原生 ES 模块，无构建步骤；服务端已满足条件（`.js` 返回正确的 MIME 类型、
-CSP `default-src 'self'` 允许同源模块）。
-
-## 对话与多轮
-
-对话记录存在服务端（`.web_conversations.json`），按用户隔离——登录身份不同就只看到自己的
-对话；没有配置访问策略时（开放模式）共用一个 `open-mode` 桶。左侧「新对话」开始新会话，
-点历史条目可回看全部轮次，引用仍可点击跳转。
-
-追问的检索走两步：先把「历史 + 新问题」交给 LLM 改写成不依赖上下文的独立问题，再拿它检索；
-答题时给模型的仍是**原问题 + 历史**（改写只服务检索）。没有历史时过程栏的「问题改写」
-显示「已跳过」。
-
-```
-问题改写 → 问题编码 → 向量搜索 → 生成答案
-```
-
-- 只有最近 **8 轮**会送给模型（存储上限是 200 轮），避免上下文和成本随对话无限增长
-- 送给模型的每一轮答案还会再截断（prompt 里 2000 字、改写用 500 字），长答案不会撑爆上下文
-- 每轮存的是切片**引用**而不是正文，所以回看时证据栏只显示用过哪些切片，正文在知识库页查看
-- 单条答案截断 8000 字；每个用户保留最近 100 个对话
-- 生成答案期间切换对话是安全的：迟到的答案会被丢弃，不会画进别的对话
-- 答案**边生成边流式显示**（~300ms 粒度）；过程栏显示每个阶段耗时、答案末尾显示总用时。
-
-关于**系统本身**的问题——支持哪些文件格式、当前接入什么模型、运行版本、知识库里有哪些
-内容——会由规则识别后**直接从系统实时状态回答**（过程栏显示「系统问答」，其余阶段跳过），
-不走向量检索；这类问题的答案在配置/文档清单里，靠检索反而答不上。没被识别成系统问题的
-提问继续走正常检索。
-
-## 回答与引用
-
-回答用轻量 Markdown 解析后渲染成真实 DOM（标题、有序/无序列表、加粗、行内代码、分隔线），
-全部通过 `createElement` + `textContent` 构建，不使用 `innerHTML`，避免模型输出注入。
-
-回答中的 `[source: doc_id#chunk_id]` 会被解析成可点击标签：显示为「文档标题 ¶切片号」，
-悬停显示完整的 `doc_id · chunk_id`。点击后打开该文档并跳转到对应切片，目标切片会高亮并
-滚动到视口中央。若引用只写到 `doc_id` 而不带 `#chunk_id`，则只打开文档开头。
-
-跳转依赖 `GET /api/documents/:doc_id` 的 `focus` 参数：后端按 `chunk_id` 查出它在文档中的
-真实位置，再把该页向前偏移 2 个切片后返回，所以前端不需要假设「切片号等于位置」。
-
-## 聚合统计
-
-普通问答给的是「针对这个问题的答案」，聚合统计回答的是「这批材料里哪几类情况最常见」。例如：
-
-> 这几份财报里，出现最多的三种经营风险是什么？
-
-处理流程：
-
-```
-聚合问题
- → 检索样本   复用问答的混合检索与权限过滤，取 top N 片段
- → 语义抽取   分批让 LLM 判断每段是否相关，并概括成简短类别 + 原文证据
- → 归一聚类   用本地 Embedding 对类别短语做余弦聚类，合并同义表述
- → 计数排序   按去重后的 doc_id 计数（同一文档同一类只算一次），取 Top-K
- → 返回证据   类别、文档数、占比、可点击原文片段
-```
-
-**这是样本估计，不是全库精确计数。** 页面顶部会标明「基于 N 个片段 / M 篇文档」，结果里的
-`meta.warnings` 也始终包含同样的提示。某个批次抽取超时会被降级为 warning，不会让整个任务失败；
-因此类别计数适合用来发现线索，最终结论应点击证据回原文复核。
-
-### 接口
-
-- `POST /api/aggregate-jobs`：创建任务，body 支持 `question`、`sample_size`（10-500，默认
-  `AGGREGATE_SAMPLE_SIZE`）、`top_categories`（1-10，默认 3），以及 `retrieval_method`、
-  `candidate_pool`、`similarity_threshold`、`fusion_method`、`fusion_k`、`fusion_alpha`。
-  返回 202 和任务快照。
-- `GET /api/aggregate-jobs/:id`：轮询任务。`stage` 依次经过 `retrieve` → `extract`（带
-  `progress.done/total`）→ `cluster` → `count` → `done`；结果在 `result` 字段。
-
-### 配置
-
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| `AGGREGATE_SAMPLE_SIZE` | 200 | 默认召回片段数（请求里的 `sample_size` 优先） |
-| `AGGREGATE_BATCH_SIZE` | 10 | 每次 LLM 抽取的片段数 |
-| `AGGREGATE_MAX_WORKERS` | 4 | 抽取并发数，实际不超过 `MAX_CONCURRENT_ANSWERS` |
-| `AGGREGATE_SIMILARITY_THRESHOLD` | 0.85 | 类别聚类的余弦阈值，越高越不容易合并 |
-
-### 限制
-
-- 只统计召回样本；样本里最多的三类不一定等于全库最多的三类。
-- LLM 的类别概括与聚类都是概率性的，同义归并可能过松或过紧；阈值可调，但最终仍以证据为准。
-- 每次提问现算，不跨请求缓存；样本越大越准，也越慢、越贵。
-
-## 文档结构化
-
-PDF 只携带视觉排版，不含「这是二级标题」这类语义信息，所以需要版面分析模型才能拿到真实
-结构。项目的结构化引擎是 **MinerU 在线解析**（真实版面分析，识别标题层级，适用 PDF 等复杂
-版面），需要 API Token。
-
-### 配置 MinerU
-
-1. 到 <https://mineru.net/apiManage/docs> 注册并创建 API Token
-2. 网页右上角齿轮 → 「文档解析（MinerU 结构化提取）」→
-   - 填入 Token（也可写进 `.env` 的 `MINERU_API_TOKEN`）
-   - 保存后立即生效
-3. 上传文档时勾选「结构化提取」；或在 CLI 用 `python -m app.main ingest --structurize`
-
-解析精度可选 `vlm`（默认，精度最高）或 `pipeline`（更快，精度较低），对应
-`MINERU_MODEL_VERSION`。**超过 200 页的 PDF**（MinerU 单文件上限）会自动按
-150 页切分成多卷、逐卷解析后带页码标记拼回一份 Markdown，无需手动拆书。
-转换结果入库前会做清洗：去掉悬空的图片引用、把 `$…$`/`$$…$$` 的 LaTeX 公式
-压成可读文本（`\frac{a}{b}`→`a/b`、`\sum`→Σ），减少"多余的符号"。
-
-### 调用流程
-
-`rag/mineru_client.py` 走的是官方精准解析 API（异步三步）：
-
-1. `POST /api/v4/file-urls/batch` → 拿到 `batch_id` 和预签名上传地址
-2. `PUT <上传地址>` → 上传文件原始字节
-3. 轮询 `GET /api/v4/extract-results/batch/{batch_id}` → `state=done` 后取 `full_zip_url`
-4. 下载 zip，读取其中的 `full.md`
-
-限制：单文件 ≤ 200MB、≤ 200 页。轮询超时默认 1800 秒。MinerU 失败会**直接报错**，而不是
-静默降级 —— 否则会用一个明显更差的解析结果污染索引。
-
-> ⚠️ 文档会上传到 mineru.net 第三方服务，涉密材料不要启用结构化提取。
-
-## 按文档管理访问权限
-
-管理员在「知识库」页的「已入库文档」表格里，每行访问组列是一个按钮，点开弹层可以给文档
-勾选**一个或多个**访问组，改完立即生效。同一个文档可以同时属于多个组（如
-`{hr, finance}`），每个组都能检索到它。
-
-关键在于**不需要重新向量化**：访问组本来是在切片时写进每个分片元数据的，所以事后修改通常
-意味着重建索引。这里只重写元数据的访问组字段，向量原封不动——实测同一文档改组后，alice
-（有 hr）5/5 命中来自该文档，bob（无 hr）0/5。
-
-切片元数据里对每个组存了一个布尔 flag（`access_<组>=true`），检索时用这些 flag 的 `$or`
-过滤；同时保留旧的 `document_access_group` 标量字段（主组），兼容从未改过组的存量切片。
-
-修改会同时落到两处：
-
-1. `config/access_policy.json` 的 `documents` 段（`{"groups": ["hr", "finance"]}`）——决定
-   **以后**重新索引时用什么组
-2. Chroma 里该文档所有分片的元数据——决定**现在**检索怎么过滤
-
-管理员还可以把「已入库文档」面板右上角切到**「按组」**视图：每个访问组一行，列出能看到该组
-文档的清单（`public` 自动对所有用户开放，没有文档的组也会显示为空）。
-
-约束：
-
-- 只接受策略里**已存在**的组（`known_groups`），防止拼错把文档变成谁都看不见；至少保留一个
-  组，取消最后一个勾选会被拦下
-- 需要启用访问控制（存在策略文件）；开放模式下没有过滤，谈不上分组
-- 管理员 id **不会**出现在可选组里——它是身份不是组，`user_context` 从不把用户自己的 id
-  放进 groups，指派过去会让文档对所有人隐形
-- 管理员的文档列表会显示全部文档（便于管理），检索与文档查看也**绕过组过滤**（管理员
-  是最高的权限身份）；非管理员仍严格按组过滤。
-
-## 切片策略
-
-两类文档走两条路，由 `structured_by` 元数据决定（只有经过结构化提取的文档才带它）：
-
-| 文档 | 切分方式 | 章节路径 |
-|---|---|---|
-| 结构化（MinerU） | 先按 Markdown 标题层级分节，节内再按 800 字切 | 真实层级，如 `2 The Skip-gram Model > 2.2 Negative Sampling` |
-| 未结构化（PyMuPDF 直抽） | 固定长度 + 分隔符优先级（原有行为） | 从切片内的标题推断 |
-
-**为什么不能一刀切**：未结构化文档里的 `## ` 是 PyMuPDF 用长度启发式造的，日期、正文句子、
-公式都会被标成「标题」。按它切只会把句子从中间劈开，检索更差。
-
-「知识库」页的「切片方式」列直接读这个字段：带 `structured_by` 就显示 `标题对齐·<引擎>`，
-没有就是 `固定长度`。所以那一列显示的是**入库时实际走的哪条路**，不是当前配置——事后改
-`structurize_provider` 不会改变已入库文档的显示。
-
-实测同一篇论文（MinerU 解析）：
-
-| | 切片 | `section_path` 为空 |
-|---|---|---|
-| 改前 | 61 | **47（77%）** |
-| 改后 | 60 | **1**（标题/作者块，本来就不属于任何章节） |
-
-只能靠切片**内部**的标题推断时，77% 的切片根本不知道自己属于哪一节——这正是「先按章节切」
-解决的问题。
-
-路径会去掉开头与文档标题重复的那一级：文档标题几乎总是 h1，而证据卡片是右截断显示，
-让它占掉每行开头会把真正有用的「2.2 Negative Sampling」挤没。
-
-> **暂未做**：把章节路径拼进 embedding 文本（contextual retrieval，通常比单纯对齐边界提升
-> 更大）。它需要让「参与 embedding 的文本」≠「存储的文本」，而 langchain 的 Chroma 包装层
-> 没有 `add_embeddings`，得绕到底层 collection；另一种朴素做法（直接拼进正文）会破坏
-> 「连续阅读」视图依赖的字符偏移。
->
-> 当初还有一个理由是「没有评估集，改完测不出收益」——**这个前提已经不存在了**，见下面的
-> 「检索评估」。现在的流程是：先攒一批标注好的问题，跑一份基准快照，再动这块代码，然后
-> `eval compare` 两份快照。注意这类改动不改存储文本，所以标注不会失效。
-
-### 参数
-
-`CHUNK_SIZE=800`、`CHUNK_OVERLAP=120`，两类切分共用。未结构化文档优先按 Markdown 标题、
-段落、换行和中文标点切分。
-
-不同文档场景应通过真实问题集评估 `Recall@K`、MRR、引用正确率和拒答准确率后再调整，
-不应只凭经验更换参数。
-
-## Markdown 缓存
-
-结构化提取是最贵的一步（MinerU 是远程计费 API）。转换结果按 **文件内容 + 引擎 + 模型版本**
-的 sha256 缓存到 `.markdown-cache/`：
-
-- 改了文件内容 → 自动失效（不需要比对 mtime）
-- 换 `pipeline` ↔ `vlm` → 重新解析（输出确实不同）
-- 重命名文件 → 仍然命中（内容没变）
-- 产物为空 → 不缓存，避免挡住重试
-
-实测：重新入库同一篇文档，第二次**零 MinerU 调用**（缓存文件时间戳未变）。上传任务卡会为
-每份文件标出「缓存命中」，重新入库时能直接看到哪些文件不需要再调用 MinerU。
-
-**覆盖不到的情况**：轮换了 MinerU Token，或 MinerU 自己升级了模型——键不变会拿到旧结果。
-删掉 `.markdown-cache/` 即可强制重解析；也可以设 `MARKDOWN_CACHE_DISABLED=1` 临时关闭。
-缓存目录可在「设置 → 索引状态」里看到（含条目数和占用）。
-
-## 上传任务详情与取消/重试
-
-知识库页的任务卡不只是「索引中」三个字，而是逐文件展示：
-
-- 进度：已处理 X/Y 个文件、百分比、当前文件名；
-- 阶段：解析（MinerU/OCR）→ 切片 → 写向量并重建索引；
-- 时间：已用时与预计剩余（按已完成文件的平均耗时估算，第一份完成前显示「估算中」）；
-- 累计：已完成文件的页/文档数与切片数；
-- 逐文件明细（可折叠）：大小、状态、页/文档、切片、耗时、是否命中 Markdown 缓存、失败原因；
-- 环境脚注：操作者、结构化引擎与模型版本、Embedding 模型、知识库 ID。
-
-状态机：
-
-| 状态 | 含义 |
-|---|---|
-| `queued` | 排队中，可取消 |
-| `indexing` | 正在处理；取消会在当前文件结束后生效 |
-| `completed` | 所有文件成功 |
-| `partial` | 部分文件成功，失败文件会列出原因，可只重试失败文件 |
-| `failed` | 所有文件都失败 |
-| `cancelled` | 已取消；已完成解析的文件仍会入库 |
-
-取消只在**文件边界**生效（MinerU 单份解析无法中途打断）。整批入库仍持有向量库写锁，
-入库完成前问答/文档列表的读请求会等待，这是为了避免读写交错。
-
-Web 上传默认开启「失败继续」：单个文件失败会记录原因并继续处理其余文件，最后按结果落成
-`partial` 或 `failed`；CLI 入库仍保持首个失败即中止的原有行为。
-
-## 写入审计
-
-每一次对向量库的写入都会追加一条记录到 `data/vector_audit.jsonl`（JSONL，已 gitignore），
-覆盖三条写入路径：
-
-| 事件 | 触发方式 |
-|---|---|
-| `ingest.directory` | CLI `python -m app.main ingest` |
-| `ingest.files` | 网页上传（或审核通过后的实际入库） |
-| `delete.documents` | 网页删除文档 |
-| `staging.submitted` | 无入库权限的用户提交待审 |
-| `staging.approved` / `staging.rejected` | 管理员审核决定 |
-| `access.change` | 管理员修改某个文档的访问组（记录 `access_groups`） |
-
-每条记录包含**微秒精度的本地时间带时区偏移**（如 `2026-09-12T15:37:01.630276+08:00`，
-既可排序又无需换算）、操作者、知识库、来源文件、`doc_ids`、文档/切片数、以及当时的
-向量模型与结构化引擎。删除文档时还会在真正删除前快照 `deleted_documents`（标题、
-`doc_id`、来源、切片数），所以审计页能显示「删的是哪篇文档」，而不是只显示操作者与
-切片数。历史日志没有这份标题快照，文档又已经不存在，无法事后还原标题——页面会诚实
-回退到当时已记录的 `doc_id`，不伪造历史信息：
-
-```json
-{"timestamp": "2026-09-12T15:37:01.630276+08:00", "event": "ingest.files",
- "status": "success", "actor": "alice", "knowledge_base_id": "default",
- "files": ["xxx.pdf"], "doc_ids": ["xxx_edcb415d"],
- "documents": 1, "chunks": 61, "structurize": true,
- "structurize_provider": "mineru", "embedding_model": "bge-small-zh:q8_0"}
-```
-
-新记录的 `status` 是 `success` / `failed`；历史日志没有该字段，按成功兼容。上传或删除
-失败时还记录 `failure_stage`、异常类型与经过**安全清洗**的失败原因：不含 traceback，
-并会遮掉 Bearer、API Key、Token、Secret 与预签名 URL 查询参数，避免把凭据写进永久
-只追加的日志。原异常仍按原路径返回给上传任务/网页，审计不会吞掉它。
-
-审计页同时区分两个维度：**上传蓝色、删除橙色；成功绿色徽章、失败红色徽章**，旁边
-显示失败阶段与原因，并保留文字标签，不只靠颜色传达信息。
-
-能记录的是**请求已经到达服务器**后的失败（请求过大、文件类型不支持、队列满、
-MinerU/OCR/切片/向量写入失败、文档不存在、Chroma 删除异常等）。浏览器在请求到达
-服务器之前就断网，后端根本没收到操作，无法写服务端审计——这种情况仍只在前端显示
-「网络中断」。
-
-日志是**只追加**的，从不清空重写；审计文件本身写入失败只会记一条 warning，不会反过来
-让原本成功的入库/删除失败。读取时会跳过崩溃造成的半行（torn line）。
-
-操作者来自 Web 会话的登录用户名；CLI 入库记为 `cli`；未启用权限策略时记为 `open-mode`。
-
-日志文件路径可用 `VECTOR_AUDIT_LOG` 覆盖。
-
-管理员也可以在顶栏「审计」页查看（最新 200 条），并按事件类型与操作者筛选。
-
-「知识库」页的表格也把这份日志用起来了：每行显示该文档的**切片方式**和**最近入库**
-（`操作者 · 月-日 时:分`，悬停看完整时间），后者只对管理员显示——审计页本身就是仅
-管理员可见。两个细节：
-
-- **「最近」是字面意思**：日志按 `doc_id` 取最新一条 `ingest.*` 记录，同名文档重新
-  入库会覆盖它，它不代表这份文档最初是谁放进来的
-- 日志建立**之前**入库的文档没有记录，显示「—」。这个信息事后找不回来：chunk 元数据
-  里的 `created_at` 是从没填过的空占位，上传任务队列也只留在临时文件里且不带操作者。
-  重新入库能生成新记录，但那记的是重入的时间，不是原件
-
-## 写入权限与审核
-
-启用权限策略后，上传分两条路径：
-
-| 身份 | 行为 |
-|---|---|
-| 管理员 | 直接入库（原有行为） |
-| 其他已认证用户 | 提交到**待审区**，不切片、不落库，等管理员决定 |
-
-待审文件存在 `data/pending/<item_id>/`，元数据在 `.web_staging.json`。
-
-管理员在「知识库」页的「待审核」面板逐项处理：选择一个**访问组**后点「通过」，或直接「拒绝」。
-
-**访问组必须在入库之前写入策略**——因为切片时就把 `document_access_group` 写进了 chunk
-metadata，事后改策略需要重新索引。所以「通过」的动作顺序是：
-
-1. 按源文件路径算出 `doc_id`（`build_doc_id` 由路径确定性推导）
-2. 把 `documents[doc_id]` 写入 `config/access_policy.json`
-3. 把文件交给正常的上传队列入库
-
-这样新文档对指定的组可见，其他组检索不到。
-
-> 注意：待审区的文件是**明文暂存**在磁盘上的，提交者与审核者都能看到；涉密材料不要走这条路。
-
-## Web API
-
-- `GET /api/status`：运行配置、索引状态，以及建库模型和是否与当前配置不一致；`code_version`
-  是当前进程运行的代码版本（部署目录有 `DEPLOYED_COMMIT` 则取它，否则取 git 短哈希）。
-- `GET /api/knowledge-bases`：当前知识库、它的访问组、调用者是否属于该组，以及策略里
-  定义了但**本实例不服务**的其它知识库。注意一个实例只服务一个知识库（`KNOWLEDGE_BASE_ID`）。
-- `GET /api/audit`：向量库写入审计日志，`limit` 默认 100（1-1000），返回最新在前。仅管理员。
-- `GET /api/eval`：评估问题集与标注（标注已重新锚定到当前索引，失效的会带出来）。仅管理员。
-- `POST /api/eval/import`：从对话记录导入**首轮**问题（幂等，不覆盖已有标注）。仅管理员。
-- `POST /api/eval/retrieve`：看一道题召回了什么，接受与问答相同的检索参数。仅管理员。
-- `POST /api/eval/label`：写一条标注；`unresolved` 字段回传索引里找不到的 `chunk_id`。仅管理员。
-- `POST /api/eval/run`：跑批并返回汇总指标，`ks` 为 K 列表。只回检索结果 id、不回正文。仅管理员。
-- `GET /api/staging`：待审提交列表和可用的访问组。仅管理员。
-- `POST /api/staging/:id/approve`：批准入库，`group` 指定访问组（须是策略里已有的组）。仅管理员。
-- `POST /api/staging/:id/reject`：拒绝并删除暂存文件。仅管理员。
-- `GET /api/users`：用户列表（策略用户 ∪ 认证用户），每项含 `username` / `groups` /
-  `is_admin` / `has_password` / `in_policy`。仅管理员。
-- `POST /api/users`：创建账号 `{username, password, groups[], is_admin}`，同时写入
-  `access_policy.json` 与 `web_auth.json`；`web_auth.json` 缺失时自动生成 `secret`。仅管理员。
-- `POST /api/users/:username`：更新 `{groups?, is_admin?, password?}`（按出现的键部分更新），
-  或 `{clear_password: true}` 清除密码禁止登录；不能取消自己的管理员权限、不能移除最后一位
-  管理员。仅管理员。
-- `DELETE /api/users/:username`：删除账号（两个文件里同时移除）；不能删除自己、不能删除最后
-  一位管理员。仅管理员。
-- `GET /api/config`：当前模型接入配置（API Key 不回显，只给 `••••` 加尾 4 位）和索引建库
-  模型。仅管理员。
-- `POST /api/config`：更新 LLM / Embedding 的请求地址、API Key 与模型名、MinerU 的
-  `mineru_api_token` / `mineru_model_version`、结构化引擎 `structurize_provider`，以及语音识别
-  的 `audio_transcribe_provider`（`openai`/`aliyun`）/ base_url / api_key / model 和
-  `aliyun_access_key_id` / `aliyun_access_key_secret` / `aliyun_appkey` / `aliyun_region` /
-  `aliyun_oss_bucket` / `aliyun_oss_endpoint` / `aliyun_oss_prefix`，写入
-  `config/runtime_config.json`。**省略**的字段保持不变；API Key 留空也保持不变；Embedding 地址
-  留空表示复用 LLM 的地址，LLM 地址留空表示回退到 SDK 默认端点。响应带 **`updated`**（本次
-  实际写入的字段名列表，前端据此提示「部分字段未保存成功」）；提交后端不认识的字段返回
-  **400 `Unknown config field(s)`**（用于暴露前后端版本不一致）。仅管理员。
-- `POST /api/models`：按 `target`（`llm` / `embedding`）列出该端点可用模型，返回
-  `{scope, models, error}`；`scope` 为 `local` 时模型带磁盘体积。仅管理员。
-- `GET /api/documents`：已入库文档、切片数与切片方式；管理员还会拿到该文档**最近一次**
-  入库的人和时间。
-- `GET /api/documents/:doc_id`：文档切片，支持 `offset`、`limit` 和 `focus`（定位到某个
-  `chunk_id`）。
-- `DELETE /api/documents/:doc_id`：删除该文档的全部切片，不影响源文件。仅管理员。
-- `POST /api/documents/:doc_id/access`：改该文档的访问组（`{"groups": ["hr", "finance"]}`，
-  兼容旧的 `{"group": "hr"}` 单组写法）。仅管理员，且只接受策略里已存在的组。
-- `GET /api/upload-jobs`：上传索引任务，含状态、阶段、`progress_done/progress_total`、
-  `current_file`、逐文件 `file_details`（大小/页数/切片/耗时/缓存命中/错误）、`failed_files`
-  与 `queue_position`。仅管理员。
-- `POST /api/upload-jobs/:id/cancel`：取消排队中的任务；索引中的任务会在当前文件结束后停止，
-  已解析成功的文件仍会入库。仅管理员。
-- `POST /api/upload-jobs/:id/retry`：只为失败文件创建新任务。仅管理员。
-- `POST /api/documents/upload`：上传 `files`，支持 PDF、Markdown、TXT 与视频/音频（视频/音频自动转写语音）。管理员直接入库；其他用户返回 `staged: true` 并进入待审区。
-- `POST /api/answer-jobs`：创建异步问答任务，可带 `conversation_id`（会校验归属）。
-- `POST /api/aggregate-jobs`：创建聚合统计任务（`question`、`sample_size`、`top_categories`
-  加检索参数），返回 202 和任务快照。
-- `GET /api/aggregate-jobs/:id`：查看聚合任务的阶段（retrieve/extract/cluster/count）与结果。
-- `GET /api/conversations`：当前用户的对话列表（标题、时间、轮数）。
-- `POST /api/conversations`：新建空对话。
-- `GET /api/conversations/:id`：含全部轮次；跨用户返回 403。
-- `DELETE /api/conversations/:id`：删除；跨用户返回 403。
-- `GET /api/answer-jobs/:id`：查看编码、检索、生成进度和向量命中。
-- `POST /api/ask`：同步问答兼容接口。
-
-三个检索方式：
-
-- `vector`：Chroma 向量检索，直接取 Top-K，应用相似度阈值。
-- `bm25`：jieba + SQLite FTS5 BM25 全库关键词检索，仅返回包含查询词的结果，展示原始 BM25 分数，不应用阈值。
-- `hybrid`（默认）：向量先粗筛候选池（`candidate_pool`，20-500，默认 100，运行时不低于 Top-K），BM25 对候选重排，RRF（k=60）融合后取 Top-K。结果带相似度和 BM25 双来源分，阈值不参与过滤。
-
-两个问答接口均接受 `retrieval_method`（`vector` / `bm25` / `hybrid`）、`top_k`（1-100）、`candidate_pool`（20-500，仅混合模式）及 `similarity_threshold`（0-1，仅向量模式）；省略时使用 `.env` 默认值。网页设置只作用于后续请求，不修改 `.env`。
-
-BM25 使用 jieba 中文分词和 SQLite FTS5 内置评分，直接读取 Chroma 已入库切片，检索时不调用 Embedding 服务。仅返回包含查询词的结果，展示原始 BM25 分数（越高越相关，不是 0-1 相似度），不应用向量相似度阈值。答案生成仍使用 Chat 模型。Python 的 SQLite 需支持 FTS5。
-
-当前每次 BM25 查询都会从最新切片构建临时全文索引，避免文档更新后命中旧内容；大规模知识库应改为持久化全文索引。
-
-上传限制由 `MAX_UPLOAD_BYTES`、`MAX_UPLOAD_FILES`、`MAX_UPLOAD_JOBS` 控制。没有
-`ACCESS_POLICY_FILE` 时保持单用户开发模式；启用策略后，Web 登录走 `rag_session` 会话
-cookie（`config/web_auth.json` 校验密码并签发，12 小时有效），问答、命中文档列表和异步
-任务都以会话里的登录用户做权限校验，上传只允许管理员。生产部署应由反向代理（见
-`deploy/nginx-rag.conf`）终止 TLS 后再转发给本服务，账号和密码由「用户」页管理。
-
-## 检索评估
-
-「切片策略」那节里搁置的 contextual retrieval，当时给的理由是「项目还没有评估集，改完
-测不出收益」。这套东西就是来解开它的：先能量出可比较的数字，之后任何检索侧改动
-（切片参数、融合权重、上下文检索）才有资格谈「该不该做」。
-
-### 用法
-
-标注是唯一需要人力的部分，所以流程围绕它设计：
-
-```bash
-# 1. 从真实问过的问题起步（只取首轮；追问依赖上下文，原样导入等于测一个断章问题）
-python -m app.main eval import-conversations
-
-# 2. 看清一道题召回了什么——不生成答案，所以不花一次 LLM 调用的钱
-python -m app.main retrieve "GloVe 和 word2vec 的区别" --method hybrid --top-k 10 --user-id alice
-
-# 3. 把判相关的 chunk_id 粘过来（正文指纹由索引现取，不用手算）
-python -m app.main eval label "GloVe 和 word2vec 的区别" --relevant "glove_..._897f2aa3#chunk_089"
-
-# 4. 跑批看指标
-python -m app.main eval run --k 1,3,5 --user-id alice
-```
-
-也可以直接在网页 `#/eval` 里做第 2、3 步：展开一道题就能看到召回卡片，勾选保存即可。
-
-### 判断一个改动有没有用
-
-要验的那类改动（比如「把章节路径拼进 embedding 文本」）是**代码改动**而不是参数，
-所以用快照而不是运行时开关：
-
-```bash
-python -m app.main eval run --save reports/改前.json
-# 改代码
-python -m app.main eval run --save reports/改后.json
-python -m app.main eval compare reports/改前.json reports/改后.json
-```
-
-`compare` 的**第一件事是比指纹**，因为两次跑之间索引重建过、或有人改了标注，指标差异
-就跟你要验的改动毫无关系。语料指纹或标注指纹变了会**直接拒绝对比**（退出码 1）并说清
-是哪一项；确认过原因仍要比才加 `--force`（仍会提醒谨慎）。配置不同只警告不阻断——
-对比两套参数本来就是正常用法。
-
-头条是**变好 / 变差 / 不变的题数**而不是均值：题目少的时候，一个均值会被单题带飞，
-看不出真实分布。
-
-### 指标怎么读
-
-以 **`Hit@K` 与 `MRR`** 为主，`Recall@K` 只是**下界**：人工标注必然标不全，只从一套
-系统的结果里标注（pooling）会让 Recall 系统性偏低——另一套召回了标注者没见过的好
-切片，却会被记成漏，**对它系统性不利**。要做公平对比，标注池得取两套系统结果的并集。
-没有做 nDCG：二值标签加上标注不完整，它相对 MRR 几乎没有增量。
-
-所有指标一律只看**排名**：三种检索方式的分数根本不可比（向量是距离换算的相似度、
-BM25 无上界、hybrid 是 RRF 融合分），而且 hybrid 分支压根忽略 `similarity_threshold`。
-
-**未标注的题会被剔除，不是当成 0 分**——「没标」和「一条都没召回对」是两回事。
-
-### 标注为什么会失效（以及怎么处理）
-
-`chunk_id` 是按顺序编的号（`#chunk_089` 的意思是「第 89 片」，不是「这段文字」），
-而 `doc_id` 由源文件路径派生。所以改 `CHUNK_SIZE` 重建索引、甚至只是重命名源文件之后，
-同一个 `chunk_id` 就指向别的正文了——**标签会静静地失效、指标却照跑**。
-
-所以每条标注都存了**正文指纹**，跑批前重新锚定：编号还在且指纹一致就用它；编号找
-不到、或指纹对不上（编号还在但内容换了）就按 `(doc_id, 正文指纹)` 重新定位；还找不到
-就标为失效、**从指标里剔除**（绝不当作「没召回」，否则索引一变指标就无故变差）。
-报告里会列出是哪几道题的哪些 id 失效了，重新标一次即可。
-
-### 一个现实限制
-
-评估的区分度取决于语料规模。当前索引只有 3 个文档、20 多个切片，`top_k=20` 已经接近
-全集，`Recall@20` 恒为 1——所以现阶段用 `--k 1,3,5`，而且重点是把口径与工具跑通，
-真正有意义的用法是「同一批题、两份快照的 diff」。要让绝对数字有意义，得先有一个像样
-的语料。
-
-```bash
-# 同一个问题换参数跑两次，就能看出差异
-python -m app.main retrieve "问题" --method hybrid --top-k 10 --user-id alice
-python -m app.main retrieve "问题" --method bm25   --top-k 10 --user-id alice
-```
-
-## 检查
-
-```bash
-pytest -q
-```
-
-测试覆盖 PDF/OCR 分流、切片元数据、向量 ID、安全重建、独立 Embedding 端点、并发问答、
-上传边界与逐文件进度/取消/重试、Chroma 大批量写入分批、原始命中证据、Web 请求安全、
-运行时配置读写、模型目录（本地体积 / 云端列表）、索引 manifest、切片定位、网关请求头、
-文档结构化（MinerU）、MinerU API 流程、写入审计、聚合统计（抽取解析、语义聚类、按文档去重
-计数、任务轮询），以及检索评估（指标边界、标注的重新锚定、快照可比性、评估端点权限）。
-测试不访问真实外部服务。
-
-## 运行数据
-
-以下内容不会提交到 Git：
-
-- `.env`
-- `config/runtime_config.json`（网页里保存的模型配置，**明文含 API Key**）
-- `config/access_policy.json`
-- `.chroma*/`（含索引目录内的 `index_manifest.json`）
-- `data/raw/` 中的真实文档
-- `.web_upload_jobs.json`、`.web_conversations.json`
-- `.markdown-cache/`（转换后的 Markdown，删了会自动重建）
-- `data/vector_audit.jsonl`（向量库写入审计日志）
-- `data/retrieval_eval.jsonl`（评估问题集与人工标注——只在生成它的那份索引下有含义）
-- `reports/`（评估跑批快照）
-- `.web_staging.json`
-- `data/pending/`（待审核上传的暂存文件）
-- `output/`
-- `.playwright-cli/`
-- 虚拟环境和 Python 缓存
+- 原文件、索引、解析缓存、任务、对话、认证、策略、审计和评测报告不随 Git 发布；详见 [.gitignore](.gitignore) 与 [数据说明](data/README.md)。不提交他人私人资料。
+- 同一实例服务一个知识库；索引模型按清单校验，模型变化需独立重建。CLI `ingest --rebuild` 是旧切片清理能力，不是跨模型迁移。
+- 保留的旧版本是历史快照，不会同步后来上传或删除；没有“无条件安全回滚”的承诺。
+- 清理使用本机 POSIX 文件锁和 `lsof`；占用、归属不明、越界或符号链接会保留待办。停服后 `python -m app.main maintain-indexes` 可重试，不重新调用模型。
+- 当前混合检索不做独立 BM25 召回；纯 BM25 的持久化快路径先取候选再做访问校验，因此受限用户结果可能少于 Top-K。
+- 上传/重建在后台执行；任务轮询是单人演示规模方案，未做压测。不是高可用、分布式或生产部署方案。

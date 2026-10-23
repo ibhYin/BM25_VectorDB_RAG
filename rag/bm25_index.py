@@ -13,7 +13,7 @@ from pathlib import Path
 
 import chromadb
 
-from rag.vector_store import COLLECTION_NAME
+from rag.vector_store import COLLECTION_NAME, metadata_client
 
 INDEX_FILENAME = "bm25.sqlite3"
 
@@ -49,34 +49,35 @@ def rebuild_bm25_index(
     target = bm25_index_path(persist_dir)
     temporary = target.with_name(target.name + ".tmp")
 
-    client = chromadb.PersistentClient(path=str(persist_dir))
-    try:
-        collection = client.get_collection(COLLECTION_NAME, embedding_function=None)
-    except chromadb.errors.NotFoundError:
-        collection = None
+    with metadata_client(persist_dir) as client:
+        try:
+            collection = client.get_collection(COLLECTION_NAME, embedding_function=None)
+        except chromadb.errors.NotFoundError:
+            collection = None
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(str(temporary))
-    try:
-        _create_index(connection)
-        if collection is not None:
-            records = collection.get(include=["documents", "metadatas"])
-            texts = records["documents"] or []
-            metadatas = records["metadatas"] or []
-            rows = [
-                (
-                    " ".join(tokenize(text or "")),
-                    str(metadatas[index].get("chunk_id", "")),
+        target.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(str(temporary))
+        try:
+            _create_index(connection)
+            if collection is not None:
+                records = collection.get(include=["documents", "metadatas"])
+                texts = records["documents"] or []
+                metadatas = records["metadatas"] or []
+                rows = [
+                    (
+                        " ".join(tokenize(text or "")),
+                        str(metadatas[index].get("chunk_id", "")),
+                    )
+                    for index, text in enumerate(texts)
+                    if metadatas[index] and metadatas[index].get("chunk_id")
+                ]
+                connection.executemany(
+                    "INSERT INTO bm25(terms, chunk_id) VALUES (?, ?)", rows
                 )
-                for index, text in enumerate(texts)
-                if metadatas[index] and metadatas[index].get("chunk_id")
-            ]
-            connection.executemany(
-                "INSERT INTO bm25(terms, chunk_id) VALUES (?, ?)", rows
-            )
-        connection.commit()
-    finally:
-        connection.close()
+            connection.commit()
+        finally:
+            connection.close()
+
     # 原子替换：查询侧要么读到旧索引，要么读到新索引，绝无半写状态。
     temporary.replace(target)
 

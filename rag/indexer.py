@@ -3,7 +3,7 @@ from pathlib import Path
 from langchain_core.documents import Document
 
 from app.access import load_access_policy
-from rag.index_manifest import write_index_manifest
+from rag.index_manifest import ensure_index_embedding_model, write_index_manifest
 from rag.loaders import load_documents
 from rag.splitter import split_documents
 from rag.vector_store import ingest_documents
@@ -39,6 +39,8 @@ def build_vector_index(
     aliyun_oss_bucket: str = "",
     aliyun_oss_endpoint: str = "",
     aliyun_oss_prefix: str = "",
+    embedding_max_input_bytes: int | None = None,
+    embedding_batch_size: int = 10,
 ) -> tuple[list[Document], list[Document]]:
     """Load, split and index one directory through the shared vector pipeline.
 
@@ -53,6 +55,7 @@ def build_vector_index(
     if not data_dir.is_dir():
         raise ValueError(f"Data directory does not exist: {data_dir}")
 
+    ensure_index_embedding_model(persist_dir, embedding_model)
     documents = load_documents(
         data_dir,
         openai_api_key=openai_api_key,
@@ -106,6 +109,7 @@ def build_vector_index(
         chunk_overlap=chunk_overlap,
         knowledge_base_id=knowledge_base_id,
         access_policy=access_policy,
+        max_input_bytes=embedding_max_input_bytes,
     )
     if not chunks:
         raise ValueError(f"Documents contained no indexable text: {data_dir}")
@@ -118,6 +122,10 @@ def build_vector_index(
         embedding_base_url=embedding_base_url,
         rebuild=rebuild,
         knowledge_base_id=knowledge_base_id,
+        embedding_batch_size=embedding_batch_size,
     )
-    write_index_manifest(persist_dir, embedding_model)
+    from rag.markdown_cache import write_documents
+
+    write_documents(persist_dir, documents)
+    write_index_manifest(persist_dir, embedding_model, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     return documents, chunks

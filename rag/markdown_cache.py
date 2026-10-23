@@ -18,6 +18,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -136,3 +137,81 @@ def info() -> dict[str, object]:
             except OSError:
                 continue
     return {"dir": str(directory), "entries": entries, "bytes": size}
+
+
+def _parsed_path(persist_dir: Path, doc_id: str) -> Path:
+    return Path(persist_dir) / "parsed" / (hashlib.sha256(doc_id.encode()).hexdigest() + ".json")
+
+
+def _parsed_archive(persist_dir: Path) -> Path:
+    return cache_dir() / "index-parsed" / hashlib.sha256(str(Path(persist_dir).resolve()).encode()).hexdigest()
+
+
+def preserve_parsed_documents(persist_dir: Path) -> None:
+    """Index retirement must not delete whole-parser caches, including deleted docs.
+
+    Archives remain namespaced by index identity; never merge overlapping chunks
+    or substitute another version's parser output for a live document.
+    """
+    parsed = Path(persist_dir) / "parsed"
+    if not parsed.exists():
+        return
+    if parsed.is_symlink() or any(p.is_symlink() for p in parsed.rglob("*")):
+        raise ValueError("解析缓存包含符号链接，保留索引目录待核对")
+    shutil.copytree(parsed, _parsed_archive(persist_dir), dirs_exist_ok=True)
+
+
+def write_documents(persist_dir: Path, documents: list, *, strict: bool = False) -> None:
+    """Save whole parser outputs, never reconstructed overlapping chunks."""
+    try:
+        grouped: dict[str, list] = {}
+        for doc in documents:
+            doc_id = str(doc.metadata.get("doc_id") or "")
+            if doc_id:
+                grouped.setdefault(doc_id, []).append({"text": doc.page_content, "metadata": doc.metadata})
+        for doc_id, entries in grouped.items():
+            target = _parsed_path(persist_dir, doc_id)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary = target.with_suffix(".tmp")
+            temporary.write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
+            os.replace(temporary, target)
+    except OSError:
+        if strict:
+            raise
+        logger.warning("Could not preserve complete parsed documents; original-file fallback remains available")
+
+
+def read_documents(persist_dir: Path, doc_id: str) -> list:
+    from langchain_core.documents import Document
+
+    try:
+        path = _parsed_path(persist_dir, doc_id)
+        if not path.exists():
+            path = _parsed_archive(persist_dir) / path.name
+        entries = json.loads(path.read_text(encoding="utf-8"))
+        return [Document(page_content=e["text"], metadata=e["metadata"]) for e in entries]
+    except (OSError, ValueError, TypeError, KeyError):
+        return []
+
+
+def find_markdown(source: str, chunks: list) -> str | None:
+    """Locate an existing complete conversion, including when the raw file is missing.
+
+    Verify that every indexed chunk belongs to it; source names alone do not
+    prove a cached conversion matches the indexed document version.
+    """
+    # ponytail: legacy entries lack a doc_id lookup (O(cache entries)); new
+    # parsed snapshots use doc_id-addressed paths for subsequent rebuilds.
+    for path in sorted(cache_dir().glob("*.json"), reverse=True):
+        try:
+            entry = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(entry, dict):
+                continue
+            if Path(str(entry.get("source") or "")).resolve() != Path(source).resolve():
+                continue
+            text = entry.get("markdown")
+            if isinstance(text, str) and text and all(c.page_content in text for c in chunks):
+                return text
+        except (OSError, ValueError, TypeError):
+            continue
+    return None

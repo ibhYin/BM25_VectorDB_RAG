@@ -5,6 +5,7 @@ import {
   emit,
   loadIdentity,
   refreshDocuments,
+  requestIndexRebuild,
   router,
   setupBackTop,
   startServerStatsPolling,
@@ -16,6 +17,7 @@ import evaluation from "./views/eval.js";
 import library from "./views/library.js";
 import settings from "./views/settings.js";
 import users from "./views/users.js";
+import { setupSelectSearch } from "./select-search.js";
 
 router.register("ask", ask);
 router.register("aggregate", aggregate);
@@ -24,6 +26,8 @@ router.register("settings", settings);
 router.register("audit", audit);
 router.register("eval", evaluation);
 router.register("users", users);
+
+document.querySelector("#warning-rebuild").addEventListener("click", () => requestIndexRebuild());
 
 // --- shell controls -------------------------------------------------------
 
@@ -55,6 +59,7 @@ document.addEventListener("keydown", (event) => {
 // --- boot -----------------------------------------------------------------
 
 setupBackTop();
+setupSelectSearch();
 router.start("ask");
 refreshDocuments();
 loadIdentity();

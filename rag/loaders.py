@@ -109,6 +109,7 @@ def load_document_file(
     aliyun_oss_bucket: str = "",
     aliyun_oss_endpoint: str = "",
     aliyun_oss_prefix: str = "",
+    force_reparse: bool = False,
 ) -> list[Document]:
     """Load one supported file through the same path as directory ingestion.
 
@@ -144,8 +145,9 @@ def load_document_file(
     if structurize:
         from rag.structurizer import convert_to_markdown
 
+        options = {"force_reparse": True} if force_reparse else {}
         markdown_text = convert_to_markdown(
-            path, structurize_provider, mineru_token, mineru_model_version
+            path, structurize_provider, mineru_token, mineru_model_version, **options
         )
         if markdown_text:
             # Structurization succeeded; return as a single document with .md metadata.

@@ -13,8 +13,9 @@ import {
   state,
 } from "../core.js";
 import { createVectorHitCard } from "../hits.js";
-import { CUSTOM_MODEL, createModelPicker } from "../model-picker.js";
+import { createModelPicker } from "../model-picker.js";
 import { enableResize } from "../resizer.js";
+import { resetSelectSearch } from "../select-search.js";
 
 const el = {
   chatStream: document.querySelector("#chat-stream"),
@@ -1067,7 +1068,6 @@ async function setupModelSwitcher(status = state.status) {
     // 了下拉：开机时身份还没到，canConfigure() 按开放模式算成允许，于是去拉模型
     // 列表（非管理员必然 403），而错误分支会把自定义框显示出来——等身份到了就
     // 留下一个没人能用的输入框和一句「可在自定义里手动输入」。
-    el.llmModelCustom.hidden = true;
     el.llmHint.textContent = "";
     el.llmHint.classList.remove("error");
     return;
@@ -1088,6 +1088,7 @@ function reflectModel(model) {
   const known = [...el.llmModel.options].some((option) => option.value === model);
   if (!known) return;
   el.llmModel.value = model;
+  resetSelectSearch(el.llmModel);
   llmPicker.syncFromSelect();
 }
 
@@ -1112,11 +1113,6 @@ async function switchModel() {
 function bindModelSwitcher() {
   el.llmModel.addEventListener("change", () => {
     llmPicker.syncFromSelect();
-    if (el.llmModel.value !== CUSTOM_MODEL) switchModel();
-  });
-  el.llmModelCustom.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter") return;
-    event.preventDefault();
     switchModel();
   });
 }

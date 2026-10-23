@@ -58,10 +58,11 @@
         <p class="login-subtitle">使用管理员分配的账号继续</p>
 
         <form id="login-form" novalidate>
-          <label for="username">用户名</label>
+          <label for="username"><span class="required-mark" aria-hidden="true">*</span> 用户名</label>
           <input
             id="username"
             name="username"
+            placeholder="请输入用户名"
             type="text"
             inputmode="username"
             autocomplete="username"
@@ -69,11 +70,12 @@
             required
           >
 
-          <label for="password">密码</label>
+          <label for="password"><span class="required-mark" aria-hidden="true">*</span> 密码</label>
           <div class="password-box">
             <input
               id="password"
               name="password"
+              placeholder="请输入密码"
               type="password"
               autocomplete="current-password"
               required

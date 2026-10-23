@@ -65,6 +65,7 @@ def split_documents(
     chunk_overlap: int = 120,
     knowledge_base_id: str = "default",
     access_policy: AccessPolicy | None = None,
+    max_input_bytes: int | None = None,
 ) -> list[Document]:
     """Split documents into chunks suitable for retrieval.
 
@@ -77,16 +78,26 @@ def split_documents(
 
     chunks: list[Document] = []
     for document in documents:
+        size = chunk_size
+        if max_input_bytes:
+            # Keep the native character splitter and accurate source offsets.
+            # Worst character width gives a conservative bound without assuming
+            # a provider tokenizer or mixing byte overlap with character offsets.
+            width = max((len(char.encode("utf-8")) for char in document.page_content), default=1)
+            size = min(size, max_input_bytes // width)
+        overlap = chunk_overlap * size // chunk_size
         if document.metadata.get("structured_by"):
-            chunks.extend(_split_by_headers(document, chunk_size, chunk_overlap))
+            chunks.extend(_split_by_headers(document, size, overlap))
         else:
-            chunks.extend(_split_by_size([document], chunk_size, chunk_overlap))
+            chunks.extend(_split_by_size([document], size, overlap))
 
     chunk_counts_by_doc_id: dict[str, int] = {}
     for chunk in chunks:
         doc_id = str(chunk.metadata["doc_id"])
         chunk_counts_by_doc_id[doc_id] = chunk_counts_by_doc_id.get(doc_id, 0) + 1
 
+        chunk.metadata["index_chunk_size"] = chunk_size
+        chunk.metadata["index_chunk_overlap"] = chunk_overlap
         chunk.metadata["chunk_id"] = (
             f"{doc_id}#chunk_{chunk_counts_by_doc_id[doc_id]:03d}"
         )

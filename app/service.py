@@ -19,7 +19,7 @@ from app import audit
 from rag.bm25_index import rebuild_bm25_index
 from rag import markdown_cache
 from rag.indexer import build_vector_index
-from rag.index_manifest import write_index_manifest
+from rag.index_manifest import ensure_index_embedding_model, write_index_manifest
 from rag.loaders import load_document_file
 from rag.retriever import (
     build_vector_hits,
@@ -48,11 +48,38 @@ class KnowledgeBaseLock:
         self._readers = 0
         self._writer = False
         self._waiting_writers = 0
+        self._mutations = 0
+        self._rebuilding = False
 
     @contextmanager
-    def read(self):
+    def mutation(self):
+        # Reserve briefly; remote calls never hold this condition.
+        with self._condition:
+            if self._rebuilding:
+                raise RuntimeError("索引正在重建，暂时不能上传、删除或修改索引/配置")
+            self._mutations += 1
+        try:
+            yield
+        finally:
+            with self._condition:
+                self._mutations -= 1
+
+    def begin_rebuild(self):
+        with self._condition:
+            if self._rebuilding or self._mutations or self._writer or self._waiting_writers:
+                raise RuntimeError("已有索引写入或重建任务，请等待结束后重试")
+            self._rebuilding = True
+
+    def end_rebuild(self):
+        with self._condition:
+            self._rebuilding = False
+
+    @contextmanager
+    def read(self, wait: bool = True):
         with self._condition:
             while self._writer or self._waiting_writers:
+                if not wait:
+                    raise RuntimeError("索引正在写入，请等待任务完成后重试")
                 self._condition.wait()
             self._readers += 1
 
@@ -111,6 +138,7 @@ class FileIngestResult:
     cancelled: bool = False
 
 
+@knowledge_base_lock.mutation()
 def ingest_knowledge_base(
     settings: Settings,
     data_dir: Path | None = None,
@@ -136,6 +164,8 @@ def ingest_knowledge_base(
             embedding_base_url=settings.embedding_base_url,
             ocr_model=settings.ocr_model,
             ocr_max_pages=settings.ocr_max_pages,
+            embedding_max_input_bytes=settings.embedding_max_input_bytes,
+            embedding_batch_size=settings.embedding_batch_size,
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
             rebuild=rebuild,
@@ -179,6 +209,7 @@ def ingest_knowledge_base(
     return result
 
 
+@knowledge_base_lock.mutation()
 def ingest_files(
     settings: Settings,
     paths: list[Path],
@@ -216,6 +247,9 @@ def ingest_files(
 
     try:
         with knowledge_base_lock.write():
+            ensure_index_embedding_model(
+                settings.chroma_persist_dir, settings.embedding_model
+            )
             for index, path in enumerate(paths):
                 if should_cancel is not None and should_cancel():
                     cancelled = True
@@ -291,6 +325,7 @@ def ingest_files(
                         chunk_overlap=settings.chunk_overlap,
                         knowledge_base_id=settings.knowledge_base_id,
                         access_policy=load_access_policy(settings.access_policy_file),
+                        max_input_bytes=settings.embedding_max_input_bytes,
                     )
                     if not file_chunks:
                         raise ValueError(
@@ -309,7 +344,9 @@ def ingest_files(
                         "split" if detail["stage"] == "split" else "load"
                     )
                     detail["duration_ms"] = round((perf_counter() - started) * 1000)
-                    detail["error"] = str(exc)
+                    from app.rebuild import safe_error
+
+                    detail["error"] = safe_error(exc, settings)
                     failed_files.append(path.name)
                     processed += 1
                     notify(detail)
@@ -350,9 +387,12 @@ def ingest_files(
                     embedding_api_key=settings.embedding_api_key,
                     embedding_base_url=settings.embedding_base_url,
                     knowledge_base_id=settings.knowledge_base_id,
+                    embedding_batch_size=settings.embedding_batch_size,
                 )
+                markdown_cache.write_documents(settings.chroma_persist_dir, documents)
                 write_index_manifest(
-                    settings.chroma_persist_dir, settings.embedding_model
+                    settings.chroma_persist_dir, settings.embedding_model,
+                    chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap,
                 )
                 rebuild_bm25_index(
                     settings.chroma_persist_dir,
@@ -434,6 +474,19 @@ def ingest_files(
     return result
 
 
+def index_management_store(settings: Settings):
+    from rag.index_manifest import read_index_embedding_model
+
+    return get_vector_store(
+        settings.chroma_persist_dir,
+        read_index_embedding_model(settings.chroma_persist_dir) or settings.embedding_model,
+        settings.embedding_api_key,
+        settings.embedding_base_url,
+        metadata_only=True,
+    )
+
+
+@knowledge_base_lock.mutation()
 def delete_indexed_documents(
     settings: Settings, doc_ids: list[str], actor: str = ""
 ) -> int:
@@ -452,12 +505,7 @@ def delete_indexed_documents(
             # 标题/来源必须在删除前快照：删完后向量库里只剩 doc_id 的审计记录，已经
             # 没地方再还原「到底删了哪篇文档」。这份快照与删除放在同一把写锁里，
             # 避免查询完元数据、真正删除之前又有一次同名文档替换进来。
-            metadata_result = get_vector_store(
-                settings.chroma_persist_dir,
-                settings.embedding_model,
-                settings.embedding_api_key,
-                settings.embedding_base_url,
-            ).get(
+            metadata_result = index_management_store(settings).get(
                 where={
                     "$and": [
                         {"doc_id": {"$in": clean_doc_ids}},
@@ -549,6 +597,57 @@ def delete_indexed_documents(
     return deleted
 
 
+@knowledge_base_lock.mutation()
+def delete_indexed_documents_batch(settings: Settings, doc_ids: list[str], actor: str = "") -> dict:
+    """One shared delete and BM25 refresh; report truth after partial failures."""
+    if not isinstance(doc_ids, list) or not doc_ids or len(doc_ids) > 1000:
+        raise ValueError("请选择 1–1000 份文档")
+    if any(not isinstance(i, str) or not i.strip() or len(i) > 300 for i in doc_ids):
+        raise ValueError("文档 ID 无效")
+    ids = list(dict.fromkeys(i.strip() for i in doc_ids))
+
+    def counts():
+        with knowledge_base_lock.read():
+            result = index_management_store(settings).get(where={"$and": [
+                {"knowledge_base_id": settings.knowledge_base_id}, {"doc_id": {"$in": ids}},
+            ]}, include=["metadatas"])
+        totals = {}
+        for meta in result.get("metadatas") or []:
+            key = str((meta or {}).get("doc_id") or "")
+            totals[key] = totals.get(key, 0) + 1
+        return totals
+
+    before = counts()
+    known = [i for i in ids if i in before]
+    error = ""
+    if known:
+        try:
+            delete_indexed_documents(settings, known, actor)
+        except Exception as exc:
+            from app.rebuild import safe_error
+            error = safe_error(exc, settings)
+            # A delete can fail after some chunks were removed. Refresh BM25
+            # once from the surviving records so it does not retain those IDs.
+            try:
+                with knowledge_base_lock.write():
+                    rebuild_bm25_index(settings.chroma_persist_dir)
+            except Exception as refresh_exc:
+                error += "；BM25 更新失败：" + safe_error(refresh_exc, settings)
+    try:
+        after = counts()
+    except Exception as exc:
+        from app.rebuild import safe_error
+        return {"deleted": [], "not_deleted": [i for i in ids if i not in before],
+                "failed": known, "deleted_chunks": None, "error": safe_error(exc, settings),
+                "verified": False}
+    return {"deleted": [i for i in known if i not in after],
+            "not_deleted": [i for i in ids if i not in before],
+            "failed": [i for i in known if i in after],
+            "deleted_chunks": sum(before.values()) - sum(after.values()),
+            "error": error, "verified": True}
+
+
+@knowledge_base_lock.mutation()
 def set_document_access(
     settings: Settings,
     doc_id: str,
@@ -605,6 +704,7 @@ def set_document_access(
     return updated
 
 
+@knowledge_base_lock.mutation()
 def approve_staged_upload(
     settings: Settings,
     item_id: str,
@@ -621,6 +721,7 @@ def approve_staged_upload(
     from app.uploads import get_upload_store
     from rag.splitter import build_doc_id
 
+    ensure_index_embedding_model(settings.chroma_persist_dir, settings.embedding_model)
     store = get_staging_store()
     item, payload = store.take(item_id)
 
@@ -696,12 +797,7 @@ def get_indexed_document(
         raise PermissionError("Authenticated user context is required")
 
     with knowledge_base_lock.read():
-        result = get_vector_store(
-            settings.chroma_persist_dir,
-            settings.embedding_model,
-            settings.embedding_api_key,
-            settings.embedding_base_url,
-        ).get(
+        result = index_management_store(settings).get(
             where={
                 "$and": [
                     {"doc_id": doc_id},
@@ -823,12 +919,7 @@ def list_indexed_documents(
     """
 
     with knowledge_base_lock.read():
-        result = get_vector_store(
-            settings.chroma_persist_dir,
-            settings.embedding_model,
-            settings.embedding_api_key,
-            settings.embedding_base_url,
-        ).get(include=["metadatas"])
+        result = index_management_store(settings).get(include=["metadatas"])
     documents: dict[str, dict[str, object]] = {}
     access_policy = load_access_policy(settings.access_policy_file)
     # 管理员视图才需要"最近入库"归属；传入当前文档集合让归属从日志尾部逆扫、
@@ -841,6 +932,8 @@ def list_indexed_documents(
     attribution = _ingest_attribution(current_doc_ids) if admin else {}
     for raw_metadata in result.get("metadatas", []):
         metadata = raw_metadata or {}
+        if str(metadata.get("knowledge_base_id") or "default") != settings.knowledge_base_id:
+            continue
         if access_policy is not None and not admin:
             if user is None or not access_policy.can_access(metadata, user, settings.knowledge_base_id):
                 continue
@@ -1187,12 +1280,7 @@ def resolve_chunks(
         return {}
 
     with knowledge_base_lock.read():
-        result = get_vector_store(
-            settings.chroma_persist_dir,
-            settings.embedding_model,
-            settings.embedding_api_key,
-            settings.embedding_base_url,
-        ).get(
+        result = index_management_store(settings).get(
             where={
                 "$and": [
                     {"chunk_id": {"$in": wanted}},
@@ -1284,12 +1372,7 @@ def anchor_eval_labels(
     by_doc: dict[str, dict[str, str]] = {}
     if doc_ids:
         with knowledge_base_lock.read():
-            result = get_vector_store(
-                settings.chroma_persist_dir,
-                settings.embedding_model,
-                settings.embedding_api_key,
-                settings.embedding_base_url,
-            ).get(
+            result = index_management_store(settings).get(
                 where={
                     "$and": [
                         {"doc_id": {"$in": doc_ids}},

@@ -47,7 +47,19 @@
       </div>
     </header>
 
-    <div id="index-warning" class="index-warning" role="alert" hidden></div>
+    <div id="index-warning" class="index-warning" role="alert" hidden>
+      <span id="index-warning-text"></span>
+      <button id="warning-rebuild" class="ghost-button" type="button">重建索引</button>
+    </div>
+
+    <dialog id="rebuild-dialog" class="rebuild-dialog" aria-labelledby="rebuild-dialog-title" aria-describedby="rebuild-dialog-message">
+      <h2 id="rebuild-dialog-title">重建索引</h2>
+      <p id="rebuild-dialog-message" role="status" aria-live="polite"></p>
+      <div class="config-actions">
+        <button id="rebuild-dialog-close" class="ghost-button" type="button" autofocus>取消</button>
+        <button id="rebuild-dialog-confirm" class="primary-button" type="button" hidden>开始重建</button>
+      </div>
+    </dialog>
 
     <!-- ============================ 问答 ============================ -->
     <section class="page page-ask" id="page-ask" aria-label="知识库问答">
@@ -75,7 +87,7 @@
                    藏起来只会让人不知道自己在跟哪个模型说话。 -->
               <span class="chip ask-model-readonly" id="ask-llm-readonly" hidden></span>
               <select id="ask-llm-model" class="ask-model-select" aria-label="对话模型（改动保存在服务器上）" hidden></select>
-              <input id="ask-llm-model-custom" class="ask-model-custom" type="text" placeholder="输入模型名" autocomplete="off" spellcheck="false" hidden />
+              <input id="ask-llm-model-custom" aria-label="自定义对话模型" class="ask-model-custom" type="text" placeholder="输入模型名" autocomplete="off" spellcheck="false" hidden />
               <span class="ask-model-hint" id="ask-llm-hint" role="status" aria-live="polite"></span>
               <div class="kb-picker">
                 <button id="kb-status" class="kb-status" type="button" aria-haspopup="menu" aria-expanded="false">—</button>
@@ -106,11 +118,11 @@
             </div>
             <label class="mini-field">
               <span>Top-K</span>
-              <input id="retrieval-top-k" type="number" form="ask-form" min="1" max="100" step="1" value="20" required />
+              <input id="retrieval-top-k" type="number" form="ask-form" min="1" max="100" step="1" value="20" required placeholder="20" />
             </label>
             <label class="mini-field">
               <span>候选池</span>
-              <input id="candidate-pool" type="number" form="ask-form" min="20" max="500" step="1" value="100" required />
+              <input id="candidate-pool" type="number" form="ask-form" min="20" max="500" step="1" value="100" required placeholder="100" />
             </label>
             <div class="segmented" id="fusion-method" role="radiogroup" aria-label="融合方式">
               <label><input type="radio" name="fusion-method" value="rrf" form="ask-form" checked /><span>RRF</span></label>
@@ -118,11 +130,11 @@
             </div>
             <label class="mini-field" id="fusion-k-field">
               <span>k</span>
-              <input id="fusion-k" type="number" form="ask-form" min="1" max="200" step="1" value="60" />
+              <input id="fusion-k" type="number" form="ask-form" min="1" max="200" step="1" value="60" placeholder="60" />
             </label>
             <label class="mini-field" id="fusion-alpha-field" hidden>
               <span>α</span>
-              <input id="fusion-alpha" type="number" form="ask-form" min="0" max="1" step="0.05" value="0.5" />
+              <input id="fusion-alpha" type="number" form="ask-form" min="0" max="1" step="0.05" value="0.5" placeholder="0.5" />
             </label>
             <label class="mini-field threshold-field">
               <span>阈值</span>
@@ -168,6 +180,11 @@
       </div>
 
       <div id="library-list-view">
+        <div class="section-actions" id="rebuild-controls">
+          <button id="rebuild-index" class="ghost-button" type="button">重建索引</button>
+          <label><input id="rebuild-force" type="checkbox" /> 强制重新解析原文件（可能调用解析服务）</label>
+          <span id="rebuild-feedback" role="status" aria-live="polite"></span>
+        </div>
         <div class="stats-row" aria-label="索引统计">
           <div class="stat">
             <span class="stat-label">入库文档</span>
@@ -243,6 +260,12 @@
               <button id="reload-documents-button" class="text-button" type="button">刷新</button>
             </span>
           </div>
+          <div id="document-selection" class="section-actions" hidden>
+            <label><input id="document-select-all" type="checkbox" /> 全选当前列表（无分页）</label>
+            <span id="document-selection-count" role="status">已选 0 份 · 范围：当前列表全部文档（无分页）</span>
+            <button id="delete-selected" class="ghost-button" type="button" hidden>删除所选（0）</button>
+          </div>
+          <p id="document-delete-feedback" role="status" aria-live="polite"></p>
           <div class="item-list" id="document-list" aria-live="polite" aria-busy="true">
             <div class="loading-state"><span class="loading-spinner" aria-hidden="true"></span><span>加载中</span></div>
           </div>
@@ -287,11 +310,11 @@
         <div class="aggregate-options">
           <label class="mini-field">
             <span>样本片段数</span>
-            <input id="aggregate-sample-size" type="number" min="10" max="500" step="10" value="200" required />
+            <input id="aggregate-sample-size" type="number" min="10" max="500" step="10" value="200" required placeholder="200" />
           </label>
           <label class="mini-field">
             <span>返回类别数</span>
-            <input id="aggregate-top-categories" type="number" min="1" max="10" step="1" value="3" required />
+            <input id="aggregate-top-categories" type="number" min="1" max="10" step="1" value="3" required placeholder="3" />
           </label>
           <label class="mini-field">
             <span>检索方式</span>
@@ -314,36 +337,46 @@
       <div class="page-head">
         <h2>设置</h2>
         <p>模型接入与运行参数</p>
-        <p class="config-hint">保存在服务器本地，立即对问答与文档入库生效。留空表示沿用默认值。</p>
+        <p class="config-hint">保存在服务器本地。标有红色 * 的字段为必填；已有默认值自动填充。密钥留空保持不变，可选连接地址留空按字段说明复用。</p>
       </div>
 
       <form id="config-form" class="config-form">
-        <fieldset class="config-group" aria-label="对话模型 LLM">
-          <div class="config-group-head">
+        <details class="config-group settings-section">
+          <summary>
             <span class="config-group-title">对话模型（LLM）</span>
             <span class="scope-badge" id="config-llm-scope">—</span>
-          </div>
+          </summary>
+        <fieldset id="config-section-llm" class="config-group" aria-describedby="config-llm-status" aria-label="对话模型 LLM">
           <label class="config-field">
             <span>请求地址</span>
-            <input id="config-openai-base-url" type="url" inputmode="url" placeholder="https://example.com/v1" autocomplete="off" spellcheck="false" />
+            <input id="config-openai-base-url" type="url" inputmode="url" placeholder="留空使用 https://api.openai.com/v1" autocomplete="off" spellcheck="false" />
           </label>
           <label class="config-field">
             <span>API Key</span>
             <input id="config-openai-api-key" type="password" placeholder="留空则保持不变" autocomplete="new-password" spellcheck="false" />
           </label>
           <div class="config-field">
-            <span>模型</span>
-            <select id="config-llm-model" class="config-select" aria-label="对话模型"></select>
-            <input id="config-llm-model-custom" class="config-custom-model" type="text" placeholder="输入模型名" autocomplete="off" spellcheck="false" hidden />
+            <span><span class="required-mark" aria-hidden="true">*</span> 模型</span>
+            <select id="config-llm-model" class="config-select" aria-label="对话模型" aria-required="true"></select>
+            <input id="config-llm-model-custom" class="config-custom-model" type="text" aria-label="自定义对话模型" placeholder="例如 gpt-4o-mini" autocomplete="off" spellcheck="false" hidden />
           </div>
           <p class="config-model-hint" id="config-llm-models-hint"></p>
+        <div class="config-section-actions">
+            <span id="config-llm-status" class="config-status" role="status" aria-live="polite"></span>
+            <div class="config-actions">
+              <button id="config-llm-reset" class="ghost-button" type="button" disabled>放弃本节修改</button>
+              <button id="config-llm-save" class="primary-button" type="button" disabled>保存本节</button>
+            </div>
+          </div>
         </fieldset>
+        </details>
 
-        <fieldset class="config-group" aria-label="向量模型 Embedding">
-          <div class="config-group-head">
+        <details class="config-group settings-section">
+          <summary>
             <span class="config-group-title">向量模型（Embedding）</span>
             <span class="scope-badge" id="config-embedding-scope">—</span>
-          </div>
+          </summary>
+        <fieldset id="config-section-embedding" class="config-group" aria-describedby="config-embedding-status" aria-label="向量模型 Embedding">
           <label class="config-field">
             <span>请求地址</span>
             <input id="config-embedding-base-url" type="url" inputmode="url" placeholder="留空则复用对话模型地址" autocomplete="off" spellcheck="false" />
@@ -353,30 +386,44 @@
             <input id="config-embedding-api-key" type="password" placeholder="留空则复用对话模型 Key" autocomplete="new-password" spellcheck="false" />
           </label>
           <div class="config-field">
-            <span>模型</span>
-            <select id="config-embedding-model" class="config-select" aria-label="向量模型"></select>
-            <input id="config-embedding-model-custom" class="config-custom-model" type="text" placeholder="输入模型名" autocomplete="off" spellcheck="false" hidden />
+            <span><span class="required-mark" aria-hidden="true">*</span> 模型</span>
+            <select id="config-embedding-model" class="config-select" aria-label="向量模型" aria-required="true"></select>
+            <input id="config-embedding-model-custom" class="config-custom-model" type="text" aria-label="自定义向量模型" placeholder="例如 text-embedding-3-small" autocomplete="off" spellcheck="false" hidden />
           </div>
           <p class="config-model-hint" id="config-embedding-models-hint"></p>
           <p class="config-hint" id="config-index-model"></p>
-          <p class="config-hint" id="config-embedding-warning">更换向量模型后，需要重新入库全部文档。</p>
+          <p class="config-hint" id="config-embedding-warning">保存的是目标配置；模型不匹配时向量/混合检索暂停，请使用“重建索引”。默认复用正文或解析缓存。</p>
+        <label class="config-field"><span>切片长度（字符）</span><input id="config-chunk-size" type="number" min="1" value="800" required placeholder="800" /></label>
+<label class="config-field"><span>切片重叠（字符）</span><input id="config-chunk-overlap" type="number" min="0" value="120" required placeholder="120" /></label>
+<label class="config-field"><span>向量输入预算（UTF-8 字节，保守上界）</span><input id="config-embedding-max-input-bytes" type="number" min="4" value="512" required placeholder="512" /></label>
+<label class="config-field"><span>向量 API 每批条数</span><input id="config-embedding-batch-size" type="number" min="1" max="1000" value="10" required placeholder="10" /></label>
+<p class="config-hint">预算与批次按目标服务限制填写；字节预算采用保守上界，不推测服务端分词器；预算不足时切片与重叠自动缩小。默认 512 字节可能增加切片数。密钥留空保持不变。</p>
+<div class="config-section-actions">
+            <span id="config-embedding-status" class="config-status" role="status" aria-live="polite"></span>
+            <div class="config-actions">
+              <button id="config-embedding-reset" class="ghost-button" type="button" disabled>放弃本节修改</button>
+              <button id="config-embedding-save" class="primary-button" type="button" disabled>保存本节</button>
+            </div>
+          </div>
         </fieldset>
+        </details>
 
-        <fieldset class="config-group" aria-label="文档解析 MinerU">
-          <div class="config-group-head">
+        <details class="config-group settings-section">
+          <summary>
             <span class="config-group-title">文档解析（MinerU 结构化提取）</span>
             <span class="scope-badge" id="config-mineru-scope">未配置</span>
-          </div>
+          </summary>
+        <fieldset id="config-section-mineru" class="config-group" aria-describedby="config-mineru-status" aria-label="文档解析 MinerU">
           <div class="config-field">
             <span>MinerU Token</span>
             <div class="config-input-row">
-              <input id="config-mineru-token" type="password" placeholder="留空则保持不变" autocomplete="new-password" spellcheck="false" />
+              <input id="config-mineru-token" type="password" aria-label="MinerU Token" placeholder="留空则保持不变" autocomplete="new-password" spellcheck="false" />
               <button id="config-mineru-clear" class="text-button" type="button">清除</button>
             </div>
           </div>
           <label class="config-field">
             <span>MinerU 精度</span>
-            <select id="config-mineru-model-version" class="config-select" aria-label="解析精度">
+            <select id="config-mineru-model-version" required class="config-select" aria-label="解析精度">
               <option value="vlm">vlm（精度最高，推荐）</option>
               <option value="pipeline">pipeline（更快，精度较低）</option>
             </select>
@@ -387,16 +434,25 @@
             创建 Token。引擎选 MinerU 时，勾选「结构化提取」的上传会走在线版面分析。
           </p>
           <p class="config-hint warning">文档会上传到 mineru.net 第三方服务，请勿用于涉密材料。</p>
+        <div class="config-section-actions">
+            <span id="config-mineru-status" class="config-status" role="status" aria-live="polite"></span>
+            <div class="config-actions">
+              <button id="config-mineru-reset" class="ghost-button" type="button" disabled>放弃本节修改</button>
+              <button id="config-mineru-save" class="primary-button" type="button" disabled>保存本节</button>
+            </div>
+          </div>
         </fieldset>
+        </details>
 
-        <fieldset class="config-group" aria-label="语音识别">
-          <div class="config-group-head">
+        <details class="config-group settings-section">
+          <summary>
             <span class="config-group-title">语音识别（视频/音频转写）</span>
             <span class="scope-badge" id="config-asr-scope">未配置</span>
-          </div>
+          </summary>
+        <fieldset id="config-section-asr" class="config-group" aria-describedby="config-asr-status" aria-label="语音识别">
           <label class="config-field">
             <span>转写服务</span>
-            <select id="config-asr-provider" class="config-select" aria-label="转写服务">
+            <select id="config-asr-provider" required class="config-select" aria-label="转写服务">
               <option value="openai">OpenAI 兼容 audio/transcriptions</option>
               <option value="aliyun">阿里云录音文件识别</option>
             </select>
@@ -430,7 +486,7 @@
             </label>
             <label class="config-field">
               <span>地域</span>
-              <input id="config-aliyun-region" type="text" placeholder="如 cn-shanghai" autocomplete="off" spellcheck="false" />
+              <input id="config-aliyun-region" type="text" value="cn-shanghai" placeholder="如 cn-shanghai" autocomplete="off" spellcheck="false" />
             </label>
             <label class="config-field">
               <span>OSS Bucket</span>
@@ -449,20 +505,29 @@
             上传 mp4/mp3 等视频/音频文件时，先用 ffmpeg 抽音频再转写入库。阿里云录音文件识别
             需要音频走公网 URL（推荐 OSS），提交任务后异步轮询结果。
           </p>
+        <div class="config-section-actions">
+            <span id="config-asr-status" class="config-status" role="status" aria-live="polite"></span>
+            <div class="config-actions">
+              <button id="config-asr-reset" class="ghost-button" type="button" disabled>放弃本节修改</button>
+              <button id="config-asr-save" class="primary-button" type="button" disabled>保存本节</button>
+            </div>
+          </div>
         </fieldset>
+        </details>
 
+        <p id="config-models-feedback" class="config-hint" role="status" aria-live="polite">刷新使用当前输入的地址与密钥；密钥留空使用已保存密钥，不会保存配置。</p>
         <footer class="config-foot">
           <span class="config-status" id="config-status" role="status" aria-live="polite"></span>
           <div class="config-actions">
             <button id="config-refresh-models" class="ghost-button" type="button">刷新模型列表</button>
-            <button id="config-reset" class="ghost-button" type="button">放弃修改</button>
-            <button id="config-save" class="primary-button" type="submit">保存</button>
+            <button id="config-reset" class="ghost-button" type="button" disabled>放弃全部修改</button>
+            <button id="config-save" class="primary-button" type="submit" disabled>保存全部修改</button>
           </div>
         </footer>
       </form>
 
-      <section class="panel">
-        <div class="section-head"><h3>索引状态</h3></div>
+      <details class="panel settings-section">
+        <summary><h3>索引状态</h3></summary>
         <dl class="kv">
           <dt>建库向量模型</dt>
           <dd><code id="index-built-by">—</code></dd>
@@ -478,9 +543,9 @@
           <dd><code id="code-version">—</code></dd>
         </dl>
         <p class="config-hint warning" id="index-mismatch" hidden>
-          当前配置的向量模型与建库时不同，检索结果可能失效，请重新入库文档。
+          已保存的目标模型与当前索引不同，向量/混合检索已暂停。请重建索引，完成后切换；失败保留旧索引。
         </p>
-      </section>
+      </details>
     </section>
 
     <!-- ============================ 审计 ============================ -->
@@ -539,11 +604,11 @@
           </label>
           <label class="mini-field">
             <span>Top-K</span>
-            <input id="eval-top-k" type="number" min="1" max="100" step="1" value="10" />
+            <input id="eval-top-k" type="number" min="1" max="100" step="1" value="10" placeholder="10" />
           </label>
           <label class="mini-field">
             <span>K</span>
-            <input id="eval-ks" type="text" value="1,3,5" autocomplete="off" spellcheck="false" />
+            <input id="eval-ks" type="text" value="1,3,5" autocomplete="off" spellcheck="false" placeholder="1,3,5" />
           </label>
           <span class="config-status" id="eval-status" role="status" aria-live="polite"></span>
           <button id="eval-import" class="ghost-button" type="button">从对话记录导入</button>
@@ -581,11 +646,11 @@
             </div>
             <label class="config-field">
               <span>用户名</span>
-              <input id="users-create-username" type="text" autocomplete="off" spellcheck="false" />
+              <input id="users-create-username" type="text" placeholder="填写登录用户名" required autocomplete="off" spellcheck="false" />
             </label>
             <label class="config-field">
               <span>初始密码</span>
-              <input id="users-create-password" type="password" autocomplete="new-password" spellcheck="false" />
+              <input id="users-create-password" type="password" placeholder="设置初始登录密码（至少 6 位）" minlength="6" required autocomplete="new-password" spellcheck="false" />
             </label>
             <div class="config-field">
               <span>所属组</span>

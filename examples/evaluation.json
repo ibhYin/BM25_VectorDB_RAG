@@ -1,0 +1,6 @@
+[
+  {"question":"星河项目的试用期是多少天？","document":"handbook.md","evidence":"星河项目的试用期为 14 天。"},
+  {"question":"试用结束后还有几天可以导出星河项目笔记？","document":"handbook.md","evidence":"试用结束后保留 7 天导出窗口"},
+  {"question":"星河项目的例行评审在什么时间？","document":"schedule.txt","evidence":"例行评审在每周三 15:00 举行"},
+  {"question":"星河项目评审记录需要在多久内归档？","document":"schedule.txt","evidence":"评审记录在会议结束后两个工作日内归档。"}
+]

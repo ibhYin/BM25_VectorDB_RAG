@@ -9,6 +9,8 @@ import {
   formatTime,
   on,
   refreshDocuments,
+  refreshStatus,
+  requestIndexRebuild,
   renderListError,
   requestJson,
   setListLoading,
@@ -47,6 +49,14 @@ const el = {
   listModeControls: document.querySelector("#doc-list-controls"),
   listModeSegment: document.querySelector("#doc-list-mode"),
   groupView: document.querySelector("#group-view"),
+  selection: document.querySelector("#document-selection"),
+  selectAll: document.querySelector("#document-select-all"),
+  selectionCount: document.querySelector("#document-selection-count"),
+  deleteSelected: document.querySelector("#delete-selected"),
+  deleteFeedback: document.querySelector("#document-delete-feedback"),
+  rebuild: document.querySelector("#rebuild-index"),
+  rebuildControls: document.querySelector("#rebuild-controls"),
+  rebuildForce: document.querySelector("#rebuild-force"),
 
   docBackButton: document.querySelector("#doc-back-button"),
   docTitle: document.querySelector("#doc-title"),
@@ -57,10 +67,16 @@ const el = {
   docViewMode: document.querySelector("#doc-view-mode"),
 };
 
+const selectedDocuments = new Set();
+let deleting = false;
 let mounted = false;
 const stagingState = { items: [], groups: [] };
 let listMode = "docs"; // "docs" | "groups"
 let openAccessPopover = null; // { wrapper, trigger, popover } 当前打开的访问组弹层
+let pollingEnabled = false;
+let pollingEpoch = 0;
+let pollingRequest = null;
+let pollingFailures = 0;
 
 // --- stats ----------------------------------------------------------------
 
@@ -250,55 +266,69 @@ function sendBatch(items, label) {
     state.jobs.unshift(uploadJob);
     renderJobs();
 
-    const request = new XMLHttpRequest();
-    request.open("POST", "/api/documents/upload");
-    request.upload.addEventListener("progress", (event) => {
-      if (event.lengthComputable) {
-        uploadJob.progress = Math.round((event.loaded / event.total) * 100);
-        renderJobs();
-      }
-    });
-
-    const finish = () => resolve();
-
-    request.addEventListener("load", () => {
-      let payload = {};
-      try {
-        payload = JSON.parse(request.responseText);
-      } catch (_) {
-        payload = { error: "服务返回无效响应" };
-      }
-
-      if (request.status >= 200 && request.status < 300) {
-        if (payload.staged) {
-          // Non-admin submission: parked for review, so it is not an index job.
-          const index = state.jobs.indexOf(uploadJob);
-          if (index >= 0) state.jobs.splice(index, 1);
+    const send = () => {
+      uploadJob.status = "uploading";
+      renderJobs();
+      const request = new XMLHttpRequest();
+      request.open("POST", "/api/documents/upload");
+      request.upload.addEventListener("progress", (event) => {
+        if (event.lengthComputable) {
+          uploadJob.progress = Math.round((event.loaded / event.total) * 100);
           renderJobs();
-          showToast("已提交，等待管理员审核");
-          loadStaging();
-          finish();
+        }
+      });
+
+      const finish = () => resolve();
+
+      request.addEventListener("load", () => {
+        let payload = {};
+        try {
+          payload = JSON.parse(request.responseText);
+        } catch (_) {
+          payload = { error: "服务返回无效响应" };
+        }
+
+        if (request.status === 503 && payload.error === "Upload queue is full") {
+          uploadJob.status = "waiting_upload";
+          uploadJob.progress = 0;
+          renderJobs();
+          // ponytail: keep this batch in the current tab; durable resume after
+          // closing the page would require server-side upload sessions.
+          setTimeout(send, 1500);
           return;
         }
-        const index = state.jobs.indexOf(uploadJob);
-        if (index >= 0) state.jobs.splice(index, 1, { ...payload, label });
-        startPolling();
-      } else {
+        if (request.status >= 200 && request.status < 300) {
+          if (payload.staged) {
+            // Non-admin submission: parked for review, so it is not an index job.
+            const index = state.jobs.indexOf(uploadJob);
+            if (index >= 0) state.jobs.splice(index, 1);
+            renderJobs();
+            showToast("已提交，等待管理员审核");
+            loadStaging();
+            finish();
+            return;
+          }
+          const index = state.jobs.indexOf(uploadJob);
+          if (index >= 0) state.jobs.splice(index, 1, { ...payload, label });
+          startPolling();
+        } else {
+          uploadJob.status = "failed";
+          uploadJob.error = payload.error || `上传失败 (${request.status})`;
+          renderJobs();
+        }
+        finish();
+      });
+
+      request.addEventListener("error", () => {
         uploadJob.status = "failed";
-        uploadJob.error = payload.error || `上传失败 (${request.status})`;
+        uploadJob.error = "网络中断，文件未入队";
         renderJobs();
-      }
-      finish();
-    });
+        finish();
+      });
 
-    request.addEventListener("error", () => {
-      uploadJob.status = "failed";
-      uploadJob.error = "网络中断，文件未入队";
-      renderJobs();
-      finish();
-    });
-
-    request.send(form);
+      request.send(form);
+    };
+    send();
   });
 }
 
@@ -322,7 +352,7 @@ async function uploadFiles(fileList) {
   }
   if (notes.length) showToast(notes.join("；"));
 
-  // 顺序发：避免一次占满上传队列（max_upload_jobs），任务列表也好读。
+  // 顺序发；队列满时 sendBatch 保留本批并等待重试，不会继续提交后续批。
   for (let index = 0; index < batches.length; index += 1) {
     const label = batches.length > 1 ? `第 ${index + 1}/${batches.length} 批` : "";
     await sendBatch(batches[index], label);
@@ -332,51 +362,72 @@ async function uploadFiles(fileList) {
 // --- jobs -----------------------------------------------------------------
 
 async function pollJobs() {
-  try {
-    const payload = await requestJson("/api/upload-jobs");
-    const localUploads = state.jobs.filter((job) => job.id.startsWith("upload-"));
-    const previous = new Map(state.jobs.map((job) => [job.id, job.status]));
-    state.jobs = [...payload.jobs, ...localUploads];
+  if (pollingRequest) return pollingRequest;
+  const epoch = pollingEpoch;
+  pollingRequest = (async () => {
+    try {
+      const payload = await requestJson("/api/upload-jobs", {
+        signal: AbortSignal.timeout(15000),
+      });
+      if (epoch !== pollingEpoch) return;
+      pollingFailures = 0;
+      const localUploads = state.jobs.filter((job) => job.id.startsWith("upload-"));
+      const previous = new Map(state.jobs.map((job) => [job.id, job.status]));
+      state.jobs = [...payload.jobs, ...localUploads];
 
-    const completed = state.jobs.filter((job) =>
-      ["completed", "partial"].includes(job.status),
-    );
-    const changed = completed.some(
-      (job) => previous.get(job.id) !== job.status,
-    );
-    renderJobs();
-    if (changed) {
-      emit("documents:refresh");
+      const completed = state.jobs.filter((job) =>
+        ["completed", "partial"].includes(job.status),
+      );
+      const changed = completed.some(
+        (job) => previous.get(job.id) !== job.status,
+      );
+      renderJobs();
+      if (changed) {
+        emit("documents:refresh");
+      }
+      if (state.jobs.some(job => job.kind === "rebuild" && previous.get(job.id) !== job.status)) {
+        refreshStatus();
+      }
+      renderMaintenance();
+
+      const active = state.jobs.some(
+        (job) => job.status === "queued" || job.status === "indexing",
+      );
+      if (!active) stopPolling();
+    } catch (_) {
+      if (epoch !== pollingEpoch) return;
+      pollingFailures += 1;
+      el.queueSummary.textContent = "连接异常，保留上次状态，正在重试";
+    } finally {
+      pollingRequest = null;
+      if (pollingEnabled) {
+        clearTimeout(state.polling);
+        state.polling = setTimeout(pollJobs, Math.min(1500 * 2 ** pollingFailures, 15000));
+      }
     }
-
-    const active = state.jobs.some(
-      (job) => job.status === "queued" || job.status === "indexing",
-    );
-    if (!active) stopPolling();
-  } catch (_) {
-    renderListError(el.jobList, "任务状态不可用");
-    el.queueSummary.textContent = "读取失败";
-  }
+  })();
+  return pollingRequest;
 }
 
 function startPolling() {
-  if (!state.polling) {
-    state.polling = setInterval(pollJobs, 1500);
-    pollJobs();
-  }
+  if (pollingEnabled) return;
+  pollingEnabled = true;
+  pollingEpoch += 1;
+  pollingFailures = 0;
+  pollJobs();
 }
 
 function stopPolling() {
-  if (state.polling) {
-    clearInterval(state.polling);
-    state.polling = null;
-    el.queueSummary.textContent = "空闲";
-  }
+  pollingEnabled = false;
+  pollingEpoch += 1;
+  clearTimeout(state.polling);
+  state.polling = null;
 }
 
 function jobStatusText(status) {
   return {
     uploading: "上传中",
+    waiting_upload: "等待上传空位",
     queued: "排队",
     indexing: "索引中",
     completed: "完成",
@@ -396,6 +447,12 @@ function formatDuration(seconds) {
 function jobStageText(job) {
   return {
     queued: "等待处理",
+    check: "检查文档",
+    reuse_chunks: "复用已有切片",
+    resplit: "复用解析文本重新切片",
+    parse: "读取原文件解析",
+    bm25: "建立 BM25 索引",
+    switch: "校验并切换索引",
     load: job.structurize ? "正在解析文件（MinerU）" : "正在解析文件",
     split: "正在切片",
     vector_write: "正在写入向量并重建索引",
@@ -487,6 +544,7 @@ function createFileDetails(job) {
 
   const box = document.createElement("details");
   box.className = "job-files";
+  box.dataset.jobId = job.id;
   const summary = document.createElement("summary");
   const failed = details.filter((detail) => detail.status === "failed").length;
   const skipped = details.filter((detail) => detail.status === "skipped").length;
@@ -568,6 +626,7 @@ function jobRuntime(job) {
 }
 
 function jobActions(job) {
+  if (job.kind === "rebuild") return null;
   const actions = document.createElement("div");
   actions.className = "job-actions";
 
@@ -627,6 +686,11 @@ function jobActions(job) {
 }
 
 function renderJobs() {
+  const expandedJobs = new Set(
+    Array.from(el.jobList.querySelectorAll(".job-files"))
+      .filter((box) => box.open)
+      .map((box) => box.dataset.jobId),
+  );
   el.jobList.replaceChildren();
   clearListLoading(el.jobList);
   if (!state.jobs.length) {
@@ -640,7 +704,7 @@ function renderJobs() {
 
   const active = state.jobs.filter(
     (job) =>
-      job.status === "queued" || job.status === "indexing" || job.status === "uploading",
+      ["queued", "indexing", "uploading", "waiting_upload"].includes(job.status),
   );
   el.queueSummary.textContent = active.length ? `${active.length} 个进行中` : "空闲";
 
@@ -670,10 +734,13 @@ function renderJobs() {
       bar.style.width = `${job.progress || 0}%`;
       progress.append(bar);
       detail.append(progress);
+    } else if (job.status === "waiting_upload") {
+      detail.textContent = "入库队列已满，本批文件已保留，将自动重试上传";
     } else if (job.status === "failed") {
       detail.textContent = job.error || "处理失败";
     } else if (job.status === "completed") {
       detail.textContent = `${job.files} 文件 · ${job.documents} 页/文档 · ${job.chunks} 切片`;
+      if (job.kind === "migration") detail.textContent = "索引目录已迁移；保留原索引与解析缓存，未重新解析或向量化";
     } else if (job.status === "partial") {
       const failed = (job.file_details || []).filter(
         (row) => row.status === "failed",
@@ -689,10 +756,23 @@ function renderJobs() {
       detail.textContent = "正在解析并生成向量";
     }
 
+    if (job.kind === "rebuild") {
+      const success = (job.file_details || []).filter(row => row.status === "done").length;
+      const failure = (job.file_details || []).filter(row => row.status === "failed").length;
+      detail.textContent = `${job.status === "completed" ? "已切换新索引" : job.status === "failed" ? "重建失败，旧索引保留" : jobStageText(job)} · 处理成功 ${success} / 失败 ${failure} / 总计 ${job.progress_total} 份`;
+      if (job.error) detail.textContent += ` · ${job.error}`;
+      if (job.state_warning) detail.textContent += ` · ${job.state_warning}`;
+      if (job.cleanup_status === "pending") detail.textContent += ` · 索引清理待重试：${job.cleanup_error || "维护未完成，下次启动或重建时重试"}`;
+      if (job.retirement_warning) detail.textContent += ` · 历史索引连接关闭待重试：${job.retirement_warning}`;
+      if (job.stale_labels) detail.textContent += ` · ${job.stale_labels} 个评测标注失效，请到评估页核对`;
+    }
     item.append(header, detail);
     if (job.status === "indexing") item.append(jobProgress(job));
     const files = createFileDetails(job);
-    if (files) item.append(files);
+    if (files) {
+      files.open = expandedJobs.has(job.id);
+      item.append(files);
+    }
     const runtime = jobRuntime(job);
     if (runtime) item.append(runtime);
     const actions = jobActions(job);
@@ -853,7 +933,71 @@ function ingestDetail(indexedDocument) {
   return `最近一次入库：${indexedDocument.last_ingested_by}，${formatTime(indexedDocument.last_ingested_at)}`;
 }
 
+function renderMaintenance() {
+  const busy = state.jobs.some(job => job.kind === "rebuild" && ["queued", "indexing"].includes(job.status));
+  el.rebuildControls.hidden = !state.identity.isAdmin;
+  el.rebuild.disabled = busy;
+  document.querySelector("#warning-rebuild").disabled = busy;
+  el.rebuild.textContent = busy ? "索引重建中…" : "重建索引";
+  el.chooseFilesButton.disabled = busy;
+  el.chooseFolderButton.disabled = busy;
+  el.dropZone.setAttribute("aria-disabled", String(busy));
+  el.deleteSelected.disabled = busy || deleting;
+  if (busy) {
+    el.uploadPermission.hidden = false;
+    el.uploadPermission.textContent = "索引重建中，暂时不能上传、删除或修改访问组；可查看原有文档。";
+  } else renderUploadPermission();
+}
+
+function pruneSelection() {
+  const valid = new Set(state.documents.map(doc => doc.doc_id));
+  for (const id of selectedDocuments) if (!valid.has(id)) selectedDocuments.delete(id);
+  if (!state.identity.isAdmin || listMode !== "docs") selectedDocuments.clear();
+}
+
+function renderSelection() {
+  pruneSelection();
+  const count = selectedDocuments.size;
+  el.selection.hidden = !state.identity.isAdmin || listMode !== "docs";
+  el.selectionCount.textContent = `已选 ${count} 份 · 范围：当前列表全部文档（无分页）`;
+  el.selectAll.checked = state.documents.length > 0 && count === state.documents.length;
+  el.selectAll.indeterminate = count > 0 && !el.selectAll.checked;
+  el.deleteSelected.hidden = count === 0;
+  el.deleteSelected.textContent = deleting ? "删除中…" : `删除所选（${count}）`;
+  el.deleteSelected.disabled = deleting || state.jobs.some(job => job.kind === "rebuild" && ["queued", "indexing"].includes(job.status));
+}
+
+function selectDocument(id, checked) {
+  if (checked) selectedDocuments.add(id); else selectedDocuments.delete(id);
+  renderSelection();
+  const all = el.documentList.querySelector('input[data-select-all]');
+  if (all) {
+    all.checked = state.documents.length > 0 && selectedDocuments.size === state.documents.length;
+    all.indeterminate = selectedDocuments.size > 0 && !all.checked;
+  }
+}
+
+async function deleteDocuments(ids) {
+  if (deleting || !ids.length) return;
+  if (!confirm(`从知识库删除所选 ${ids.length} 份文档及索引；保留服务器原文件和解析缓存。`)) return;
+  deleting = true; renderSelection();
+  el.deleteFeedback.textContent = "删除中…";
+  try {
+    const result = await requestJson("/api/documents/delete-batch", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ knowledge_base_id: state.status?.knowledge_base_id || "default", doc_ids: ids }),
+    });
+    for (const id of result.deleted || []) selectedDocuments.delete(id);
+    el.deleteFeedback.textContent = `已删除 ${(result.deleted || []).length} 份；未找到 ${(result.not_deleted || []).length} 份；未完成 ${(result.failed || []).length} 份。${result.error || "原文件与解析缓存已保留。"}`;
+    if (result.verified === false) el.deleteFeedback.textContent = `删除结果暂无法确认：${result.error || "读取结果失败"}；请刷新核对，未确认项仍保留。`;
+    // Re-read server truth on both full and partial outcomes; never optimistically remove rows.
+    await refreshDocuments();
+  } catch (error) { el.deleteFeedback.textContent = `删除失败：${error.message}；请刷新核对，未确认删除的文档不会从列表移除`; }
+  finally { deleting = false; renderSelection(); renderMaintenance(); }
+}
+
 function renderDocuments() {
+  renderSelection();
   const canManageAccess = Boolean(state.access.manageable);
   el.listModeControls.hidden = !canManageAccess;
   const byGroup = canManageAccess && listMode === "groups";
@@ -892,6 +1036,21 @@ function renderDocuments() {
   for (const label of headers) {
     const cell = document.createElement("span");
     cell.textContent = label;
+    if (isAdmin && label === "标题") {
+      const selectAll = document.createElement("input");
+      selectAll.type = "checkbox";
+      selectAll.dataset.selectAll = "true";
+      selectAll.setAttribute("aria-label", "选择当前列表全部文档（无分页）");
+      selectAll.checked = selectedDocuments.size === state.documents.length;
+      selectAll.indeterminate = selectedDocuments.size > 0 && !selectAll.checked;
+      selectAll.addEventListener("change", () => {
+        for (const doc of state.documents) {
+          if (selectAll.checked) selectedDocuments.add(doc.doc_id); else selectedDocuments.delete(doc.doc_id);
+        }
+        renderDocuments();
+      });
+      cell.prepend(selectAll);
+    }
     head.append(cell);
   }
   table.append(head);
@@ -939,6 +1098,7 @@ function renderDocuments() {
       const remove = document.createElement("button");
       remove.type = "button";
       remove.className = "row-action";
+      remove.disabled = deleting || state.jobs.some(job => job.kind === "rebuild" && ["queued", "indexing"].includes(job.status));
       remove.title = "从向量库删除";
       remove.setAttribute("aria-label", `删除 ${title.textContent}`);
       remove.innerHTML =
@@ -947,7 +1107,18 @@ function renderDocuments() {
       actions.append(remove);
     }
 
-    row.append(title, source, chunks, strategy);
+    const titleCell = document.createElement("span");
+    titleCell.className = "doc-title-cell";
+    if (isAdmin) {
+      const check = document.createElement("input");
+      check.type = "checkbox";
+      check.checked = selectedDocuments.has(indexedDocument.doc_id);
+      check.setAttribute("aria-label", `选择 ${title.textContent}`);
+      check.addEventListener("change", () => selectDocument(indexedDocument.doc_id, check.checked));
+      titleCell.append(check);
+    }
+    titleCell.append(title);
+    row.append(titleCell, source, chunks, strategy);
     if (isAdmin) {
       row.append(ingest);
     }
@@ -982,6 +1153,7 @@ function createAccessEditor(indexedDocument) {
 
   const trigger = document.createElement("button");
   trigger.type = "button";
+  trigger.disabled = state.jobs.some(job => job.kind === "rebuild" && ["queued", "indexing"].includes(job.status));
   trigger.className = "access-editor-trigger";
   trigger.setAttribute("aria-haspopup", "dialog");
   trigger.setAttribute("aria-expanded", "false");
@@ -1148,23 +1320,7 @@ function renderGroupView() {
 }
 
 async function deleteDocument(indexedDocument) {
-  const title = indexedDocument.title || "未命名文档";
-  const confirmed = confirm(
-    `从向量库删除「${title}」的全部 ${indexedDocument.chunk_count} 个切片？\n\n` +
-      `源文件不受影响；若之后重新索引 data/raw，该文档会再次入库。`,
-  );
-  if (!confirmed) return;
-
-  try {
-    const result = await requestJson(
-      `/api/documents/${encodeURIComponent(indexedDocument.doc_id)}`,
-      { method: "DELETE" },
-    );
-    showToast(`已删除 ${result.deleted_chunks} 个切片`);
-    emit("documents:refresh");
-  } catch (error) {
-    showToast(error.message, "error");
-  }
+  await deleteDocuments([indexedDocument.doc_id]);
 }
 
 // --- document viewer ------------------------------------------------------
@@ -1415,6 +1571,15 @@ export default {
     if (mounted) return;
     mounted = true;
 
+    el.rebuild.addEventListener("click", () => requestIndexRebuild(el.rebuildForce.checked));
+    el.selectAll.addEventListener("change", () => {
+      for (const doc of state.documents) {
+        if (el.selectAll.checked) selectedDocuments.add(doc.doc_id); else selectedDocuments.delete(doc.doc_id);
+      }
+      renderDocuments();
+    });
+    el.deleteSelected.addEventListener("click", () => deleteDocuments([...selectedDocuments]));
+    on("jobs:refresh", () => { startPolling(); pollJobs(); });
     el.chooseFilesButton.addEventListener("click", openFilePicker);
     el.chooseFolderButton.addEventListener("click", openFolderPicker);
     el.dropZone.addEventListener("click", openFilePicker);
@@ -1480,7 +1645,7 @@ export default {
       renderDocuments();
     });
     on("identity", () => {
-      renderUploadPermission();
+      renderMaintenance();
       renderDocuments();
     });
     on("staging:refresh", loadStaging);
@@ -1499,11 +1664,12 @@ export default {
   },
 
   show(params) {
+    renderMaintenance();
     renderStats();
     renderUploadPermission();
     renderDocuments();
     loadStaging();
-    if (!state.polling) startPolling();
+    startPolling();
 
     if (params && params.docId) {
       openFromParams(params);

@@ -164,6 +164,7 @@ def convert_to_markdown(
     provider: str = MINERU,
     mineru_token: str = "",
     mineru_model_version: str = "vlm",
+    force_reparse: bool = False,
 ) -> str:
     """Convert one file to Markdown using the requested backend.
 
@@ -174,7 +175,7 @@ def convert_to_markdown(
     switching engines would feed the index text the caller did not ask for.
     """
 
-    cached = markdown_cache.read(file_path, provider, mineru_model_version)
+    cached = None if force_reparse else markdown_cache.read(file_path, provider, mineru_model_version)
     if cached is not None:
         return cached
 

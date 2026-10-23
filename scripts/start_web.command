@@ -19,13 +19,13 @@ CURRENT_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 python_candidates=(
   "${RAG_PYTHON:-}"
   "$PROJECT_DIR/.venv/bin/python"
-  "/opt/anaconda3/envs/langchain/bin/python"
+  "${CONDA_PREFIX:+$CONDA_PREFIX/bin/python}"
   "$(command -v python3 2>/dev/null || true)"
 )
 PYTHON=""
 for candidate in "${python_candidates[@]}"; do
   if [[ -n "$candidate" && -x "$candidate" ]] && \
-    "$candidate" -c 'import typer, langchain' >/dev/null 2>&1; then
+    "$candidate" -c 'import typer, langchain_core' >/dev/null 2>&1; then
     PYTHON="$candidate"
     break
   fi

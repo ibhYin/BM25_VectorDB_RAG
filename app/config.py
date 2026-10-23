@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     aliyun_oss_bucket: str = ""
     aliyun_oss_endpoint: str = ""
     aliyun_oss_prefix: str = ""
+    # A conservative budget, independent of the provider tokenizer.
+    embedding_max_input_bytes: int = 512
+    embedding_batch_size: int = 10
     chunk_size: int = 800
     chunk_overlap: int = 120
     retrieval_top_k: int = 20
@@ -105,6 +108,10 @@ class Settings(BaseSettings):
         if not self.audio_transcribe_base_url:
             self.audio_transcribe_base_url = self.openai_base_url
             self.audio_transcribe_api_key = self.audio_transcribe_api_key or self.openai_api_key
+        if self.embedding_max_input_bytes < 4:
+            raise ValueError("向量输入预算至少为 4 个 UTF-8 字节")
+        if not 1 <= self.embedding_batch_size <= 1000:
+            raise ValueError("向量 API 批次必须在 1–1000 之间")
         if self.chunk_size <= 0:
             raise ValueError("CHUNK_SIZE must be greater than zero")
         if not 0 <= self.chunk_overlap < self.chunk_size:
@@ -147,6 +154,11 @@ class Settings(BaseSettings):
 # without editing .env. Only these fields are accepted; everything else stays
 # env-only.
 RUNTIME_CONFIG_FIELDS = (
+    "chunk_size",
+    "chunk_overlap",
+    "embedding_max_input_bytes",
+    "embedding_batch_size",
+    "chroma_persist_dir",
     "openai_base_url",
     "openai_api_key",
     "llm_model",
@@ -204,7 +216,7 @@ def _load_runtime_overrides() -> dict[str, str]:
         value = value.strip()
         # Empty base URLs are meaningful (reuse/default); empty secrets and model
         # names are not.
-        if key in RUNTIME_CONFIG_KEEP_WHEN_EMPTY and not value:
+        if key in RUNTIME_CONFIG_KEEP_WHEN_EMPTY and not value and key != "mineru_api_token":
             continue
         overrides[key] = value
     return overrides
@@ -227,7 +239,7 @@ def get_settings() -> Settings:
     return Settings(**_RUNTIME_OVERRIDES)
 
 
-def update_runtime_config(overrides: dict[str, str]) -> Settings:
+def update_runtime_config(overrides: dict[str, str], *, section: str | None = None) -> Settings:
     """Apply UI overrides to the shared Settings instance and persist them."""
 
     unknown = set(overrides) - set(RUNTIME_CONFIG_FIELDS)
@@ -235,9 +247,16 @@ def update_runtime_config(overrides: dict[str, str]) -> Settings:
         raise ValueError(f"Unknown config fields: {', '.join(sorted(unknown))}")
 
     with _runtime_config_lock:
-        settings = get_settings()
+        live = get_settings()
+        settings = live.model_copy(deep=True)
         previous_base_url = settings.openai_base_url
         previous_api_key = settings.openai_api_key
+        overrides = dict(overrides)
+        if section == "llm":
+            # Freeze dependent saved connections; saving one section must not
+            # migrate the other sections to the new LLM gateway on restart.
+            for key in ("embedding_base_url", "embedding_api_key", "audio_transcribe_base_url", "audio_transcribe_api_key"):
+                overrides.setdefault(key, getattr(settings, key))
         for key, value in overrides.items():
             setattr(settings, key, value)
 
@@ -271,8 +290,19 @@ def update_runtime_config(overrides: dict[str, str]) -> Settings:
             settings.audio_transcribe_api_key = overrides["openai_api_key"]
 
         _apply_embedding_fallback(settings)
+        settings = Settings(_env_file=None, **{key: getattr(settings, key) for key in type(settings).model_fields})
+        previous_overrides = dict(_RUNTIME_OVERRIDES)
         _RUNTIME_OVERRIDES.update(overrides)
-        _persist_runtime_overrides()
+        try:
+            _persist_runtime_overrides()
+        except Exception:
+            _RUNTIME_OVERRIDES.clear()
+            _RUNTIME_OVERRIDES.update(previous_overrides)
+            raise
+        # Failed persistence must not alter the shared settings.
+        for field in type(settings).model_fields:
+            setattr(live, field, getattr(settings, field))
+        settings = live
     return settings
 
 
@@ -298,6 +328,10 @@ def runtime_config_view() -> dict[str, object]:
 
     settings = get_settings()
     return {
+        "chunk_size": settings.chunk_size,
+        "chunk_overlap": settings.chunk_overlap,
+        "embedding_max_input_bytes": settings.embedding_max_input_bytes,
+        "embedding_batch_size": settings.embedding_batch_size,
         "openai_base_url": settings.openai_base_url,
         "openai_api_key_set": bool(settings.openai_api_key),
         "openai_api_key_hint": _mask_secret(settings.openai_api_key),
@@ -337,3 +371,11 @@ def endpoint_credentials(target: str) -> tuple[str, str]:
     if target == "llm":
         return settings.openai_base_url, settings.openai_api_key
     return settings.embedding_base_url, settings.embedding_api_key
+
+
+CONFIG_SECTIONS = {
+    "llm": {"openai_base_url", "openai_api_key", "llm_model"},
+    "embedding": {"embedding_base_url", "embedding_api_key", "embedding_model", "chunk_size", "chunk_overlap", "embedding_max_input_bytes", "embedding_batch_size"},
+    "mineru": {"mineru_api_token", "clear_mineru_api_token", "mineru_model_version"},
+    "asr": {field for field in RUNTIME_CONFIG_FIELDS if field.startswith(("audio_", "aliyun_"))},
+}

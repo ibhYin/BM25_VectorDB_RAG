@@ -1,11 +1,11 @@
-// 模型选择控件：一个 <select>（选项来自端点的模型列表）+ 一个自由输入框
-// （端点列不出来、或想手填时用）。设置页与问答页共用。
+// 设置页与问答页共用单个可搜索模型输入框，原 select 只保存完整目录。
 //
 // 抽出来是因为这里有一堆容易分叉的细节：`__custom__` 哨兵值、端点是本地还是云端
 // 的判定、模型列表里没有当前模型时要把它补进去、端点不可达时要退回到自由输入
 // 而不是把配置卡死。复制一份迟早会两边不一样。
 
 import { requestJson } from "./core.js";
+import { enhanceSelect } from "./select-search.js";
 
 const CUSTOM_MODEL = "__custom__";
 
@@ -40,14 +40,11 @@ export function createModelPicker({
   requireBaseUrl = false,
 }) {
   let desired = "";
+  let catalog = [];
+  let requestSerial = 0;
+  const control = enhanceSelect(select, { input: custom, allowCustom: true, customValue: CUSTOM_MODEL });
 
-  function syncCustom(prefill = "") {
-    const isCustom = select.value === CUSTOM_MODEL;
-    custom.hidden = !isCustom;
-    if (isCustom) custom.value = prefill || custom.value || desired || "";
-  }
-
-  function renderSelect(models) {
+  function renderSelect(models, { preserveInput = false } = {}) {
     select.replaceChildren();
     const listed = new Set();
     for (const model of models) {
@@ -62,15 +59,8 @@ export function createModelPicker({
     }
     select.append(new Option("自定义…", CUSTOM_MODEL));
 
-    if (listed.size > 0) {
-      select.value = desired || CUSTOM_MODEL;
-      syncCustom("");
-    } else {
-      // 没有可挑的目录：给一个预填好当前模型的自由输入，而不是一个只有一项的列表
-      select.value = CUSTOM_MODEL;
-      syncCustom(desired);
-    }
-    if (select.value !== CUSTOM_MODEL) select.dataset.previous = select.value;
+    select.value = desired || CUSTOM_MODEL;
+    control.sync({ preserveInput, value: desired });
   }
 
   function renderEmpty() {
@@ -92,12 +82,12 @@ export function createModelPicker({
   }
 
   async function load({ baseUrl = "", apiKey = "" } = {}) {
+    const serial = ++requestSerial;
     const value = String(baseUrl || "").trim();
     hint.className = "config-model-hint";
     if (requireBaseUrl && !value) {
       hint.textContent = "填写请求地址后可读取模型列表";
-      renderEmpty();
-      return;
+      return { error: "请填写请求地址", count: 0 };
     }
 
     hint.textContent = "正在读取模型列表...";
@@ -110,22 +100,30 @@ export function createModelPicker({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+      if (serial !== requestSerial) return { superseded: true };
       const models = payload.models || [];
-      renderSelect(models);
+      // Refresh only the catalog; never promote an unfinished search to a selection.
+      desired = control.value();
+      if (!payload.error) {
+        catalog = models;
+        renderSelect(models, { preserveInput: document.activeElement === custom });
+      }
       if (payload.error) {
-        hint.textContent = `${payload.error}；可在「自定义…」里手动输入模型名`;
+        hint.textContent = `${payload.error}；仍可在模型框中直接输入模型名`;
         hint.classList.add("error");
       } else {
         const scopeText = payload.scope === "local" ? "本地" : "云端";
         hint.textContent = models.length
           ? `${scopeText}模型 ${models.length} 个`
-          : "该端点未提供模型列表，可在「自定义…」里手动输入";
+          : "该端点未提供模型列表，可直接输入模型名";
       }
       renderScope(value, payload.scope);
+      return { count: models.length, error: payload.error || "" };
     } catch (error) {
-      renderEmpty();
-      hint.textContent = `${error.message}；可在「自定义…」里手动输入模型名`;
+      if (serial !== requestSerial) return { superseded: true };
+      hint.textContent = `${error.message}；仍可在模型框中直接输入模型名`;
       hint.classList.add("error");
+      return { count: 0, error: error.message };
     }
   }
 
@@ -133,21 +131,13 @@ export function createModelPicker({
     /** 喂「当前保存的模型」，之后渲染列表时会把它标成当前值。 */
     setValue(model) {
       desired = String(model || "").trim();
+      renderSelect(catalog);
     },
     value() {
-      return (select.value === CUSTOM_MODEL ? custom.value : select.value).trim();
+      return control.value();
     },
-    /** 用户在下拉里改了选择：切到自定义时预填上一个选中的模型并聚焦。 */
-    syncFromSelect({ focus = false } = {}) {
-      const isCustom = select.value === CUSTOM_MODEL;
-      custom.hidden = !isCustom;
-      if (isCustom) {
-        custom.value = select.dataset.previous || desired || "";
-        if (focus) custom.focus();
-      } else {
-        select.dataset.previous = select.value;
-      }
-    },
+    /** 原生 select 的变更与单个输入框保持同步。 */
+    syncFromSelect() { control.sync(); },
     renderEmpty,
     renderScope,
     load,

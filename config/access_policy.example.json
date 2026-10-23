@@ -1,17 +1,11 @@
 {
-  "admins": ["demo-admin", "demo-reader"],
+  "admins": ["demo-admin"],
   "users": {
     "demo-admin": {"groups": []},
-    "demo-reader": {"groups": []},
-    "alice": {"groups": ["hr"]},
-    "bob": {"groups": []},
-    "carol": {"groups": ["finance"]}
+    "demo-reader": {"groups": ["engineering"]}
   },
   "knowledge_bases": {
-    "default": {"group": "public"},
-    "finance": {"group": "finance"}
+    "default": {"group": "public"}
   },
-  "documents": {
-    "replace-with-doc-id": {"groups": ["hr", "finance"]}
-  }
+  "documents": {}
 }

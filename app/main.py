@@ -61,7 +61,7 @@ def ask(
     except Exception as exc:
         console.print(f"[red]Question failed:[/red] {exc}")
         raise typer.Exit(code=1) from exc
-    console.print(result["answer"])
+    console.print(result["answer"], markup=False)
 
 
 def _fmt_number(value: object, digits: int = 3) -> str:
@@ -545,6 +545,42 @@ def _print_config_diff(before: dict, after: dict) -> None:
 
 
 @app.command()
+def maintain_indexes(
+    migrate_legacy: bool = typer.Option(False, "--migrate-legacy", help="Offline migration of the active root index; stop the web server first."),
+    failed_job: str = typer.Option("", "--failed-job", help="Explicit failed rebuild job ID for legacy candidate reconciliation."),
+    legacy_candidate: Path | None = typer.Option(None, "--legacy-candidate", help="Explicit legacy directory, paired with --failed-job after manual verification."),
+) -> None:
+    from app import indexes
+    from app.uploads import get_upload_store
+    from rag import vector_store
+
+    if bool(failed_job) != bool(legacy_candidate):
+        raise typer.BadParameter("--failed-job 与 --legacy-candidate 必须一起指定")
+    settings = get_settings()
+    try:
+        with vector_store.index_directory_lock(vector_store.INDEX_ROOT / ".service", exclusive=True):
+            store = get_upload_store()
+            indexes.recover_migration(settings, store._jobs)
+            if any(j["status"] in {"queued", "indexing"} for j in store.snapshot()):
+                raise typer.BadParameter("存在未结束任务，请先启动服务恢复任务并核对结果")
+            try:
+                if migrate_legacy:
+                    console.print(indexes.migrate_active(settings, store._jobs, store._save_locked))
+                if legacy_candidate:
+                    console.print(indexes.adopt_failed_candidate(settings, store._jobs, store._save_locked, failed_job, legacy_candidate))
+                store.maintain_indexes()
+                warnings = [j for j in store.snapshot() if j.get("cleanup_status") == "pending" or j.get("retirement_warning")]
+                console.print(f"索引维护完成；待处理 {len(warnings)} 项（原因保存在任务记录中）。")
+            finally:
+                store._executor.shutdown(wait=True)
+                vector_store.close_all_vector_stores()
+    except Exception as exc:
+        from app.rebuild import safe_error
+        console.print(f"[red]索引维护失败：[/red]{safe_error(exc, settings)}")
+        raise typer.Exit(code=1) from None
+
+
+@app.command()
 def web(
     host: str = typer.Option(
         "127.0.0.1",
@@ -560,7 +596,12 @@ def web(
     from app.web import run_web_server
 
     console.print(f"Web UI running at http://{host}:{port}")
-    run_web_server(host, port)
+    try:
+        run_web_server(host, port)
+    except Exception as exc:
+        from app.rebuild import safe_error
+        console.print(f"[red]服务启动/运行失败：[/red]{safe_error(exc, get_settings())}")
+        raise typer.Exit(code=1) from None
 
 
 if __name__ == "__main__":

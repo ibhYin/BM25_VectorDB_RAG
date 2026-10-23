@@ -2,8 +2,13 @@
 
 import { formatBytes, on, refreshStatus, requestJson, showToast, state } from "../core.js";
 import { createModelPicker } from "../model-picker.js";
+import { resetSelectSearch } from "../select-search.js";
 
 const el = {
+  chunkSize: document.querySelector("#config-chunk-size"),
+  chunkOverlap: document.querySelector("#config-chunk-overlap"),
+  embeddingMaxInputBytes: document.querySelector("#config-embedding-max-input-bytes"),
+  embeddingBatchSize: document.querySelector("#config-embedding-batch-size"),
   form: document.querySelector("#config-form"),
   status: document.querySelector("#config-status"),
   save: document.querySelector("#config-save"),
@@ -58,7 +63,7 @@ const el = {
 };
 
 let mounted = false;
-const configState = { loaded: null, models: { llm: "", embedding: "" }, clearMineruToken: false };
+const configState = { loaded: null, clearMineruToken: false };
 
 // 模型选择控件（下拉 + 自定义输入）交给共享模块。字段与提交仍归本页管，
 // picker 只负责展示——它已经被问答页复用，所以不能耦合本页的 configState。
@@ -81,37 +86,9 @@ const pickers = {
   }),
 };
 
-// --- helpers --------------------------------------------------------------
-
-function setConfigStatus(message, variant = "") {
-  el.status.textContent = message;
-  el.status.className = `config-status${variant ? ` ${variant}` : ""}`;
-}
-
-// 模型下拉/自定义框/徽章已经归 picker 管，这里只剩提交与拉列表要用的地址和密钥。
-function configTarget(target) {
-  const llm = target === "llm";
-  return {
-    baseUrl: llm ? el.openaiBaseUrl : el.embeddingBaseUrl,
-    apiKey: llm ? el.openaiApiKey : el.embeddingApiKey,
-  };
-}
-
-/** 把「当前保存的模型」告诉 picker：它不读 configState（已被问答页复用）。 */
-function syncPickers() {
-  pickers.llm.setValue(configState.models.llm);
-  pickers.embedding.setValue(configState.models.embedding);
-}
-
-async function loadModels(target) {
-  const { baseUrl, apiKey } = configTarget(target);
-  await pickers[target].load({ baseUrl: baseUrl.value, apiKey: apiKey.value });
-  renderEmbeddingStatuses();
-}
-
-// --- embedding / mineru status -------------------------------------------
-
 function renderEmbeddingStatuses() {
+  pickers.llm.renderScope(el.openaiBaseUrl.value);
+  pickers.embedding.renderScope(el.embeddingBaseUrl.value || el.openaiBaseUrl.value);
   const loaded = configState.loaded || {};
   const saved = loaded.embedding_model || "";
   el.embeddingWarning.classList.toggle(
@@ -151,9 +128,10 @@ function toggleAsrFields() {
   const provider = el.asrProvider.value;
   el.asrOpenai.hidden = provider !== "openai";
   el.asrAliyun.hidden = provider !== "aliyun";
+  for (const key of ["aliyun_access_key_id", "aliyun_access_key_secret", "aliyun_appkey", "aliyun_region", "aliyun_oss_bucket"]) {
+    fields[key].required = provider === "aliyun" && (!secretKeys.has(key) || !configState.loaded?.[`${key}_set`]);
+  }
 }
-
-// --- load / save ----------------------------------------------------------
 
 function renderIndexStatus() {
   const status = state.status || {};
@@ -176,69 +154,6 @@ function renderIndexStatus() {
     : "—";
 }
 
-async function loadConfig() {
-  setConfigStatus("正在读取当前配置...");
-  el.save.disabled = true;
-  try {
-    const config = await requestJson("/api/config");
-    configState.loaded = config;
-    el.openaiBaseUrl.value = config.openai_base_url || "";
-    el.embeddingBaseUrl.value = config.embedding_base_url || "";
-    configState.models = {
-      llm: config.llm_model || "",
-      embedding: config.embedding_model || "",
-    };
-    syncPickers();
-    el.openaiApiKey.placeholder = config.openai_api_key_set
-      ? `已配置 ${config.openai_api_key_hint} · 留空保持不变`
-      : "留空则保持不变";
-    el.embeddingApiKey.placeholder = config.embedding_api_key_set
-      ? `已配置 ${config.embedding_api_key_hint} · 留空保持不变`
-      : "留空则保持不变";
-    el.mineruVersion.value = config.mineru_model_version || "vlm";
-    el.mineruToken.placeholder = config.mineru_api_token_set
-      ? `已配置 ${config.mineru_api_token_hint} · 留空保持不变`
-      : "留空则保持不变";
-    configState.clearMineruToken = false;
-    renderMineruScope(Boolean(config.mineru_api_token_set));
-    el.asrProvider.value = config.audio_transcribe_provider || "openai";
-    el.asrBaseUrl.value = config.audio_transcribe_base_url || "";
-    el.asrModel.value = config.audio_transcribe_model || "";
-    el.asrApiKey.placeholder = config.audio_transcribe_api_key_set
-      ? `已配置 ${config.audio_transcribe_api_key_hint} · 留空保持不变`
-      : "留空则保持不变";
-    el.aliyunAkId.placeholder = config.aliyun_access_key_id_set
-      ? `已配置 ${config.aliyun_access_key_id_hint} · 留空保持不变`
-      : "留空则保持不变";
-    el.aliyunAkSecret.placeholder = config.aliyun_access_key_secret_set
-      ? `已配置 ${config.aliyun_access_key_secret_hint} · 留空保持不变`
-      : "留空则保持不变";
-    el.aliyunAppkey.placeholder = config.aliyun_appkey_set
-      ? `已配置 ${config.aliyun_appkey_hint} · 留空保持不变`
-      : "留空则保持不变";
-    el.aliyunRegion.value = config.aliyun_region || "cn-shanghai";
-    el.aliyunBucket.value = config.aliyun_oss_bucket || "";
-    el.aliyunEndpoint.value = config.aliyun_oss_endpoint || "";
-    el.aliyunPrefix.value = config.aliyun_oss_prefix || "";
-    toggleAsrFields();
-    renderAsrScope(asrConfigured(config));
-    setConfigStatus("");
-  } catch (error) {
-    setConfigStatus(error.message, "error");
-  } finally {
-    el.save.disabled = false;
-  }
-
-  pickers.llm.renderEmpty();
-  pickers.embedding.renderEmpty();
-  pickers.llm.renderScope();
-  pickers.embedding.renderScope();
-  renderEmbeddingStatuses();
-  await Promise.all([loadModels("llm"), loadModels("embedding")]);
-}
-
-// Only send fields the user actually changed; secrets are never echoed back,
-// so a blank key field always means "keep the existing key".
 function collectConfigChanges() {
   const loaded = configState.loaded || {};
   const changes = {};
@@ -297,131 +212,221 @@ function collectConfigChanges() {
   }
   const prefix = el.aliyunPrefix.value.trim();
   if (prefix !== (loaded.aliyun_oss_prefix || "")) changes.aliyun_oss_prefix = prefix;
+  for (const key of ["chunk_size", "chunk_overlap", "embedding_max_input_bytes", "embedding_batch_size"]) {
+    const value = Number(fields[key].value);
+    if (value !== Number(loaded[key])) changes[key] = value;
+  }
   return changes;
 }
 
-async function submitConfig(event) {
-  event.preventDefault();
+const fields = {
+  openai_base_url: el.openaiBaseUrl, openai_api_key: el.openaiApiKey,
+  embedding_base_url: el.embeddingBaseUrl, embedding_api_key: el.embeddingApiKey,
+  mineru_api_token: el.mineruToken, mineru_model_version: el.mineruVersion,
+  audio_transcribe_provider: el.asrProvider, audio_transcribe_base_url: el.asrBaseUrl,
+  audio_transcribe_api_key: el.asrApiKey, audio_transcribe_model: el.asrModel,
+  aliyun_access_key_id: el.aliyunAkId, aliyun_access_key_secret: el.aliyunAkSecret,
+  aliyun_appkey: el.aliyunAppkey, aliyun_region: el.aliyunRegion,
+  aliyun_oss_bucket: el.aliyunBucket, aliyun_oss_endpoint: el.aliyunEndpoint,
+  aliyun_oss_prefix: el.aliyunPrefix, chunk_size: el.chunkSize, chunk_overlap: el.chunkOverlap,
+  embedding_max_input_bytes: el.embeddingMaxInputBytes, embedding_batch_size: el.embeddingBatchSize,
+};
+const sections = {
+  llm: ["openai_base_url", "openai_api_key", "llm_model"],
+  embedding: ["embedding_base_url", "embedding_api_key", "embedding_model", "chunk_size", "chunk_overlap", "embedding_max_input_bytes", "embedding_batch_size"],
+  mineru: ["mineru_api_token", "clear_mineru_api_token", "mineru_model_version"],
+  asr: Object.keys(fields).filter(key => key.startsWith("audio_") || key.startsWith("aliyun_")),
+};
+const secretKeys = new Set(["openai_api_key", "embedding_api_key", "mineru_api_token", "audio_transcribe_api_key", "aliyun_access_key_id", "aliyun_access_key_secret", "aliyun_appkey"]);
+const actions = Object.fromEntries(Object.keys(sections).map(name => [name, {
+  save: document.querySelector(`#config-${name}-save`),
+  reset: document.querySelector(`#config-${name}-reset`),
+  status: document.querySelector(`#config-${name}-status`),
+  group: document.querySelector(`#config-section-${name}`),
+}]));
+let saving = false;
+let loading = false;
+let refreshing = false;
+const messages = {};
+
+function changesFor(name) {
   const changes = collectConfigChanges();
-  if (!Object.keys(changes).length) {
-    setConfigStatus("没有需要保存的更改");
-    return;
-  }
+  return name === "all" ? changes : Object.fromEntries(Object.entries(changes).filter(([key]) => sections[name].includes(key)));
+}
 
-  // Changing the embedding model invalidates every stored vector, and
-  // re-embedding the whole corpus is expensive: require an acknowledgement.
-  const embeddingChanged = "embedding_model" in changes;
-  if (embeddingChanged) {
-    const previous = (configState.loaded || {}).embedding_model || "未设置";
-    const confirmed = confirm(
-      `向量模型将从「${previous}」改为「${changes.embedding_model}」。\n\n` +
-        "不同模型的向量互不兼容，已入库的切片必须用新模型全部重新入库，" +
-        "否则检索结果会失效。\n\n确定要更换吗？",
-    );
-    if (!confirmed) {
-      setConfigStatus("已取消更换向量模型");
-      return;
-    }
-  }
+function message(name, text, error = false) {
+  messages[name] = { text, error };
+  const node = name === "all" ? el.status : actions[name].status;
+  node.textContent = text;
+  node.className = `config-status${error ? " error" : ""}`;
+}
 
-  el.save.disabled = true;
-  setConfigStatus("正在保存...");
+function renderActions(edited = "") {
+  for (const name of Object.keys(sections)) {
+    const dirty = configState.loaded && Object.keys(changesFor(name)).length > 0;
+    actions[name].save.disabled = !dirty || saving;
+    actions[name].reset.disabled = !dirty || saving;
+    if (edited === name || edited === "all") message(name, dirty ? "有未保存修改" : "与已保存配置一致");
+  }
+  const dirty = configState.loaded && Object.keys(changesFor("all")).length > 0;
+  el.save.disabled = !dirty || saving;
+  el.reset.disabled = !dirty || saving;
+  if (edited) message("all", dirty ? "有未保存修改" : "与已保存配置一致");
+}
+
+function applySection(name) {
+  const config = configState.loaded;
+  for (const key of sections[name]) {
+    const field = fields[key];
+    if (!field) continue;
+    if (secretKeys.has(key)) {
+      field.value = "";
+      field.placeholder = config[`${key}_set`] ? `已配置 ${config[`${key}_hint`]} · 留空保持不变` : "留空保持不变";
+    } else field.value = config[key] ?? field.defaultValue ?? "";
+  }
+  if (name === "llm" || name === "embedding") pickers[name].setValue(config[`${name === "llm" ? "llm" : "embedding"}_model`] || "");
+  for (const select of actions[name].group.querySelectorAll("select")) resetSelectSearch(select);
+  if (name === "mineru") configState.clearMineruToken = false;
+  toggleAsrFields();
+  renderMineruScope(Boolean(config.mineru_api_token_set));
+  renderAsrScope(asrConfigured(config));
+  renderEmbeddingStatuses();
+}
+
+async function loadConfig() {
+  if (loading || configState.loaded) return;
+  loading = true;
+  message("all", "正在读取配置…");
+  try {
+    configState.loaded = await requestJson("/api/config");
+    Object.keys(sections).forEach(applySection);
+    message("all", "已读取；密钥留空保持不变，MinerU 清除需单独保存本节");
+    renderActions();
+    await refreshModels();
+  } catch (error) {
+    message("all", error.message, true);
+  } finally { loading = false; }
+}
+
+function discard(name) {
+  if (saving || !configState.loaded || !Object.keys(changesFor(name)).length) return;
+  const names = name === "all" ? Object.keys(sections) : [name];
+  names.forEach(section => { applySection(section); message(section, "已恢复最近一次成功保存的值"); });
+  if (name === "all") message("all", "已恢复全部已保存值");
+  renderActions();
+}
+
+async function save(name) {
+  if (saving || !configState.loaded) return;
+  const changes = changesFor(name);
+  if (!Object.keys(changes).length) return;
+  const names = name === "all" ? Object.keys(sections) : [name];
+  if (names.some(section => ["llm", "embedding"].includes(section) && !pickers[section].value())) {
+    message(name, "请选择或填写本节的模型名", true); return;
+  }
+  const dirtyBefore = Object.fromEntries(Object.keys(sections).map(key => [key, Boolean(Object.keys(changesFor(key)).length)]));
+  const button = name === "all" ? el.save : actions[name].save;
+  if (Object.entries(changes).some(([key, value]) => secretKeys.has(key) && /[•]|\*\*\*|已配置/.test(value))) {
+    message(name, "请填写真实密钥，不能提交脱敏占位符", true); return;
+  }
+  // Validate only this section; unrelated unfinished fields must not block it.
+  if (!names.every(section => [...actions[section].group.querySelectorAll("input, select")].every(field => field.reportValidity()))) return;
+  saving = true;
+  names.forEach(section => { actions[section].group.disabled = true; });
+  button.textContent = "保存中…";
+  message(name, "保存中…");
+  renderActions();
   try {
     const config = await requestJson("/api/config", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(changes),
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...(name === "all" ? {} : { section: name }), ...changes }),
     });
+    const missed = Object.keys(changes).filter(key => !(config.updated || []).includes(key === "clear_mineru_api_token" ? "mineru_api_token" : key));
+    if (missed.length) throw new Error(`后端未确认保存：${missed.join("、")}`);
+    // Preserve other dirty sections, even if server-side endpoint fallback changed.
     configState.loaded = config;
-    configState.models = {
-      llm: config.llm_model || "",
-      embedding: config.embedding_model || "",
-    };
-    syncPickers();
-    el.openaiApiKey.value = "";
-    el.embeddingApiKey.value = "";
-    el.mineruToken.value = "";
-    el.asrApiKey.value = "";
-    el.aliyunAkId.value = "";
-    el.aliyunAkSecret.value = "";
-    el.aliyunAppkey.value = "";
-    configState.clearMineruToken = false;
-    renderMineruScope(Boolean(config.mineru_api_token_set));
-    renderAsrScope(asrConfigured(config));
-    toggleAsrFields();
-
-    // 后端回显本次真正写进去的字段；有「这次想改但没生效」的就当场暴露——
-    // 通常是前后端版本不一致（前端字段旧后端不认识）。
-    const updated = config.updated || [];
-    const missed = Object.keys(changes).filter(
-      (key) => !key.startsWith("clear_") && !updated.includes(key),
-    );
-    if (missed.length) {
-      const names = missed.join("、");
-      showToast(`部分字段未保存成功：${names}（可能前后端版本不一致）`, "error");
-      setConfigStatus(`部分字段未保存成功：${names}`);
-    } else {
-      showToast(embeddingChanged ? "已更换向量模型，请重新入库文档" : "配置已保存");
-      setConfigStatus("已保存");
+    for (const section of Object.keys(sections)) {
+      if (names.includes(section) || (!dirtyBefore[section] && !Object.keys(changesFor(section)).length)) applySection(section);
     }
+    const clock = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+    names.forEach(section => message(section, `已保存 · ${clock}`));
+    message(name, `已保存 · ${clock}${"embedding_model" in changes ? "；目标模型已保存，请重建索引" : ""}`);
     await refreshStatus();
     renderIndexStatus();
-  } catch (error) {
-    setConfigStatus(error.message, "error");
-  } finally {
-    el.save.disabled = false;
+  } catch (error) { message(name, `保存失败：${error.message}；输入已保留，可重试`, true); }
+  finally {
+    saving = false;
+    names.forEach(section => { actions[section].group.disabled = false; });
+    button.textContent = name === "all" ? "保存全部修改" : "保存本节";
+    renderActions();
   }
 }
 
-// --- view contract --------------------------------------------------------
+async function refreshModels() {
+  if (refreshing) return;
+  const feedback = document.querySelector("#config-models-feedback");
+  if ([el.openaiApiKey, el.embeddingApiKey].some(field => /[•]|\*\*\*|已配置/.test(field.value))) {
+    feedback.textContent = "刷新失败：请使用真实密钥或留空使用已保存密钥，不能提交脱敏占位符"; return;
+  }
+  refreshing = true;
+  el.refreshModels.disabled = true;
+  el.refreshModels.textContent = "刷新中…";
+  feedback.textContent = "刷新中…使用当前输入的地址与密钥；密钥留空使用已保存密钥，不保存配置。";
+  try {
+    const results = await Promise.all(["llm", "embedding"].map(target => pickers[target].load({
+      baseUrl: target === "llm" ? el.openaiBaseUrl.value : (el.embeddingBaseUrl.value.trim() || el.openaiBaseUrl.value),
+      apiKey: (target === "llm" ? el.openaiApiKey : el.embeddingApiKey).value,
+    })));
+    feedback.textContent = results.map((result, index) => `${index ? "Embedding" : "LLM"}：${result.error ? `刷新失败 ${result.error}` : `${result.count} 个模型`}`).join("；");
+    feedback.classList.toggle("error", results.some(result => result.error));
+  } catch (error) { feedback.textContent = `刷新失败：${error.message}；可重试`; }
+  finally {
+    refreshing = false;
+    el.refreshModels.disabled = false;
+    el.refreshModels.textContent = "刷新模型列表";
+    renderEmbeddingStatuses();
+    renderActions();
+  }
+}
 
 export default {
   name: "settings",
-
   mount() {
     if (mounted) return;
     mounted = true;
-
-    el.form.addEventListener("submit", submitConfig);
-    el.reset.addEventListener("click", loadConfig);
-    el.refreshModels.addEventListener("click", () => {
-      loadModels("llm");
-      loadModels("embedding");
-    });
-    el.asrProvider.addEventListener("change", () => {
-      toggleAsrFields();
-      renderAsrScope(asrConfigured(configState.loaded));
-    });
-
+    el.form.addEventListener("invalid", event => { event.target.closest("details").open = true; }, true);
+    el.form.addEventListener("submit", event => { event.preventDefault(); save("all"); });
+    el.form.addEventListener("input", event => { renderEmbeddingStatuses(); renderActions(event.target.closest("fieldset")?.id.replace("config-section-", "")); });
+    el.form.addEventListener("change", event => { toggleAsrFields(); renderActions(event.target.closest("fieldset")?.id.replace("config-section-", "")); });
+    for (const name of Object.keys(sections)) {
+      actions[name].save.addEventListener("click", () => save(name));
+      actions[name].reset.addEventListener("click", () => discard(name));
+    }
+    el.reset.addEventListener("click", () => discard("all"));
+    el.refreshModels.addEventListener("click", refreshModels);
     el.mineruClear.addEventListener("click", () => {
       configState.clearMineruToken = true;
       el.mineruToken.value = "";
-      el.mineruToken.placeholder = "保存后将清除 Token";
-      renderMineruScope(false);
+      el.mineruToken.placeholder = "保存本节后将清除 Token";
+      renderActions("mineru");
     });
     el.mineruToken.addEventListener("input", () => {
-      if (!el.mineruToken.value.trim()) return;
-      configState.clearMineruToken = false;
-      renderMineruScope(true);
+      if (el.mineruToken.value.trim()) configState.clearMineruToken = false;
+      renderActions("mineru");
     });
-
     for (const target of ["llm", "embedding"]) {
-      const { baseUrl } = configTarget(target);
-      const picker = pickers[target];
-      baseUrl.addEventListener("input", () => picker.renderScope());
-      baseUrl.addEventListener("change", () => loadModels(target));
-      picker.select.addEventListener("change", () => {
-        picker.syncFromSelect({ focus: true });
-        renderEmbeddingStatuses();
+      pickers[target].select.addEventListener("change", () => {
+        pickers[target].syncFromSelect();
+        renderEmbeddingStatuses(); renderActions(target);
       });
-      picker.custom.addEventListener("input", renderEmbeddingStatuses);
     }
-
-    on("status", renderIndexStatus);
+    on("status", status => {
+      if (status && configState.loaded) {
+        configState.loaded.index_embedding_model = status.index_embedding_model;
+        renderEmbeddingStatuses();
+      }
+      renderIndexStatus();
+    });
   },
-
-  show() {
-    renderIndexStatus();
-    loadConfig();
-  },
+  show() { renderIndexStatus(); loadConfig(); },
 };

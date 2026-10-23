@@ -1,10 +1,15 @@
 import hashlib
+import atexit
+import fcntl
+from contextlib import contextmanager
 from pathlib import Path
 from threading import Lock
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
+
+from rag.index_manifest import ensure_index_embedding_model, read_index_embedding_model
 
 
 COLLECTION_NAME = "knowledge_base"
@@ -43,6 +48,103 @@ def _delete_ids(vector_store: Chroma, ids: list[str]) -> None:
 # 创建只发生一次。
 _store_cache: dict[tuple, Chroma] = {}
 _store_cache_lock = Lock()
+INDEX_ROOT = Path("data/indexes")
+_directory_leases = {}
+_closed_directories: set[str] = set()
+_failed_closes: set[int] = set()
+
+
+@contextmanager
+def index_directory_lock(directory: Path, *, exclusive: bool = False, retire: bool = False):
+    """Cooperating web/CLI processes share leases; deletion requires exclusivity.
+
+    ponytail: local POSIX file locks cover this single-machine demo; external
+    programs bypassing these helpers must be stopped before maintenance.
+    Lock files stay outside generations and must never be unlinked while live.
+    """
+    directory = Path(directory).resolve()
+    lock_dir = INDEX_ROOT / ".locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / hashlib.sha256(str(directory).encode()).hexdigest()
+    with lock_path.open("a+") as handle:
+        try:
+            fcntl.flock(handle, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("索引目录仍被其他服务或 CLI 使用，稍后重试清理") from exc
+        try:
+            handle.seek(0)
+            if not exclusive and handle.read().strip() == "retired":
+                raise RuntimeError("索引目录已退役，请重新加载当前配置")
+            yield
+            if retire:
+                if not exclusive:
+                    raise ValueError("退役需要独占目录锁")
+                handle.seek(0)
+                handle.truncate()
+                handle.write("retired")
+                handle.flush()
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def close_vector_stores(directory: Path) -> None:
+    """Retire every config/metadata client for a directory, using public close().
+
+    The caller holds knowledge_base_lock.write() after active readers finish;
+    candidates are owned by their rebuild worker. Failed closes remain cached
+    and blocked so cleanup can retry rather than delete an open database.
+    """
+    normalized = str(Path(directory).resolve())
+    with _store_cache_lock:
+        _closed_directories.add(normalized)
+        keys = [key for key in _store_cache if str(Path(key[0]).resolve()) == normalized]
+        clients = {id(_store_cache[key]._client): _store_cache[key]._client for key in keys}
+        errors = []
+        for client in clients.values():
+            try:
+                if id(client) in _failed_closes and getattr(client, "_closed", False):
+                    raise RuntimeError("客户端上次关闭异常，需重启服务后重试清理")
+                client.close()
+            except Exception as exc:
+                _failed_closes.add(id(client))
+                errors.append(exc)
+            else:
+                _failed_closes.discard(id(client))
+        if errors:
+            raise errors[0]
+        for key in keys:
+            del _store_cache[key]
+        lease = _directory_leases.pop(normalized, None)
+        if lease is not None:
+            lease.__exit__(None, None, None)
+
+
+def close_all_vector_stores() -> None:
+    for directory in {key[0] for key in list(_store_cache)}:
+        try:
+            close_vector_stores(Path(directory))
+        except Exception:
+            pass  # Process exit leaves durable cleanup pending for next startup.
+
+
+atexit.register(close_all_vector_stores)
+
+
+@contextmanager
+def metadata_client(directory: Path):
+    """Short-lived non-embedding reads share the same cross-process lease."""
+    import chromadb
+
+    normalized = str(Path(directory).resolve())
+    with index_directory_lock(directory):
+        with _store_cache_lock:
+            if normalized in _closed_directories:
+                raise RuntimeError("索引目录已关闭，请刷新后使用当前索引")
+            client = chromadb.PersistentClient(path=normalized)
+        try:
+            yield client
+        finally:
+            client.close()
 
 
 def build_vector_id(document: Document) -> str:
@@ -63,15 +165,16 @@ def get_embeddings(
     model: str,
     embedding_api_key: str = "",
     embedding_base_url: str = "",
+    batch_size: int = 10,
 ) -> OpenAIEmbeddings:
     kwargs = {"api_key": embedding_api_key} if embedding_api_key else {}
+    kwargs["chunk_size"] = batch_size
     kwargs["request_timeout"] = 60
     kwargs["max_retries"] = 2
     if embedding_base_url:
         # ponytail: custom gateways enforce their own context limits.
         kwargs["base_url"] = embedding_base_url
         kwargs["check_embedding_ctx_length"] = False
-        kwargs["chunk_size"] = 10
     return OpenAIEmbeddings(model=model, **kwargs)
 
 
@@ -81,6 +184,9 @@ def get_vector_store(
     embedding_api_key: str = "",
     embedding_base_url: str = "",
     collection_name: str = COLLECTION_NAME,
+    *,
+    metadata_only: bool = False,
+    embedding_batch_size: int = 10,
 ) -> Chroma:
     """One long-lived Chroma client per configuration.
 
@@ -89,25 +195,43 @@ def get_vector_store(
     knowledge_base_lock 负责。
     """
 
+    persist_dir = Path(persist_dir).resolve()
+    ensure_index_embedding_model(persist_dir, embedding_model)
     key = (
         str(persist_dir),
         embedding_model,
         embedding_api_key,
         embedding_base_url,
         collection_name,
+        metadata_only,
+        embedding_batch_size,
     )
     with _store_cache_lock:
+        if str(persist_dir) in _closed_directories:
+            raise RuntimeError("索引目录已关闭，请刷新后使用当前索引")
         store = _store_cache.get(key)
         if store is None:
-            store = Chroma(
-                collection_name=collection_name,
-                embedding_function=get_embeddings(
-                    embedding_model,
-                    embedding_api_key,
-                    embedding_base_url,
-                ),
-                persist_directory=str(persist_dir),
-            )
+            lease = None
+            if str(persist_dir) not in _directory_leases:
+                lease = index_directory_lock(persist_dir)
+                lease.__enter__()
+            try:
+                store = Chroma(
+                    collection_name=collection_name,
+                    embedding_function=get_embeddings(
+                        embedding_model,
+                        embedding_api_key,
+                        embedding_base_url,
+                        embedding_batch_size,
+                    ) if not metadata_only else None,
+                    persist_directory=str(persist_dir),
+                )
+            except BaseException:
+                if lease is not None:
+                    lease.__exit__(None, None, None)
+                raise
+            if lease is not None:
+                _directory_leases[str(persist_dir)] = lease
             _store_cache[key] = store
         return store
 
@@ -120,12 +244,14 @@ def ingest_documents(
     embedding_base_url: str = "",
     rebuild: bool = False,
     knowledge_base_id: str | None = None,
+    embedding_batch_size: int = 10,
 ) -> Chroma:
     vector_store = get_vector_store(
         persist_dir,
         embedding_model,
         embedding_api_key,
         embedding_base_url,
+        embedding_batch_size=embedding_batch_size,
     )
 
     document_ids = [build_vector_id(document) for document in documents]
@@ -152,6 +278,7 @@ def replace_documents(
     embedding_api_key: str = "",
     embedding_base_url: str = "",
     knowledge_base_id: str | None = None,
+    embedding_batch_size: int = 10,
 ) -> Chroma:
     """Upsert documents and remove stale chunks after the new vectors are stored."""
 
@@ -160,6 +287,7 @@ def replace_documents(
         embedding_model,
         embedding_api_key,
         embedding_base_url,
+        embedding_batch_size=embedding_batch_size,
     )
     document_ids = [build_vector_id(document) for document in documents]
     doc_ids = sorted(
@@ -206,9 +334,10 @@ def delete_documents(
         return 0
     vector_store = get_vector_store(
         persist_dir,
-        embedding_model,
+        read_index_embedding_model(persist_dir) or embedding_model,
         embedding_api_key,
         embedding_base_url,
+        metadata_only=True,
     )
     where: dict[str, object] = {"doc_id": {"$in": unique_ids}}
     if knowledge_base_id:

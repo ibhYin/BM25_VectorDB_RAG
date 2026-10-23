@@ -142,3 +142,50 @@ def test_endpoint_credentials_resolve_per_target(runtime):
     assert runtime.endpoint_credentials("embedding")[0] == "http://127.0.0.1:11434/v1"
     with pytest.raises(ValueError):
         runtime.endpoint_credentials("ocr")
+
+
+def test_failed_persistence_keeps_live_and_saved_config(runtime, monkeypatch):
+    original = runtime.get_settings().llm_model
+    before = dict(runtime._RUNTIME_OVERRIDES)
+
+    def fail():
+        raise OSError("disk full")
+
+    monkeypatch.setattr(runtime, "_persist_runtime_overrides", fail)
+    with pytest.raises(OSError, match="disk full"):
+        runtime.update_runtime_config({"llm_model": "new-model"})
+    assert runtime.get_settings().llm_model == original
+    assert runtime._RUNTIME_OVERRIDES == before
+
+
+def test_llm_section_save_keeps_other_saved_connections_after_reload(runtime, monkeypatch):
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://old.test/v1")
+    monkeypatch.setenv("EMBEDDING_BASE_URL", "")
+    monkeypatch.setenv("AUDIO_TRANSCRIBE_BASE_URL", "")
+    runtime.get_settings.cache_clear()
+    original = runtime.runtime_config_view()
+    runtime.update_runtime_config({"openai_base_url": "https://new.test/v1"}, section="llm")
+    assert runtime.get_settings().embedding_base_url == original["embedding_base_url"]
+    assert runtime.get_settings().audio_transcribe_base_url == original["audio_transcribe_base_url"]
+    runtime.get_settings.cache_clear()
+    restored = runtime.Settings(**runtime._load_runtime_overrides())
+    assert restored.embedding_base_url == original["embedding_base_url"]
+    assert restored.audio_transcribe_base_url == original["audio_transcribe_base_url"]
+
+
+def test_invalid_split_dependency_is_not_persisted(runtime):
+    before = runtime.get_settings().chunk_overlap
+    with pytest.raises(ValueError, match="CHUNK_OVERLAP"):
+        runtime.update_runtime_config({"chunk_size": "10", "chunk_overlap": "10"})
+    assert runtime.get_settings().chunk_overlap == before
+    assert not runtime.runtime_config_path().exists()
+
+
+def test_explicit_mineru_clear_survives_restart(runtime, monkeypatch):
+    monkeypatch.setenv("MINERU_API_TOKEN", "original-env-token")
+    runtime.get_settings.cache_clear()
+    assert runtime.get_settings().mineru_api_token == "original-env-token"
+    runtime.update_runtime_config({"mineru_api_token": ""})
+    overrides = runtime._load_runtime_overrides()
+    assert overrides["mineru_api_token"] == ""
+    assert runtime.Settings(**overrides).mineru_api_token == ""
