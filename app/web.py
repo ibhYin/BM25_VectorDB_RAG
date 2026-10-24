@@ -149,6 +149,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._handle_system_stats()
         elif parsed.path == "/api/knowledge-bases":
             self._handle_knowledge_bases()
+        elif parsed.path == "/api/preferences":
+            self._handle_preferences()
         elif parsed.path == "/api/config":
             self._handle_get_config()
         elif parsed.path == "/api/audit":
@@ -197,6 +199,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._handle_login()
         elif parsed.path == "/api/logout":
             self._handle_logout()
+        elif parsed.path == "/api/preferences":
+            self._handle_preferences(update=True)
         elif parsed.path == "/api/config":
             self._handle_update_config()
         elif parsed.path == "/api/models":
@@ -310,6 +314,20 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 "vector_hits": result.get("vector_hits", []),
             }
         )
+
+    def _handle_preferences(self, update: bool = False) -> None:
+        from app.conversations import owner_of
+        from app.preferences import read_preferences, save_preferences
+
+        settings = get_settings()
+        user = self._current_user(settings)
+        try:
+            preferences = (save_preferences(owner_of(user), self._read_json(), settings)
+                           if update else read_preferences(owner_of(user), settings))
+        except ValueError as exc:
+            raise RequestError(HTTPStatus.BAD_REQUEST, "重排偏好无效，请检查开关、候选数和阈值") from exc
+        self._send_json({**preferences, "rerank_model": settings.rerank_model,
+                         "rerank_configured": bool(settings.rerank_url and settings.rerank_api_key and settings.rerank_model)})
 
     def _handle_get_config(self) -> None:
         from app.config import runtime_config_view
@@ -1424,16 +1442,16 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             )
 
         updates: dict[str, str] = {}
-        for field in ("chunk_size", "chunk_overlap", "embedding_max_input_bytes", "embedding_batch_size"):
+        for field in ("chunk_size", "chunk_overlap", "embedding_max_input_bytes", "embedding_batch_size", "rerank_pool_size"):
             if field in payload:
                 value = payload[field]
                 if isinstance(value, bool) or not isinstance(value, (str, int)) or not str(value).isdigit():
                     raise RequestError(HTTPStatus.BAD_REQUEST, f"{field} 必须为整数")
                 updates[field] = str(value)
-        for field in ("openai_base_url", "embedding_base_url"):
+        for field in ("openai_base_url", "embedding_base_url", "rerank_url"):
             if field in payload:
                 updates[field] = cls._clean_base_url(payload[field], field)
-        for field in ("openai_api_key", "embedding_api_key"):
+        for field in ("openai_api_key", "embedding_api_key", "rerank_api_key"):
             if field not in payload:
                 continue
             value = payload[field]
@@ -1443,11 +1461,32 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             # An empty key means "keep the existing one": the UI never echoes secrets.
             if value:
                 updates[field] = value
-        for field in ("llm_model", "embedding_model"):
+        for field in ("llm_model", "embedding_model", "rerank_model"):
             if field in payload:
                 value = cls._clean_model_name(payload[field], field)
                 if value:
                     updates[field] = value
+        for field in ("rerank_enabled", "rerank_score_filter_enabled"):
+            if field in payload:
+                if not isinstance(payload[field], bool):
+                    raise RequestError(HTTPStatus.BAD_REQUEST, f"{field} 必须为布尔值")
+                updates[field] = str(payload[field]).lower()
+        for field in ("rerank_timeout", "rerank_score_threshold"):
+            if field in payload:
+                value = payload[field]
+                if field == "rerank_score_threshold" and value in (None, ""):
+                    updates[field] = ""
+                else:
+                    try:
+                        if isinstance(value, bool):
+                            raise ValueError()
+                        number = float(value)
+                        import math
+                        if not math.isfinite(number):
+                            raise ValueError()
+                    except (ValueError, TypeError):
+                        raise RequestError(HTTPStatus.BAD_REQUEST, f"{field} 必须为有限数值")
+                    updates[field] = str(number)
         if "mineru_api_token" in payload:
             value = payload["mineru_api_token"]
             if not isinstance(value, str):

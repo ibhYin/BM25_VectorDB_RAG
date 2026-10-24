@@ -40,3 +40,5 @@ reports/
 *.pid
 *.key
 *.pem
+
+config/user_preferences.json

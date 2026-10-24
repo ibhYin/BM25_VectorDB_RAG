@@ -62,6 +62,18 @@ def test_update_rejects_unknown_fields(runtime):
         runtime.update_runtime_config({"retrieval_top_k": "5"})
 
 
+def test_rerank_config_survives_reload_without_inheriting_chat_credentials(runtime):
+    updates = {"rerank_api_key": "fake-rerank-key", "rerank_pool_size": "70",
+               "rerank_timeout": "12", "rerank_score_threshold": "0.2"}
+    runtime.update_runtime_config(updates, section="rerank")
+    runtime.update_runtime_config({"openai_api_key": "different-chat-key"}, section="llm")
+    reloaded = runtime.Settings(_env_file=None, **runtime._load_runtime_overrides())
+    assert reloaded.rerank_api_key == "fake-rerank-key"
+    assert reloaded.rerank_pool_size == 70 and reloaded.rerank_timeout == 12
+    assert not reloaded.rerank_enabled and not reloaded.rerank_score_filter_enabled
+    assert reloaded.rerank_score_threshold == .2
+
+
 def test_config_view_masks_secrets(runtime):
     runtime.update_runtime_config({"openai_api_key": "sk-abcdefgh1234"})
 

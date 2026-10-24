@@ -5,7 +5,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Literal
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     fusion_alpha: float = 0.5
     candidate_pool_size: int = 100
     similarity_threshold: float = 0.35
+    rerank_url: str = "https://api.siliconflow.cn/v1/rerank"
+    rerank_api_key: str = ""
+    rerank_model: str = "BAAI/bge-reranker-v2-m3"
+    rerank_enabled: bool = False
+    rerank_pool_size: int = Field(default=50, ge=1, le=500)
+    rerank_timeout: float = Field(default=10, ge=1, le=60, allow_inf_nan=False)
+    rerank_score_filter_enabled: bool = False
+    rerank_score_threshold: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
     # 聚合统计（语义归类计数）默认参数。
     aggregate_sample_size: int = 200
     aggregate_batch_size: int = 10
@@ -75,6 +83,9 @@ class Settings(BaseSettings):
     )
 
     @field_validator(
+        "rerank_url",
+        "rerank_api_key",
+        "rerank_model",
         "openai_api_key",
         "openai_base_url",
         "llm_model",
@@ -100,8 +111,24 @@ class Settings(BaseSettings):
     def strip_strings(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
 
+    @field_validator("rerank_score_threshold", mode="before")
+    @classmethod
+    def empty_rerank_threshold(cls, value: object) -> object:
+        return None if value == "" else value
+
+    @field_validator("rerank_url")
+    @classmethod
+    def validate_rerank_url(cls, value: str) -> str:
+        from urllib.parse import urlsplit
+        parsed = urlsplit(value)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("重排地址必须为不含凭据、查询参数和片段的完整 HTTP(S) 地址")
+        return value
+
     @model_validator(mode="after")
     def validate_ranges(self) -> "Settings":
+        if self.rerank_score_filter_enabled and self.rerank_score_threshold is None:
+            raise ValueError("开启重排分数过滤时必须填写阈值")
         if not self.embedding_base_url:
             self.embedding_base_url = self.openai_base_url
             self.embedding_api_key = self.embedding_api_key or self.openai_api_key
@@ -153,7 +180,13 @@ class Settings(BaseSettings):
 # Runtime overrides let the Web UI change model endpoints, models and keys
 # without editing .env. Only these fields are accepted; everything else stays
 # env-only.
+RERANK_CONFIG_FIELDS = (
+    "rerank_url", "rerank_api_key", "rerank_model", "rerank_enabled",
+    "rerank_pool_size", "rerank_timeout", "rerank_score_filter_enabled", "rerank_score_threshold",
+)
+
 RUNTIME_CONFIG_FIELDS = (
+    *RERANK_CONFIG_FIELDS,
     "chunk_size",
     "chunk_overlap",
     "embedding_max_input_bytes",
@@ -182,6 +215,8 @@ RUNTIME_CONFIG_FIELDS = (
 # Empty means "keep what is already there": the UI never echoes secrets back,
 # and a blank model picker must not silently erase the configured model.
 RUNTIME_CONFIG_KEEP_WHEN_EMPTY = (
+    "rerank_api_key",
+    "rerank_model",
     "openai_api_key",
     "embedding_api_key",
     "llm_model",
@@ -328,6 +363,9 @@ def runtime_config_view() -> dict[str, object]:
 
     settings = get_settings()
     return {
+        **{key: getattr(settings, key) for key in RERANK_CONFIG_FIELDS if key != "rerank_api_key"},
+        "rerank_api_key_set": bool(settings.rerank_api_key),
+        "rerank_api_key_hint": "已配置" if settings.rerank_api_key else "",
         "chunk_size": settings.chunk_size,
         "chunk_overlap": settings.chunk_overlap,
         "embedding_max_input_bytes": settings.embedding_max_input_bytes,
@@ -374,6 +412,7 @@ def endpoint_credentials(target: str) -> tuple[str, str]:
 
 
 CONFIG_SECTIONS = {
+    "rerank": set(RERANK_CONFIG_FIELDS),
     "llm": {"openai_base_url", "openai_api_key", "llm_model"},
     "embedding": {"embedding_base_url", "embedding_api_key", "embedding_model", "chunk_size", "chunk_overlap", "embedding_max_input_bytes", "embedding_batch_size"},
     "mineru": {"mineru_api_token", "clear_mineru_api_token", "mineru_model_version"},

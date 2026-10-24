@@ -14,6 +14,7 @@ os.environ.setdefault("CONVERSATIONS_FILE", os.devnull)
 os.environ.setdefault("MARKDOWN_CACHE_DIR", os.devnull)
 # And the retrieval evaluation set — a test must never append to real labels.
 os.environ.setdefault("RETRIEVAL_EVAL_FILE", os.devnull)
+os.environ.setdefault("USER_PREFERENCES_FILE", os.devnull)
 
 
 @pytest.fixture(autouse=True)
@@ -26,4 +27,5 @@ def disable_default_access_policy(monkeypatch, tmp_path):
     monkeypatch.setenv("CONVERSATIONS_FILE", str(tmp_path / "conversations.json"))
     monkeypatch.setenv("MARKDOWN_CACHE_DIR", str(tmp_path / "markdown-cache"))
     monkeypatch.setenv("RETRIEVAL_EVAL_FILE", str(tmp_path / "retrieval_eval.jsonl"))
+    monkeypatch.setenv("USER_PREFERENCES_FILE", str(tmp_path / "preferences.json"))
     monkeypatch.setattr("rag.vector_store.INDEX_ROOT", tmp_path / "indexes")
