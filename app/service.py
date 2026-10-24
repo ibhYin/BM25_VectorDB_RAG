@@ -1,4 +1,8 @@
+import logging
+import re
+import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +41,9 @@ from rag.vector_store import (
     replace_documents,
     set_document_access_group,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class KnowledgeBaseLock:
@@ -1042,6 +1049,57 @@ def _access_context(
     return access_policy, access_filter
 
 
+def _safe_diagnostic_id(value: object) -> str:
+    text = str(value or "")
+    return text if re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", text) else ""
+
+
+def _recall_failure(path: str, phase: str, exc: Exception, settings: Settings) -> dict[str, object]:
+    from app.rebuild import safe_error
+
+    response = getattr(exc, "response", None)
+    status_code = getattr(exc, "status_code", None)
+    if not isinstance(status_code, int):
+        status_code = getattr(response, "status_code", None)
+    if not isinstance(status_code, int):
+        status_code = None
+    headers = getattr(response, "headers", {}) or {}
+    provider_request_id = _safe_diagnostic_id(
+        getattr(exc, "request_id", "")
+        or headers.get("x-request-id", "")
+        or headers.get("request-id", "")
+        or headers.get("x-siliconcloud-trace-id", "")
+    )
+    message = safe_error(exc, settings)
+    lowered = f"{exc.__class__.__name__} {message}".lower()
+    if status_code in (401, 403):
+        hint = "检查 Embedding API Key、模型权限和请求地址"
+    elif status_code == 429:
+        hint = "检查服务额度或限流，稍后重试"
+    elif status_code is not None and status_code >= 500:
+        hint = "Embedding 服务暂时不可用，稍后重试"
+    elif "timeout" in lowered or "timed out" in lowered or "connection" in lowered:
+        hint = "检查网络、Embedding 服务地址和超时设置"
+    elif "索引由" in message or "embedding model" in lowered:
+        hint = "核对索引向量模型；必要时切回原模型或重建索引"
+    elif path == "bm25":
+        hint = "检查索引目录与 SQLite/Chroma 文件状态，必要时重建索引"
+    else:
+        hint = "检查索引状态和服务日志后重试"
+    return {
+        "status": "failed",
+        "stage": phase,
+        "error_type": exc.__class__.__name__,
+        "error_message": message,
+        "error_code": _safe_diagnostic_id(getattr(exc, "code", "")),
+        "http_status": status_code,
+        "provider_request_id": provider_request_id,
+        "retryable": bool(status_code in (408, 409, 429) or (status_code or 0) >= 500
+                          or "timeout" in lowered or "connection" in lowered),
+        "hint": hint,
+    }
+
+
 def _retrieve_locked(
     question: str,
     settings: Settings,
@@ -1077,6 +1135,9 @@ def _retrieve_locked(
     trace: dict[str, object] | None = None
     vector_ms: int | None = None
     bm25_ms: int | None = None
+    vector_candidate_count: int | None = None
+    bm25_candidate_count: int | None = None
+    recall_detail: dict[str, object] | None = None
 
     if method == "bm25":
         report("encode", "skipped", retrieval_method=method)
@@ -1104,60 +1165,161 @@ def _retrieve_locked(
             ),
             top_k,
         )
-        embeddings = get_embeddings(
-            settings.embedding_model,
-            settings.embedding_api_key,
-            settings.embedding_base_url,
-        )
-        vector_store = get_vector_store(
-            settings.chroma_persist_dir,
-            settings.embedding_model,
-            settings.embedding_api_key,
-            settings.embedding_base_url,
-        )
-
         report("encode", "running", model=settings.embedding_model)
-        started = perf_counter()
-        query_embedding = embeddings.embed_query(question)
-        report(
-            "encode",
-            "completed",
-            model=settings.embedding_model,
-            dimensions=len(query_embedding),
-            duration_ms=round((perf_counter() - started) * 1000),
-            vector_preview=[round(value, 6) for value in query_embedding[:8]],
-        )
-
         report(
             "vector_search",
             "running",
             top_k=top_k,
             retrieval_method=method,
             pool=effective_pool,
+            parallel=True,
         )
+        recall_id = uuid.uuid4().hex
         started = perf_counter()
-        if access_filter is None:
-            matches = vector_store.similarity_search_by_vector_with_relevance_scores(
-                query_embedding, k=effective_pool
-            )
-        else:
-            matches = vector_store.similarity_search_by_vector_with_relevance_scores(
-                query_embedding, k=effective_pool, filter=access_filter
-            )
-        vector_hits = build_vector_hits(matches)
-        vector_ms = round((perf_counter() - started) * 1000)
 
-        # 关键词路必须独立检索全库：只在向量候选里打分，关键词独有结果永远召不回。
-        bm25_started = perf_counter()
-        bm25_hits = search_bm25(
-            question,
-            settings.chroma_persist_dir,
-            effective_pool,
-            settings.knowledge_base_id,
-            user,
-            access_policy,
-        )
-        bm25_ms = round((perf_counter() - bm25_started) * 1000)
+        def vector_recall() -> dict[str, object]:
+            path_started = perf_counter()
+            phase = "embedding_setup"
+            encode_detail = None
+            query_ms = None
+            try:
+                embeddings = get_embeddings(
+                    settings.embedding_model,
+                    settings.embedding_api_key,
+                    settings.embedding_base_url,
+                )
+                vector_store = get_vector_store(
+                    settings.chroma_persist_dir,
+                    settings.embedding_model,
+                    settings.embedding_api_key,
+                    settings.embedding_base_url,
+                )
+                phase = "embedding"
+                encode_started = perf_counter()
+                query_embedding = embeddings.embed_query(question)
+                encode_detail = {
+                    "model": settings.embedding_model,
+                    "dimensions": len(query_embedding),
+                    "duration_ms": round((perf_counter() - encode_started) * 1000),
+                    "vector_preview": [round(value, 6) for value in query_embedding[:8]],
+                }
+                phase = "vector_query"
+                query_started = perf_counter()
+                if access_filter is None:
+                    matches = vector_store.similarity_search_by_vector_with_relevance_scores(
+                        query_embedding, k=effective_pool
+                    )
+                else:
+                    matches = vector_store.similarity_search_by_vector_with_relevance_scores(
+                        query_embedding, k=effective_pool, filter=access_filter
+                    )
+                path_hits = build_vector_hits(matches)
+                query_ms = round((perf_counter() - query_started) * 1000)
+                return {
+                    "status": "completed", "hits": path_hits,
+                    "elapsed_ms": round((perf_counter() - path_started) * 1000),
+                    "vector_ms": query_ms, "encode_detail": encode_detail,
+                }
+            except Exception as exc:
+                return {
+                    "status": "failed", "hits": [],
+                    "elapsed_ms": round((perf_counter() - path_started) * 1000),
+                    "vector_ms": query_ms, "encode_detail": encode_detail,
+                    "error": _recall_failure("vector", phase, exc, settings),
+                }
+
+        def bm25_recall() -> dict[str, object]:
+            path_started = perf_counter()
+            try:
+                path_hits = search_bm25(
+                    question,
+                    settings.chroma_persist_dir,
+                    effective_pool,
+                    settings.knowledge_base_id,
+                    user,
+                    access_policy,
+                )
+                return {
+                    "status": "completed", "hits": path_hits,
+                    "elapsed_ms": round((perf_counter() - path_started) * 1000),
+                }
+            except Exception as exc:
+                return {
+                    "status": "failed", "hits": [],
+                    "elapsed_ms": round((perf_counter() - path_started) * 1000),
+                    "error": _recall_failure("bm25", "bm25_index", exc, settings),
+                }
+
+        results: dict[str, dict[str, object]] = {}
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="rag-recall") as executor:
+            futures = {
+                executor.submit(vector_recall): "vector",
+                executor.submit(bm25_recall): "bm25",
+            }
+            for future in as_completed(futures):
+                results[futures[future]] = future.result()
+
+        wall_ms = round((perf_counter() - started) * 1000)
+        vector_result = results["vector"]
+        bm25_result = results["bm25"]
+        vector_hits = list(vector_result.get("hits") or [])
+        bm25_hits = list(bm25_result.get("hits") or [])
+        vector_ms = vector_result.get("vector_ms")
+        bm25_ms = bm25_result["elapsed_ms"]
+
+        encode_detail = vector_result.get("encode_detail")
+        if encode_detail:
+            report("encode", "completed", **encode_detail)
+        else:
+            error = vector_result.get("error") or {}
+            error_detail = {key: value for key, value in error.items() if key not in {"status", "stage"}}
+            if error.get("stage"):
+                error_detail["failure_stage"] = error["stage"]
+            report("encode", "degraded", model=settings.embedding_model,
+                   duration_ms=vector_result["elapsed_ms"], **error_detail)
+
+        succeeded_paths = [path for path in ("vector", "bm25") if results[path]["status"] == "completed"]
+        failed_paths = [path for path in ("vector", "bm25") if results[path]["status"] == "failed"]
+        recall_status = "failed" if not succeeded_paths else "degraded" if failed_paths else "completed"
+        routes = {}
+        for path, result in results.items():
+            route = {
+                "status": result["status"],
+                "elapsed_ms": result["elapsed_ms"],
+                "count": len(result.get("hits") or []),
+            }
+            if result.get("error"):
+                route["error"] = result["error"]
+            routes[path] = route
+        recall_detail = {
+            "recall_id": recall_id,
+            "status": recall_status,
+            "parallel": True,
+            "wall_ms": wall_ms,
+            "succeeded_paths": succeeded_paths,
+            "failed_paths": failed_paths,
+            "routes": routes,
+        }
+
+        vector_candidate_count = len(vector_hits) if vector_result["status"] == "completed" else None
+        bm25_candidate_count = len(bm25_hits) if bm25_result["status"] == "completed" else None
+
+        if recall_status == "failed":
+            report(
+                "vector_search", "failed", top_k=top_k, retrieval_method=method,
+                matches=0, pool=effective_pool, duration_ms=wall_ms,
+                vector_candidates=None, bm25_candidates=None,
+                recall_detail=recall_detail, vector_hits=[],
+            )
+            failures = "；".join(
+                f"{name}：{results[path]['error']['error_message']}"
+                for path, name in (("vector", "向量"), ("bm25", "BM25"))
+                if results[path]["status"] == "failed"
+            )
+            logger.warning("Hybrid recall failed: %s", recall_detail)
+            raise RuntimeError(f"双路召回均失败；{failures}")
+        if recall_status == "degraded":
+            logger.warning("Hybrid recall degraded: %s", recall_detail)
 
         if fusion_method == "weighted":
             fused = weighted_fuse_paths(vector_hits, bm25_hits, alpha=fusion_alpha)
@@ -1169,6 +1331,8 @@ def _retrieve_locked(
         final_ranks = {str(hit["chunk_id"]): int(hit["rank"]) for hit in hits}
         trace = {
             "method": "hybrid",
+            "parallel": True,
+            "recall_status": recall_status,
             "fusion": {
                 "method": fusion_method,
                 "k": fusion_k if fusion_method == "rrf" else None,
@@ -1238,7 +1402,7 @@ def _retrieve_locked(
 
     report(
         "vector_search",
-        "completed",
+        recall_detail["status"] if recall_detail else "completed",
         top_k=top_k,
         retrieval_method=method,
         matches=len(hits),
@@ -1249,15 +1413,16 @@ def _retrieve_locked(
         fusion_method=fusion_method if method == "hybrid" else None,
         fusion_k=fusion_k if method == "hybrid" else None,
         fusion_alpha=fusion_alpha if method == "hybrid" else None,
-        vector_candidates=recall,
+        vector_candidates=vector_candidate_count if method == "hybrid" else recall,
         bm25_candidates=(
-            len(bm25_hits) if method == "hybrid"
+            bm25_candidate_count if method == "hybrid"
             else len(hits) if method == "bm25"
             else None
         ),
         union_candidates=len(fused) if method == "hybrid" else None,
         vector_ms=vector_ms,
         bm25_ms=bm25_ms,
+        recall_detail=recall_detail,
         retrieval_trace=trace,
         vector_hits=hits,
     )

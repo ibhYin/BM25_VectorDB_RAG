@@ -119,6 +119,19 @@
             </div>
           </div>
 
+          <section id="retrieval-warning" class="retrieval-warning" role="alert" aria-labelledby="retrieval-warning-title" hidden>
+            <span class="retrieval-warning-mark" aria-hidden="true">!</span>
+            <div class="retrieval-warning-copy">
+              <strong id="retrieval-warning-title">检索降级</strong>
+              <span id="retrieval-warning-message"></span>
+            </div>
+            <div class="retrieval-warning-actions">
+              <button id="retrieval-diagnostic-toggle" class="ghost-button" type="button" aria-expanded="false" aria-controls="retrieval-diagnostic">查看诊断</button>
+              <button id="retrieval-diagnostic-copy" class="ghost-button" type="button">复制诊断</button>
+            </div>
+            <pre id="retrieval-diagnostic" class="retrieval-diagnostic" tabindex="0" hidden></pre>
+          </section>
+
           <div class="chat-stream" id="chat-stream" aria-live="polite">
             <div class="empty-chat">
               <span class="empty-mark" aria-hidden="true">RAG</span>

@@ -203,6 +203,9 @@ function renderSummary(payload) {
     const hint = document.createElement("p");
     hint.className = "section-hint";
     hint.textContent = "一道题都没标注，没有可报告的数字。展开题目、勾选相关切片再保存。";
+    if (payload.performance?.recall_degraded) {
+      hint.textContent += ` 本次有 ${payload.performance.recall_degraded} 次混合检索发生单路降级。`;
+    }
     el.summary.append(hint);
     return;
   }
@@ -229,6 +232,9 @@ function renderSummary(payload) {
   note.textContent =
     `已标注 ${payload.labelled} / ${payload.total} 道题（未标注的不计入指标）。`
     + (payload.stale_total ? ` 另有 ${payload.stale_total} 条失效标注已剔除。` : "")
+    + (payload.performance?.recall_degraded
+      ? ` 有 ${payload.performance.recall_degraded} 次混合检索发生单路降级，指标不等同完整双路融合。`
+      : "")
     + " Recall@K 是下界——人工标注必然标不全，判断好坏以 Hit@K 与 MRR 为准。";
   el.summary.append(table, note);
 }

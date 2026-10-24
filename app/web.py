@@ -833,6 +833,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                         "stale": row["stale"],
                         "elapsed_ms": round(row["elapsed"] * 1000, 1),
                         "rerank": row.get("rerank") or {},
+                        "recall": row.get("recall") or {},
                     }
                     for row in batch["rows"]
                 ],

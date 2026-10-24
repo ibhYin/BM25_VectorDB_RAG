@@ -446,7 +446,11 @@ def eval_run(
     console.print(summary)
     performance = batch.get("performance") or {}
     if performance.get("p95_latency_ms") is not None:
-        console.print(f"P95 {performance['p95_latency_ms']:.0f} ms · 重排回退 {performance['rerank_fallbacks']} 次")
+        console.print(
+            f"P95 {performance['p95_latency_ms']:.0f} ms · "
+            f"检索降级 {performance.get('recall_degraded', 0)} 次 · "
+            f"重排回退 {performance['rerank_fallbacks']} 次"
+        )
 
 
 @eval_app.command("compare")

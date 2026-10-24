@@ -46,6 +46,12 @@ const el = {
   retrievalStages: document.querySelector("#retrieval-stages"),
   retrievalCount: document.querySelector("#retrieval-count"),
   retrievalToggle: document.querySelector("#retrieval-toggle"),
+  retrievalWarning: document.querySelector("#retrieval-warning"),
+  retrievalWarningTitle: document.querySelector("#retrieval-warning-title"),
+  retrievalWarningMessage: document.querySelector("#retrieval-warning-message"),
+  retrievalDiagnosticToggle: document.querySelector("#retrieval-diagnostic-toggle"),
+  retrievalDiagnosticCopy: document.querySelector("#retrieval-diagnostic-copy"),
+  retrievalDiagnostic: document.querySelector("#retrieval-diagnostic"),
   kbPicker: document.querySelector(".kb-picker"),
   kbStatus: document.querySelector("#kb-status"),
   kbMenu: document.querySelector("#kb-menu"),
@@ -71,6 +77,8 @@ let retrievalPreferences = null;
 let retrievalPreferencesEpoch = 0;
 let preferencesSaving = false;
 let preferencesDirty = false;
+let retrievalWarningKey = "";
+let retrievalDiagnosticValue = "";
 
 // 流式答案：轮询期间不断把 job 里的增量答案重渲染进同一个 article。
 let streamingAnswerEl = null;
@@ -243,6 +251,13 @@ function setWorkspaceMode(mode) {
   document.querySelector("#mode-aggregate").setAttribute("aria-pressed", String(aggregate));
   document.querySelector("#aggregate-workspace").hidden = !aggregate;
   el.chatStream.hidden = aggregate;
+  if (aggregate) {
+    el.retrievalWarning.hidden = true;
+    el.retrievalDiagnostic.hidden = true;
+    retrievalWarningKey = "";
+  } else if (mounted) {
+    renderRetrieval();
+  }
   document.querySelector(".ask-head h2").textContent = aggregate ? "样本归类统计" : "问答";
   el.runStatus.hidden = aggregate;
   el.clearChatButton.hidden = aggregate;
@@ -626,6 +641,91 @@ function fusionNote(retrieval) {
   return `RRF k=${k ?? "—"}：只按两路名次组合，缺席路贡献为零，分数不能与相似度/BM25 比较。${next}`;
 }
 
+const RECALL_PATH_LABELS = { vector: "向量", bm25: "BM25" };
+
+function retrievalRecallSummary(retrieval) {
+  const recall = retrieval?.recall_detail;
+  if (recall?.status !== "degraded") return null;
+  const failedPath = (recall.failed_paths || [])[0];
+  const succeededPath = (recall.succeeded_paths || [])[0];
+  if (!failedPath || !succeededPath) return null;
+  const failedLabel = RECALL_PATH_LABELS[failedPath] || failedPath;
+  const succeededLabel = RECALL_PATH_LABELS[succeededPath] || succeededPath;
+  const routeError = recall.routes?.[failedPath]?.error || {};
+  const impact = failedPath === "vector"
+    ? "回答可能缺少语义相关内容"
+    : "回答可能缺少关键词精确匹配结果";
+  const hint = routeError.hint ? `排查建议：${routeError.hint}。` : "";
+  return {
+    failedPath,
+    succeededPath,
+    title: `检索降级：仅 ${succeededLabel}`,
+    message: `${failedLabel}召回失败，本次仅使用 ${succeededLabel}结果，${impact}。${hint}`,
+  };
+}
+
+function retrievalDiagnosticText(retrieval) {
+  const recall = retrieval?.recall_detail || {};
+  const routeFields = ["status", "elapsed_ms", "count"];
+  const errorFields = [
+    "stage", "error_type", "error_message", "error_code", "http_status",
+    "provider_request_id", "retryable", "hint",
+  ];
+  const routes = {};
+  for (const path of ["vector", "bm25"]) {
+    const route = recall.routes?.[path];
+    if (!route) continue;
+    const safeRoute = Object.fromEntries(routeFields
+      .filter(key => route[key] !== undefined && route[key] !== null && route[key] !== "")
+      .map(key => [key, route[key]]));
+    if (route.error) {
+      safeRoute.error = Object.fromEntries(errorFields
+        .filter(key => route.error[key] !== undefined && route.error[key] !== null && route.error[key] !== "")
+        .map(key => [key, route.error[key]]));
+    }
+    routes[path] = safeRoute;
+  }
+  const diagnostic = {
+    stage: "retrieval",
+    task_id: retrieval?.task_id || "",
+    recall_id: recall.recall_id || "",
+    status: recall.status || "",
+    parallel: recall.parallel === true,
+    wall_ms: recall.wall_ms ?? null,
+    succeeded_paths: recall.succeeded_paths || [],
+    failed_paths: recall.failed_paths || [],
+    routes,
+  };
+  return JSON.stringify(diagnostic, null, 2);
+}
+
+function renderRetrievalWarning(source) {
+  const summary = workspaceMode === "ask" ? retrievalRecallSummary(source.retrieval) : null;
+  const key = summary
+    ? JSON.stringify([source.key, source.retrieval.recall_detail?.recall_id,
+      source.retrieval.recall_detail?.status, summary.failedPath])
+    : "";
+  if (!summary) {
+    retrievalWarningKey = "";
+    retrievalDiagnosticValue = "";
+    el.retrievalWarning.hidden = true;
+    el.retrievalDiagnostic.hidden = true;
+    el.retrievalDiagnosticToggle.setAttribute("aria-expanded", "false");
+    return;
+  }
+  el.retrievalWarning.hidden = false;
+  el.retrievalWarningTitle.textContent = summary.title;
+  el.retrievalWarningMessage.textContent = summary.message;
+  if (key !== retrievalWarningKey) {
+    retrievalWarningKey = key;
+    retrievalDiagnosticValue = retrievalDiagnosticText(source.retrieval);
+    el.retrievalDiagnostic.textContent = retrievalDiagnosticValue;
+    el.retrievalDiagnostic.hidden = true;
+    el.retrievalDiagnosticToggle.textContent = "查看诊断";
+    el.retrievalDiagnosticToggle.setAttribute("aria-expanded", "false");
+  }
+}
+
 const RERANK_DIAGNOSTIC_FIELDS = [
   "status", "reason", "model", "pool_size", "input_count", "output_count",
   "filtered_count", "score_filter_enabled", "score_threshold", "elapsed_ms",
@@ -692,6 +792,21 @@ function buildStages(method, source, trace, hits) {
 
   if (method === "hybrid") {
     const candidates = trace && Array.isArray(trace.candidates) ? trace.candidates : null;
+    const recall = retrieval.recall_detail || {};
+    const routes = recall.routes || {};
+    const degraded = recall.status === "degraded";
+    const parallelTiming = recall.parallel
+      ? `两路并行：向量 ${routes.vector?.elapsed_ms ?? "—"} ms / BM25 ${routes.bm25?.elapsed_ms ?? "—"} ms，整体 ${recall.wall_ms ?? "—"} ms。`
+      : "";
+    const routeIssue = (path) => {
+      const error = routes[path]?.error || {};
+      return [error.error_message || "未提供错误详情", error.hint ? `建议：${error.hint}` : ""]
+        .filter(Boolean).join("；");
+    };
+    const routeDiagnostic = (path) => {
+      const error = routes[path]?.error;
+      return error ? { ...error, recall_id: recall.recall_id, task_id: retrieval.task_id } : null;
+    };
     const vectorRows = (candidates
       ? candidates.filter((item) => item.vector_rank != null)
       : hits.filter((hit) => hit.vector_rank != null)
@@ -711,6 +826,8 @@ function buildStages(method, source, trace, hits) {
       ? ""
       : " 历史候选明细未保存；下方仅展示最终结果中可追溯的条目，不代表完整召回池。";
     const fusionRows = reranking && candidates ? candidates : hits;
+    const vectorFailed = routes.vector?.status === "failed";
+    const bm25Failed = routes.bm25?.status === "failed";
     const fusionScore = (row) => {
       const method = trace?.fusion?.method || retrieval.fusion_method;
       if (method === "weighted") return `加权 ${fmt(row.weighted_score)}`;
@@ -720,11 +837,16 @@ function buildStages(method, source, trace, hits) {
       {
         key: "vector",
         index: "①",
-        title: "向量召回",
-        stat: vectorCount != null ? `${vectorCount} 条` : vectorRows.length ? "总数未记录" : "未记录",
-        empty: vectorCount === 0 ? "向量这一路没有命中" : "历史召回明细未保存，无法还原候选列表",
-        note: `按 L2 距离换算分排序，是候选来源之一。${historyNote}`,
+        title: vectorFailed ? "向量召回（失败）" : "向量召回",
+        status: routes.vector?.status,
+        stat: vectorFailed ? "失败" : vectorCount != null ? `${vectorCount} 条` : vectorRows.length ? "总数未记录" : "未记录",
+        empty: vectorFailed ? "向量召回失败，本次未参与融合" : vectorCount === 0 ? "向量这一路没有命中" : "历史召回明细未保存，无法还原候选列表",
+        note: vectorFailed
+          ? `向量路失败：${routeIssue("vector")}。${parallelTiming}`
+          : `按 L2 距离换算分排序，是候选来源之一。${parallelTiming}${degraded ? "本次为唯一有效召回。" : ""}${historyNote}`,
         rows: vectorRows,
+        diagnostic: routeDiagnostic("vector"),
+        diagnosticLabel: "复制向量诊断",
         score: (row) => `相似度 ${fmt(row.similarity)}`,
         rankOf: (row) => row.vector_rank,
         finalRankById,
@@ -732,11 +854,16 @@ function buildStages(method, source, trace, hits) {
       {
         key: "bm25",
         index: "②",
-        title: "BM25 召回",
-        stat: bm25Count != null ? `${bm25Count} 条` : bm25Rows.length ? "总数未记录" : "未记录",
-        empty: bm25Count === 0 ? "BM25 这一路没有命中" : "历史召回明细未保存，无法还原候选列表",
-        note: `在持久化 FTS5 索引上检索全库，与向量路相互独立，不是对①的重排。${historyNote}`,
+        title: bm25Failed ? "BM25 召回（失败）" : "BM25 召回",
+        status: routes.bm25?.status,
+        stat: bm25Failed ? "失败" : bm25Count != null ? `${bm25Count} 条` : bm25Rows.length ? "总数未记录" : "未记录",
+        empty: bm25Failed ? "BM25 召回失败，本次未参与融合" : bm25Count === 0 ? "BM25 这一路没有命中" : "历史召回明细未保存，无法还原候选列表",
+        note: bm25Failed
+          ? `BM25 路失败：${routeIssue("bm25")}。${parallelTiming}`
+          : `在持久化 FTS5 索引上检索全库，与向量路并行且相互独立，不是对①的重排。${parallelTiming}${degraded ? "本次为唯一有效召回。" : ""}${historyNote}`,
         rows: bm25Rows,
+        diagnostic: routeDiagnostic("bm25"),
+        diagnosticLabel: "复制 BM25 诊断",
         score: (row) => `BM25 ${fmt(row.bm25_score)}`,
         rankOf: (row) => row.bm25_rank,
         finalRankById,
@@ -748,7 +875,8 @@ function buildStages(method, source, trace, hits) {
         stat: reranking
           ? `并集 ${unionCount ?? "—"} → 重排 ${retrieval.rerank.input_count ?? fusionRows.length}`
           : unionCount != null ? `并集 ${unionCount} → 最终 ${hits.length}` : `最终 ${hits.length}`,
-        note: fusionNote(retrieval),
+        status: recall.status,
+        note: `${fusionNote(retrieval)}${degraded ? " 本次为降级融合，仅成功路径参与。" : ""}`,
         rows: fusionRows,
         cards: !reranking,
         open: !reranking,
@@ -859,11 +987,11 @@ function createStageCard(hit, cited) {
   return card;
 }
 
-async function copyRerankDiagnostic(detail, button) {
+async function copyDiagnosticText(text, button) {
   const original = button.textContent;
   try {
     if (!navigator.clipboard?.writeText) throw new Error("当前浏览器不支持剪贴板");
-    await navigator.clipboard.writeText(rerankDiagnosticText(detail));
+    await navigator.clipboard.writeText(text);
     button.textContent = "已复制";
     setTimeout(() => { button.textContent = original; }, 1500);
   } catch (error) {
@@ -871,10 +999,26 @@ async function copyRerankDiagnostic(detail, button) {
   }
 }
 
+function copyRerankDiagnostic(detail, button) {
+  return copyDiagnosticText(rerankDiagnosticText(detail), button);
+}
+
+function copyRetrievalDiagnostic(button) {
+  return copyDiagnosticText(retrievalDiagnosticValue, button);
+}
+
+function toggleRetrievalDiagnostic() {
+  const expand = el.retrievalDiagnostic.hidden;
+  el.retrievalDiagnostic.hidden = !expand;
+  el.retrievalDiagnosticToggle.textContent = expand ? "收起诊断" : "查看诊断";
+  el.retrievalDiagnosticToggle.setAttribute("aria-expanded", String(expand));
+}
+
 function renderStage(stage, cited) {
   const details = document.createElement("details");
   details.className = "retrieval-stage";
   details.dataset.stage = stage.key;
+  if (stage.status) details.dataset.status = stage.status;
   details.open = stage.open ?? (stage.key !== "vector" && stage.key !== "bm25");
 
   const head = document.createElement("summary");
@@ -919,7 +1063,7 @@ function renderStage(stage, cited) {
     const copy = document.createElement("button");
     copy.type = "button";
     copy.className = "text-button";
-    copy.textContent = "复制失败诊断";
+    copy.textContent = stage.diagnosticLabel || "复制失败诊断";
     copy.addEventListener("click", () => copyRerankDiagnostic(stage.diagnostic, copy));
     actions.append(copy);
     details.append(actions);
@@ -941,6 +1085,7 @@ function updateUsedBadges(cited) {
 
 function renderRetrieval() {
   const source = retrievalSource();
+  renderRetrievalWarning(source);
   const method = source.retrieval.retrieval_method || getRetrievalMethod();
   const hits = source.hits || [];
   const trace = source.retrieval.retrieval_trace || null;
@@ -957,6 +1102,8 @@ function renderRetrieval() {
     source.retrieval.bm25_candidates,
     source.retrieval.rerank?.status,
     source.retrieval.rerank?.output_count,
+    source.retrieval.recall_detail?.status,
+    source.retrieval.recall_detail?.failed_paths?.join("+") || "",
     source.status,
     source.pinned ? "pinned" : "live",
   ].join("|");
@@ -1001,6 +1148,7 @@ function renderRetrieval() {
 }
 
 function renderRetrievalLoading() {
+  renderRetrievalWarning({ key: "loading", retrieval: {} });
   retrievalStructureKey = "";
   retrievalCards = new Map();
   el.retrievalCount.textContent = "";
@@ -1071,7 +1219,7 @@ function renderProcess() {
 
     const body = document.createElement("div");
     const title = document.createElement("strong");
-    const labels = { bm25: "BM25 关键词搜索", hybrid: "混合检索" };
+    const labels = { bm25: "BM25 关键词搜索", hybrid: "混合检索（双路并行）" };
     title.textContent =
       key === "vector_search" && method !== "vector" ? labels[method] : label;
     const detail = document.createElement("span");
@@ -1090,16 +1238,26 @@ function processSummary(stages) {
     stage: (stages || {})[key] || {},
   }));
   const failed = entries.find((entry) => entry.stage.status === "failed");
-  const degraded = entries.find((entry) => entry.stage.status === "degraded");
+  const degraded = entries.filter((entry) => entry.stage.status === "degraded");
   const running = entries.find((entry) => entry.stage.status === "running");
   const terminal = entries.filter((entry) => ["completed", "degraded", "skipped"].includes(entry.stage.status)).length;
   if (failed) return `× ${failed.label} 失败`;
   if (running) return `${running.label}…`;
   if (terminal === entries.length) {
     const seconds = elapsedSeconds(job);
-    return degraded
-      ? `! ${degraded.label}失败，已回退${seconds !== null ? ` · 共 ${seconds} 秒` : ""}`
-      : `✓ 完成${seconds !== null ? ` · 共 ${seconds} 秒` : ""}`;
+    if (degraded.length) {
+      const retrievalDegraded = degraded.find((entry) => entry.key === "vector_search");
+      const rerankDegraded = degraded.some((entry) => entry.key === "rerank");
+      const recall = retrievalDegraded?.stage.detail?.recall_detail;
+      if (recall?.status === "degraded") {
+        const successPath = recall.succeeded_paths?.[0];
+        const label = RECALL_PATH_LABELS[successPath] || successPath || "单路";
+        const rerankNote = rerankDegraded ? "；重排回退" : "";
+        return `! 检索降级：仅 ${label}${rerankNote}${seconds !== null ? ` · 共 ${seconds} 秒` : ""}`;
+      }
+      return `! ${degraded[0].label}失败，已回退${seconds !== null ? ` · 共 ${seconds} 秒` : ""}`;
+    }
+    return `✓ 完成${seconds !== null ? ` · 共 ${seconds} 秒` : ""}`;
   }
   if (terminal > 0) return `进行中 · 已完成 ${terminal}/${entries.length}`;
   return "等待执行";
@@ -1143,6 +1301,9 @@ function stageDetail(key, stage) {
   }
   if (stage.status === "skipped") return "已跳过";
   if (key === "encode") {
+    if (stage.status === "degraded") {
+      return `向量编码失败 · ${detail.error_message || detail.error_type || "Embedding 不可用"}${duration}`;
+    }
     const preview = Array.isArray(detail.vector_preview)
       ? ` · 前 8 维 [${detail.vector_preview.join(", ")}]`
       : "";
@@ -1154,12 +1315,19 @@ function stageDetail(key, stage) {
       ? ` · ${fusionLabels[detail.fusion_method]}`
       : "";
     if (detail.retrieval_method === "hybrid") {
+      const recall = detail.recall_detail;
+      if (recall?.status === "degraded") {
+        const successPath = recall.succeeded_paths?.[0];
+        const successLabel = RECALL_PATH_LABELS[successPath] || successPath || "单路";
+        return `双路并行 → 降级为仅 ${successLabel} · 最终 ${detail.matches || 0} 条 · ${recall.wall_ms ?? "—"} ms`;
+      }
       const vector = detail.vector_candidates ?? detail.recall ?? 0;
       const bm25 = detail.bm25_candidates ?? 0;
       const union = detail.union_candidates != null
         ? ` → 去重 ${detail.union_candidates}`
         : "";
-      return `向量 ${vector} + BM25 ${bm25}${union} → 最终 ${detail.matches || 0}${fusion}${duration}`;
+      const parallel = recall?.parallel ? ` · 并行 ${recall.wall_ms ?? "—"} ms` : "";
+      return `向量 ${vector} + BM25 ${bm25}${union} → 最终 ${detail.matches || 0}${fusion}${parallel}`;
     }
     const pool = detail.pool ? ` · 池 ${detail.pool}` : "";
     const recall = detail.recall != null
@@ -1219,7 +1387,7 @@ async function waitForAnswer(jobId, epoch) {
     if (convState.epoch !== epoch) throw new StaleAnswer();
 
     state.answerJob = job;
-    if (job.stages?.vector_search?.status === "completed") {
+    if (["completed", "degraded"].includes(job.stages?.vector_search?.status)) {
       state.vectorHits = job.vector_hits || [];
     }
     renderRetrieval();
@@ -1293,7 +1461,12 @@ async function ask(event) {
 
     state.vectorHits = result.vector_hits || [];
     renderRetrieval();
-    setRunStatusLoading(false, "回答完成");
+    const recall = result.stages?.vector_search?.detail?.recall_detail;
+    const successPath = recall?.status === "degraded" ? recall.succeeded_paths?.[0] : "";
+    const degradedLabel = RECALL_PATH_LABELS[successPath] || "";
+    setRunStatusLoading(false, degradedLabel
+      ? `回答完成（检索降级：仅 ${degradedLabel}）`
+      : "回答完成");
   } catch (error) {
     if (error instanceof StaleAnswer) return;
     addChatMessage("error", error.message);
@@ -1781,6 +1954,8 @@ export default {
     el.askForm.addEventListener("submit", ask);
     el.processToggle.addEventListener("click", toggleProcess);
     el.retrievalToggle.addEventListener("click", toggleRetrievalStages);
+    el.retrievalDiagnosticToggle.addEventListener("click", toggleRetrievalDiagnostic);
+    el.retrievalDiagnosticCopy.addEventListener("click", () => copyRetrievalDiagnostic(el.retrievalDiagnosticCopy));
     el.rerankPreferencesRetry.addEventListener("click", loadRetrievalPreferences);
     el.clearChatButton.addEventListener("click", clearChat);
     el.newConversation.addEventListener("click", newConversation);

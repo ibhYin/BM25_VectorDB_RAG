@@ -156,6 +156,22 @@ def test_run_aggregate_returns_empty_result_without_hits(monkeypatch) -> None:
     assert any("召回结果为空" in warning for warning in result["meta"]["warnings"])
 
 
+def test_run_aggregate_surfaces_degraded_recall(monkeypatch) -> None:
+    def degraded_retrieve(*args, **kwargs):
+        kwargs["progress"]("vector_search", "degraded", {
+            "recall_detail": {
+                "status": "degraded", "succeeded_paths": ["bm25"], "failed_paths": ["vector"],
+            },
+        })
+        return []
+
+    monkeypatch.setattr("app.aggregate.retrieve_question", degraded_retrieve)
+    result = run_aggregate("降级样本", Settings(_env_file=None), sample_size=10, top_categories=3)
+
+    assert result["meta"]["recall"]["status"] == "degraded"
+    assert any("本次仅使用 BM25" in warning for warning in result["meta"]["warnings"])
+
+
 def _wait_for_status(store, job_id, statuses, timeout=2.0):
     deadline = time.monotonic() + timeout
     result = store.get_for_user(job_id)

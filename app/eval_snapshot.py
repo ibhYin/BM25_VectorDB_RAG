@@ -122,6 +122,7 @@ def build_snapshot(
                 "id": row.get("id"),
                 "question": str(row.get("question") or ""),
                 "rerank": row.get("rerank") or {},
+                "recall": row.get("recall") or {},
                 "elapsed": row.get("elapsed"),
                 "retrieved": list(row.get("retrieved") or []),
                 "retrieved_docs": list(row.get("retrieved_docs") or []),

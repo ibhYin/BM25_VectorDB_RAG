@@ -195,6 +195,11 @@ def run_aggregate(
 
     started = perf_counter()
     warnings: list[str] = []
+    recall_detail: dict[str, Any] = {}
+
+    def recall_progress(stage: str, status: str, detail: dict[str, Any]) -> None:
+        if stage == "vector_search" and detail.get("recall_detail"):
+            recall_detail.update(detail["recall_detail"])
 
     report("retrieve", done=0, total=sample_size)
     hits = retrieve_question(
@@ -208,7 +213,12 @@ def run_aggregate(
         fusion_k=fusion_k,
         fusion_alpha=fusion_alpha,
         user=user,
+        progress=recall_progress,
     )
+    if recall_detail.get("status") == "degraded":
+        success_path = (recall_detail.get("succeeded_paths") or ["单路"])[0]
+        label = {"vector": "向量", "bm25": "BM25"}.get(str(success_path), str(success_path))
+        warnings.append(f"检索降级：本次仅使用 {label} 结果，归类样本不等同完整双路召回。")
     sample_docs = {str(hit.get("doc_id")) for hit in hits if hit.get("doc_id")}
     sample = {"chunks": len(hits), "docs": len(sample_docs)}
     report("retrieve", done=len(hits), total=len(hits))
@@ -223,6 +233,7 @@ def run_aggregate(
                 "model": settings.llm_model,
                 "sample_size": sample_size,
                 "elapsed_ms": round((perf_counter() - started) * 1000),
+                "recall": recall_detail,
                 "warnings": warnings + [SAMPLE_NOTE],
             },
         }
@@ -311,6 +322,7 @@ def run_aggregate(
             "similarity_threshold": settings.aggregate_similarity_threshold,
             "relevant_chunks": len(relevant),
             "elapsed_ms": round((perf_counter() - started) * 1000),
+            "recall": recall_detail,
             "warnings": warnings + [SAMPLE_NOTE],
         },
     }

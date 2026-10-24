@@ -100,6 +100,9 @@ def test_turn_keeps_light_retrieval_summary(store) -> None:
             "bm25_candidates": 87,
             "union_candidates": 152,
             "matches": 20,
+            "task_id": "task-1",
+            "recall_detail": {"status": "degraded", "parallel": True,
+                              "failed_paths": ["vector"], "succeeded_paths": ["bm25"]},
             "retrieval_trace": {"candidates": [{"chunk_id": "doc#chunk_001"}]},
             "vector_hits": [{"chunk_id": "doc#chunk_001", "text": "正文"}],
             "unknown_field": "不该出现",
@@ -113,6 +116,9 @@ def test_turn_keeps_light_retrieval_summary(store) -> None:
         "bm25_candidates": 87,
         "union_candidates": 152,
         "matches": 20,
+        "task_id": "task-1",
+        "recall_detail": {"status": "degraded", "parallel": True,
+                          "failed_paths": ["vector"], "succeeded_paths": ["bm25"]},
     }
 
 

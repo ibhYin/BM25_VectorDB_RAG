@@ -1,9 +1,15 @@
+import json
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier, Event, Thread
+
+import chromadb
 import pytest
 from langchain_core.documents import Document
 
 from app.config import Settings
-from app.service import answer_question
+from app.service import answer_question, retrieve_question
 from app.web import RequestError, WebRequestHandler
+from rag.bm25_index import rebuild_bm25_index
 from rag.retriever import (
     build_vector_hits,
     rerank_bm25_scores,
@@ -338,6 +344,218 @@ def test_hybrid_reports_recall_trace(monkeypatch):
     assert by_id["keyword#chunk_001"]["vector_rank"] is None
     assert by_id["keyword#chunk_001"]["final_rank"] == 2
     assert by_id["vector#chunk_001"]["final_rank"] == 1
+    assert stages["recall_detail"]["status"] == "completed"
+    assert stages["recall_detail"]["parallel"] is True
+
+
+def test_hybrid_starts_both_recall_paths_concurrently(monkeypatch):
+    barrier = Barrier(2)
+
+    class Embeddings:
+        def embed_query(self, question):
+            barrier.wait(timeout=3)
+            return [1.0]
+
+    class Store:
+        def similarity_search_by_vector_with_relevance_scores(self, embedding, k):
+            return []
+
+    def bm25(*args, **kwargs):
+        barrier.wait(timeout=3)
+        return []
+
+    monkeypatch.setattr("app.service.get_embeddings", lambda *args: Embeddings())
+    monkeypatch.setattr("app.service.get_vector_store", lambda *args: Store())
+    monkeypatch.setattr("app.service.search_bm25", bm25)
+    monkeypatch.setattr("chains.answer_chain.generate_answer", lambda **kwargs: "answer")
+
+    result = answer_question("并行", Settings(_env_file=None), retrieval_method="hybrid")
+
+    assert result["answer"] == "answer"
+
+
+@pytest.mark.parametrize("failed_path", ["vector", "bm25"])
+def test_hybrid_single_path_failure_degrades_and_sanitizes_diagnostics(monkeypatch, failed_path):
+    class Embeddings:
+        def embed_query(self, question):
+            return [1.0]
+
+    class Store:
+        def similarity_search_by_vector_with_relevance_scores(self, embedding, k):
+            return [(Document(page_content="向量命中", metadata={"chunk_id": "vector#chunk_001"}), 0.1)]
+
+    def bm25(*args, **kwargs):
+        return build_vector_hits(
+            [(Document(page_content="关键词命中", metadata={"chunk_id": "keyword#chunk_001"}), 4.0)],
+            retrieval_method="bm25",
+        )
+
+    settings = Settings(_env_file=None, embedding_api_key="private-embedding-key")
+    if failed_path == "vector":
+        monkeypatch.setattr("app.service.get_embeddings", lambda *args: (_ for _ in ()).throw(
+            RuntimeError("provider echoed private-embedding-key")))
+    else:
+        monkeypatch.setattr("app.service.get_embeddings", lambda *args: Embeddings())
+    monkeypatch.setattr("app.service.get_vector_store", lambda *args: Store())
+    if failed_path == "bm25":
+        monkeypatch.setattr("app.service.search_bm25", lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("bm25 index unavailable")))
+    else:
+        monkeypatch.setattr("app.service.search_bm25", bm25)
+    generated = []
+    monkeypatch.setattr("chains.answer_chain.generate_answer", lambda **kwargs: generated.append(True) or "answer")
+    stages = {}
+
+    def progress(stage, status, detail):
+        if stage == "vector_search" and status in {"completed", "degraded", "failed"}:
+            stages.update(status=status, **detail)
+
+    result = answer_question("降级测试", settings, top_k=2, candidate_pool=20,
+                             retrieval_method="hybrid", progress=progress)
+
+    expected_chunk = "keyword#chunk_001" if failed_path == "vector" else "vector#chunk_001"
+    assert result["answer"] == "answer" and generated
+    assert [hit["chunk_id"] for hit in result["vector_hits"]] == [expected_chunk]
+    assert stages["status"] == "degraded"
+    recall = stages["recall_detail"]
+    assert recall["status"] == "degraded" and recall["failed_paths"] == [failed_path]
+    assert recall["routes"][failed_path]["status"] == "failed"
+    route_error = recall["routes"][failed_path]["error"]
+    assert route_error["error_message"] and route_error["hint"]
+    assert "private-embedding-key" not in json.dumps(recall, ensure_ascii=False)
+
+
+def test_hybrid_both_paths_fail_returns_structured_failure(monkeypatch):
+    monkeypatch.setattr("app.service.get_embeddings", lambda *args: (_ for _ in ()).throw(
+        RuntimeError("embedding unavailable")))
+    monkeypatch.setattr("app.service.search_bm25", lambda *args, **kwargs: (_ for _ in ()).throw(
+        RuntimeError("bm25 unavailable")))
+    monkeypatch.setattr("chains.answer_chain.generate_answer", lambda **kwargs: pytest.fail("no answer expected"))
+    stages = {}
+
+    def progress(stage, status, detail):
+        if stage == "vector_search" and status == "failed":
+            stages.update(detail)
+
+    with pytest.raises(RuntimeError, match="双路召回均失败"):
+        answer_question("双失败", Settings(_env_file=None), retrieval_method="hybrid", progress=progress)
+
+    recall = stages["recall_detail"]
+    assert recall["status"] == "failed"
+    assert recall["failed_paths"] == ["vector", "bm25"]
+    assert not recall["succeeded_paths"]
+
+
+def test_hybrid_normal_empty_results_do_not_degrade(monkeypatch):
+    class Embeddings:
+        def embed_query(self, question):
+            return [1.0]
+
+    class Store:
+        def similarity_search_by_vector_with_relevance_scores(self, embedding, k):
+            return []
+
+    monkeypatch.setattr("app.service.get_embeddings", lambda *args: Embeddings())
+    monkeypatch.setattr("app.service.get_vector_store", lambda *args: Store())
+    monkeypatch.setattr("app.service.search_bm25", lambda *args, **kwargs: [])
+    monkeypatch.setattr("chains.answer_chain.generate_answer", lambda **kwargs: "没有找到证据")
+    stages = {}
+
+    def progress(stage, status, detail):
+        if stage == "vector_search":
+            stages.update(status=status, **detail)
+
+    answer_question("空结果", Settings(_env_file=None), retrieval_method="hybrid", progress=progress)
+
+    assert stages["status"] == "completed"
+    assert stages["recall_detail"]["status"] == "completed"
+    assert stages["recall_detail"]["failed_paths"] == []
+
+
+def test_parallel_hybrid_queries_share_temporary_chroma_and_bm25_index(tmp_path, monkeypatch):
+    client = chromadb.PersistentClient(path=str(tmp_path))
+    collection = client.create_collection("knowledge_base", embedding_function=None)
+    collection.add(
+        ids=["doc#chunk_001", "doc#chunk_002"],
+        documents=["alpha keyword evidence", "beta unrelated evidence"],
+        metadatas=[
+            {"chunk_id": "doc#chunk_001", "doc_id": "doc", "knowledge_base_id": "default"},
+            {"chunk_id": "doc#chunk_002", "doc_id": "doc", "knowledge_base_id": "default"},
+        ],
+        embeddings=[[1.0, 0.0], [0.0, 1.0]],
+    )
+    rebuild_bm25_index(tmp_path, "fake-embedding")
+
+    class Embeddings:
+        def embed_query(self, question):
+            return [1.0, 0.0]
+
+    monkeypatch.setattr("app.service.get_embeddings", lambda *args: Embeddings())
+    monkeypatch.setattr("rag.vector_store.get_embeddings", lambda *args, **kwargs: Embeddings())
+    settings = Settings(_env_file=None, chroma_persist_dir=tmp_path, embedding_model="fake-embedding")
+
+    def query(_):
+        return [hit["chunk_id"] for hit in retrieve_question(
+            "keyword", settings, retrieval_method="hybrid", top_k=2, candidate_pool=20,
+        )]
+
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="test-hybrid-client") as executor:
+        results = list(executor.map(query, range(8)))
+
+    assert results == [["doc#chunk_001", "doc#chunk_002"]] * 8
+
+
+def test_parallel_recall_keeps_write_lock_blocked_until_both_paths_finish(monkeypatch):
+    from app.service import knowledge_base_lock
+
+    release = Event()
+    vector_started = Event()
+    bm25_started = Event()
+
+    class Embeddings:
+        def embed_query(self, question):
+            vector_started.set()
+            assert release.wait(timeout=2)
+            return [1.0]
+
+    class Store:
+        def similarity_search_by_vector_with_relevance_scores(self, embedding, k):
+            return []
+
+    def bm25(*args, **kwargs):
+        bm25_started.set()
+        assert release.wait(timeout=2)
+        return []
+
+    monkeypatch.setattr("app.service.get_embeddings", lambda *args: Embeddings())
+    monkeypatch.setattr("app.service.get_vector_store", lambda *args: Store())
+    monkeypatch.setattr("app.service.search_bm25", bm25)
+    settings = Settings(_env_file=None)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        query = executor.submit(
+            retrieve_question, "锁测试", settings,
+            retrieval_method="hybrid", top_k=2, candidate_pool=20,
+        )
+        assert vector_started.wait(timeout=1) and bm25_started.wait(timeout=1)
+        write_started = Event()
+        write_acquired = Event()
+
+        def writer():
+            write_started.set()
+            with knowledge_base_lock.write():
+                write_acquired.set()
+
+        thread = Thread(target=writer)
+        thread.start()
+        assert write_started.wait(timeout=1)
+        assert not write_acquired.wait(timeout=.1), "writer must wait while parallel recall holds the read lock"
+        release.set()
+        query.result(timeout=2)
+        thread.join(timeout=2)
+
+    assert write_acquired.is_set()
+    assert not thread.is_alive()
 
 
 def test_settings_fusion_defaults_and_validation():

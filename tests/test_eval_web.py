@@ -264,3 +264,25 @@ def test_run_uses_the_default_ks_when_absent(monkeypatch) -> None:
     handler._eval_run()
 
     assert captured["ks"] == [1, 3, 5]
+
+
+def test_eval_batch_surfaces_degraded_parallel_recall(monkeypatch) -> None:
+    from app.eval_runner import run_batch
+
+    def retrieve(*args, **kwargs):
+        kwargs["progress"]("vector_search", "degraded", {
+            "recall_detail": {
+                "status": "degraded", "succeeded_paths": ["bm25"], "failed_paths": ["vector"],
+            },
+        })
+        return []
+
+    monkeypatch.setattr("app.service.retrieve_question", retrieve)
+    result = run_batch(
+        Settings(_env_file=None),
+        [{"id": "q1", "question": "问题", "relevant_chunk_ids": []}],
+        ks=[1], method="hybrid",
+    )
+
+    assert result["rows"][0]["recall"]["status"] == "degraded"
+    assert result["performance"]["recall_degraded"] == 1

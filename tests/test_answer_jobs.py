@@ -83,6 +83,8 @@ def test_answer_job_persists_light_retrieval_summary(monkeypatch, tmp_path) -> N
             "vector_candidates": 2,
             "bm25_candidates": 1,
             "union_candidates": 3,
+            "recall_detail": {"status": "degraded", "parallel": True,
+                              "failed_paths": ["vector"], "succeeded_paths": ["bm25"]},
             "retrieval_trace": {"candidates": [{"chunk_id": "x"}]},
             "vector_hits": [{"chunk_id": "x", "text": "正文"}],
         })
@@ -104,6 +106,8 @@ def test_answer_job_persists_light_retrieval_summary(monkeypatch, tmp_path) -> N
     turn = conversations.get(conversation["id"], "open-mode")["turns"][0]
     assert turn["retrieval"]["union_candidates"] == 3
     assert turn["retrieval"]["bm25_candidates"] == 1
+    assert turn["retrieval"]["recall_detail"]["status"] == "degraded"
+    assert turn["retrieval"]["task_id"]
     assert "retrieval_trace" not in turn["retrieval"]
     assert "vector_hits" not in turn["retrieval"]
     assert turn["retrieval"]["llm_model"] == store._settings.llm_model

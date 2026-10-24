@@ -146,7 +146,7 @@ class AnswerJobStore:
                 detail = dict(detail)
                 if stage in ("vector_search", "rerank") and "vector_hits" in detail:
                     job["vector_hits"] = list(detail.pop("vector_hits"))
-                if stage == "rerank":
+                if stage in ("vector_search", "rerank"):
                     detail["task_id"] = job_id
                 stage_state = job["stages"][stage]
                 stage_state["status"] = status

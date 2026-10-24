@@ -3,6 +3,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync('app/web_static/js/views/ask.js', 'utf8');
+const html = fs.readFileSync('app/web_static/index.html', 'utf8');
+for (const id of ['retrieval-warning', 'retrieval-warning-title', 'retrieval-warning-message',
+  'retrieval-diagnostic-toggle', 'retrieval-diagnostic-copy', 'retrieval-diagnostic']) {
+  assert.match(html, new RegExp(`id="${id}"`), `missing retrieval warning control: ${id}`);
+}
 const context = vm.createContext({});
 vm.runInContext(source.slice(source.indexOf('function fmt('), source.indexOf('function createStageRow(')), context);
 function stages(retrieval = {}, trace = null, hits = [{chunk_id: 'doc#chunk_1', rank: 1, similarity: .6, bm25_score: 2.49}]) {
@@ -43,4 +48,39 @@ assert.ok(degraded[3].diagnostic, 'degraded rerank must expose a copyable diagno
 const diagnostic = JSON.parse(context.rerankDiagnosticText(degraded[3].diagnostic));
 assert.equal(diagnostic.error_message, 'timeout');
 assert.equal('text' in diagnostic || 'query' in diagnostic, false, 'diagnostics must never copy candidate text or the query');
-console.log('PASS: historical unknown/partial data stays distinct from genuine zero-hit retrieval; rerank stages and diagnostics stay separate.');
+const degradedRecall = {
+  task_id: 'task-1',
+  recall_detail: {
+    recall_id: 'recall-1', status: 'degraded', parallel: true, wall_ms: 120,
+    succeeded_paths: ['bm25'], failed_paths: ['vector'],
+    routes: {
+      vector: {status: 'failed', elapsed_ms: 110, count: 0, error: {
+        stage: 'embedding', error_type: 'AuthenticationError', error_message: 'API Key 无效',
+        http_status: 401, provider_request_id: 'provider-1', retryable: false,
+        hint: '检查 Embedding API Key、模型权限和请求地址', query: 'private query', text: 'private text',
+      }},
+      bm25: {status: 'completed', elapsed_ms: 80, count: 1},
+    },
+  },
+};
+const degradedTrace = {vector_count: 0, bm25_count: 1, union_count: 1,
+  candidates: [{chunk_id: 'doc#chunk_1', vector_rank: null, bm25_rank: 1, final_rank: 1}]};
+const degradedStages = stages(degradedRecall, degradedTrace, [
+  {chunk_id: 'doc#chunk_1', rank: 1, bm25_rank: 1, bm25_score: 1.2},
+]);
+assert.equal(degradedStages[0].status, 'failed');
+assert.match(degradedStages[0].title, /失败/);
+assert.match(degradedStages[0].note, /检查 Embedding API Key.*两路并行/);
+assert.ok(degradedStages[0].diagnostic, 'failed vector route must expose diagnostics');
+assert.match(degradedStages[1].note, /唯一有效召回/);
+assert.match(degradedStages[2].note, /降级融合/);
+const warning = context.retrievalRecallSummary(degradedRecall);
+assert.equal(warning.title, '检索降级：仅 BM25');
+assert.match(warning.message, /向量召回失败.*语义相关内容/);
+const recallDiagnostic = JSON.parse(context.retrievalDiagnosticText(degradedRecall));
+assert.equal(recallDiagnostic.task_id, 'task-1');
+assert.equal(recallDiagnostic.routes.vector.error.http_status, 401);
+assert.equal(JSON.stringify(recallDiagnostic).includes('private query'), false);
+assert.equal(JSON.stringify(recallDiagnostic).includes('private text'), false);
+assert.equal(context.retrievalRecallSummary({recall_detail: {status: 'completed'}}), null);
+console.log('PASS: parallel/rerank stages, degraded retrieval warnings and sanitized diagnostics stay distinct.');

@@ -37,10 +37,13 @@ def run_batch(
     for entry in questions:
         started = perf_counter()
         rerank_detail = {}
+        recall_detail = {}
         def progress(stage, status, detail):
             if stage == "rerank":
                 rerank_detail.update(status=status, **{key: value for key, value in detail.items()
                                                      if key not in ("vector_hits", "candidates")})
+            elif stage == "vector_search" and detail.get("recall_detail"):
+                recall_detail.update(detail["recall_detail"])
         hits = retrieve_question(
             str(entry.get("question") or ""),
             settings,
@@ -67,6 +70,7 @@ def run_batch(
                 "elapsed": perf_counter() - started,
                 "hits": hits,
                 "rerank": rerank_detail,
+                "recall": recall_detail,
             }
         )
 
@@ -88,6 +92,7 @@ def run_batch(
         "performance": {
             "p95_latency_ms": latencies[ceil(len(latencies) * .95) - 1] * 1000 if latencies else None,
             "rerank_fallbacks": sum(row["rerank"].get("status") == "degraded" for row in rows),
+            "recall_degraded": sum(row["recall"].get("status") == "degraded" for row in rows),
         },
         "rows": rows,
         "summary": summary,
