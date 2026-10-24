@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # "condense" 排在最前：dict 顺序即前端渲染顺序。没有历史时后端会报 skipped，
 # 前端对 skipped 已有「已跳过 / -」的展示，不需要动态增删阶段。
 # "system" 是系统问答专用通道（格式/模型/版本/知识库清单），命中时其余阶段报 skipped。
-STAGES = ("condense", "system", "encode", "vector_search", "answer")
+STAGES = ("condense", "system", "encode", "vector_search", "rerank", "answer")
 
 
 def utc_now() -> str:
@@ -49,6 +49,7 @@ class AnswerJobStore:
         user: UserContext | None = None,
         conversation_id: str | None = None,
         llm_model: str | None = None,
+        rerank_options: dict | None = None,
     ) -> dict[str, Any]:
         question = question.strip()
         if not question:
@@ -59,6 +60,9 @@ class AnswerJobStore:
         if fusion_method is not None and fusion_method not in ("rrf", "weighted"):
             raise ValueError("fusion_method must be rrf or weighted")
         run_settings = self._settings.model_copy(deep=True)
+        for key, value in (rerank_options or {}).items():
+            if key.startswith("rerank_") and key in type(run_settings).model_fields:
+                setattr(run_settings, key, value)
         if llm_model is not None:
             run_settings.llm_model = llm_model
 
@@ -140,8 +144,10 @@ class AnswerJobStore:
             with self._lock:
                 job = self._jobs[job_id]
                 detail = dict(detail)
-                if stage == "vector_search" and "vector_hits" in detail:
+                if stage in ("vector_search", "rerank") and "vector_hits" in detail:
                     job["vector_hits"] = list(detail.pop("vector_hits"))
+                if stage == "rerank":
+                    detail["task_id"] = job_id
                 stage_state = job["stages"][stage]
                 stage_state["status"] = status
                 stage_state["detail"] = detail
@@ -202,6 +208,10 @@ class AnswerJobStore:
                 (job["stages"].get("vector_search") or {}).get("detail") or {}
             )
             retrieval_detail["llm_model"] = settings.llm_model
+            rerank_detail = dict(job["stages"]["rerank"]["detail"])
+            rerank_detail["status"] = job["stages"]["rerank"]["status"]
+            rerank_detail.pop("candidates", None)
+            retrieval_detail["rerank"] = rerank_detail
 
         # 写对话放在任务锁之外：append 会全量重写文件，占着锁会阻塞状态轮询。
         # 失败只记日志——异常在这里抛出会被 executor 的 future 吞掉，那一轮就静默丢了。

@@ -1264,6 +1264,29 @@ def _retrieve_locked(
     return hits
 
 
+def _retrieve_ranked(question, settings, method, top_k, threshold, candidate_pool,
+                     fusion_method, fusion_k, fusion_alpha, user, access_policy, access_filter, report):
+    """One lock boundary for every caller: recall inside, remote rerank outside."""
+    from rag.reranker import rerank_hits
+
+    limit = max(top_k, settings.rerank_pool_size) if settings.rerank_enabled else top_k
+    def recall_progress(stage, status, **detail):
+        if stage == "vector_search":
+            detail["top_k"] = top_k
+        report(stage, status, **detail)
+
+    with knowledge_base_lock.read():
+        hits = _retrieve_locked(question, settings, method, limit, threshold, candidate_pool,
+                                fusion_method, fusion_k, fusion_alpha, user, access_policy,
+                                access_filter, recall_progress)
+    if settings.rerank_enabled and hits:
+        report("rerank", "running", model=settings.rerank_model, input_count=len(hits))
+    output, detail = rerank_hits(question, hits, settings, top_k)
+    report("rerank", detail["status"], **{key: value for key, value in detail.items() if key != "status"},
+           vector_hits=output)
+    return output, detail
+
+
 def retrieve_question(
     question: str,
     settings: Settings,
@@ -1275,6 +1298,7 @@ def retrieve_question(
     fusion_k: int | None = None,
     fusion_alpha: float | None = None,
     user: UserContext | None = None,
+    progress: Callable | None = None,
 ) -> list[dict[str, object]]:
     """只要检索结果，不生成答案。
 
@@ -1283,7 +1307,8 @@ def retrieve_question(
     rrf_score / weighted_score / section_path / chunk_id …）——注意喂给 LLM 的
     `format_vector_hits` 会把分数丢掉，这里不丢。
 
-    自己取读锁。**不要在已持锁时调用**，理由见 `_retrieve_locked`。
+    通过共享链路取读锁，锁外执行可选重排。启用重排时会调用模型 API。
+    **不要在已持锁时调用**，理由见 `_retrieve_locked`。
     """
 
     question = question.strip()
@@ -1302,8 +1327,10 @@ def retrieve_question(
     )
     access_policy, access_filter = _access_context(settings, user)
 
-    with knowledge_base_lock.read():
-        return _retrieve_locked(
+    def report(stage, status, **detail):
+        if progress is not None:
+            progress(stage, status, detail)
+    hits, _ = _retrieve_ranked(
             question,
             settings,
             method,
@@ -1316,8 +1343,9 @@ def retrieve_question(
             user,
             access_policy,
             access_filter,
-            lambda *args, **kwargs: None,
+            report,
         )
+    return hits
 
 
 def resolve_chunks(
@@ -1554,7 +1582,7 @@ def answer_question(
             intent=intent,
             duration_ms=round((perf_counter() - started) * 1000),
         )
-        for stage in ("condense", "encode", "vector_search", "answer"):
+        for stage in ("condense", "encode", "vector_search", "rerank", "answer"):
             report(stage, "skipped")
         return {
             "question": question,
@@ -1591,8 +1619,7 @@ def answer_question(
         else:
             report("condense", "skipped")
 
-        with knowledge_base_lock.read():
-            hits = _retrieve_locked(
+        hits, rerank_detail = _retrieve_ranked(
                 retrieval_question,
                 settings,
                 method,
@@ -1612,6 +1639,13 @@ def answer_question(
         # 所以占着读锁等 LLM 会让一次入库把全站问答一起堵住——和上面改写那步
         # 同样的道理，这里此前漏了。hits 已经在锁内取出来，释放锁后再用是安全的。
         vector_context = format_vector_hits(hits)
+
+        if rerank_detail["status"] == "completed" and not hits and settings.rerank_score_filter_enabled:
+            report("answer", "skipped", reason="score_filter_empty")
+            return {"question": question, "retrieval_method": method,
+                    "fusion_method": effective_fusion if method == "hybrid" else None,
+                    "vector_context": [], "vector_hits": [],
+                    "answer": "没有达到重排分数阈值的证据，请降低阈值或关闭分数过滤后重试。"}
 
         from chains.answer_chain import generate_answer
 

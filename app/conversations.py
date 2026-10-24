@@ -30,6 +30,7 @@ DEFAULT_TITLE = "新对话"
 
 # Fields kept per retrieved chunk; the body ("text") is deliberately dropped.
 HIT_FIELDS = (
+    "retrieval_rank", "fusion_rank", "rerank_rank", "rerank_score",
     "rank",
     "doc_id",
     "title",
@@ -52,6 +53,7 @@ HIT_FIELDS = (
 # Per-turn retrieval summary. Deliberately excludes the full candidate trace:
 # history only needs the counts and each final hit's provenance.
 RETRIEVAL_FIELDS = (
+    "rerank",
     "llm_model",
     "retrieval_method",
     "top_k",

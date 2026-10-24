@@ -80,3 +80,30 @@ def test_preferences_api_scopes_by_authenticated_identity(monkeypatch):
     handler._current_user = lambda *a: UserContext("bob", frozenset({"public"}))
     handler._handle_preferences()
     assert result["rerank_pool_size"] == 50
+
+
+def test_answer_request_uses_saved_preferences_and_per_request_overrides(monkeypatch):
+    from types import SimpleNamespace
+    from app.access import UserContext
+    settings = Settings(_env_file=None)
+    save_preferences("alice", {"rerank_enabled": True, "rerank_pool_size": 70}, settings)
+    monkeypatch.setattr("app.web.get_settings", lambda: settings)
+    captured = {}
+    def create(*args, **kwargs):
+        captured.update(kwargs)
+        return {"id": "mock"}
+    monkeypatch.setattr("app.answer_jobs.get_answer_store", lambda: SimpleNamespace(create=create))
+    handler = object.__new__(WebRequestHandler)
+    user = UserContext("alice", frozenset({"public"}))
+    handler._current_user = lambda *a: user
+    payload = {"question": "mock question"}
+    handler._read_json = lambda: payload
+    handler._send_json = lambda *a, **kw: None
+    handler._handle_create_answer_job()
+    assert captured["rerank_options"]["rerank_enabled"] is True
+    assert captured["rerank_options"]["rerank_pool_size"] == 70
+    payload["rerank_enabled"] = False
+    handler._handle_create_answer_job()
+    assert captured["rerank_options"]["rerank_enabled"] is False
+    assert read_preferences("alice", settings)["rerank_enabled"] is True
+    assert settings.rerank_enabled is False

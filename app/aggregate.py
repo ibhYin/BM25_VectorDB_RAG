@@ -199,7 +199,7 @@ def run_aggregate(
     report("retrieve", done=0, total=sample_size)
     hits = retrieve_question(
         question,
-        settings,
+        settings.model_copy(update={"rerank_enabled": False}),
         retrieval_method=retrieval_method,
         top_k=sample_size,
         similarity_threshold=similarity_threshold,

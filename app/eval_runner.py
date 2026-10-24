@@ -10,6 +10,7 @@ CLI 与网页共用这一份。不把这套逻辑写在 CLI 里，是因为网�
 from __future__ import annotations
 
 from time import perf_counter
+from math import ceil
 
 from app.eval_metrics import hit_at_k, mean_over_labeled, mrr, recall_at_k
 
@@ -35,6 +36,11 @@ def run_batch(
     rows: list[dict] = []
     for entry in questions:
         started = perf_counter()
+        rerank_detail = {}
+        def progress(stage, status, detail):
+            if stage == "rerank":
+                rerank_detail.update(status=status, **{key: value for key, value in detail.items()
+                                                     if key not in ("vector_hits", "candidates")})
         hits = retrieve_question(
             str(entry.get("question") or ""),
             settings,
@@ -46,6 +52,7 @@ def run_batch(
             fusion_k=fusion_k,
             fusion_alpha=fusion_alpha,
             user=user,
+            progress=progress,
         )
         rows.append(
             {
@@ -59,6 +66,7 @@ def run_batch(
                 "stale": list(entry.get("stale_chunk_ids") or []),
                 "elapsed": perf_counter() - started,
                 "hits": hits,
+                "rerank": rerank_detail,
             }
         )
 
@@ -74,8 +82,13 @@ def run_batch(
     summary[f"recall@{ks[-1]}"] = mean_over_labeled(
         recall_at_k(row["retrieved"], row["relevant"], ks[-1]) for row in labelled
     )
+    latencies = sorted(row["elapsed"] for row in rows)
 
     return {
+        "performance": {
+            "p95_latency_ms": latencies[ceil(len(latencies) * .95) - 1] * 1000 if latencies else None,
+            "rerank_fallbacks": sum(row["rerank"].get("status") == "degraded" for row in rows),
+        },
         "rows": rows,
         "summary": summary,
         "labelled": len(labelled),

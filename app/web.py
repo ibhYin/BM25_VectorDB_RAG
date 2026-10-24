@@ -290,7 +290,9 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
         params = self._read_retrieval_params(payload)
         model = self._read_request_model(payload)
-        settings = settings.model_copy(deep=True)
+        preferences = self._request_preferences(payload, user, settings)
+        params["top_k"] = preferences["top_k"]
+        settings = settings.model_copy(deep=True, update={key: value for key, value in preferences.items() if key.startswith("rerank_")})
         if model is not None:
             settings.llm_model = model
         result = answer_question(
@@ -314,6 +316,16 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 "vector_hits": result.get("vector_hits", []),
             }
         )
+
+    def _request_preferences(self, payload, user, settings):
+        from app.conversations import owner_of
+        from app.preferences import RetrievalPreferences, read_preferences
+        try:
+            saved = read_preferences(owner_of(user), settings)
+            overrides = {key: payload[key] for key in RetrievalPreferences.model_fields if key in payload}
+            return RetrievalPreferences.model_validate({**saved, **overrides}).model_dump()
+        except ValueError as exc:
+            raise RequestError(HTTPStatus.BAD_REQUEST, "重排参数无效，请检查候选数与阈值") from exc
 
     def _handle_preferences(self, update: bool = False) -> None:
         from app.conversations import owner_of
@@ -431,6 +443,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         try:
             params = self._read_retrieval_params(payload)
             model = self._read_request_model(payload)
+            preferences = self._request_preferences(payload, user, settings)
+            params["top_k"] = preferences["top_k"]
             job = get_answer_store().create(
                 question_value,
                 top_k=params["top_k"],
@@ -443,6 +457,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 user=user,
                 conversation_id=conversation_id,
                 llm_model=model,
+                rerank_options=preferences,
             )
         except ValueError as exc:
             raise RequestError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
@@ -741,9 +756,12 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             raise RequestError(HTTPStatus.BAD_REQUEST, "question is required")
 
         params = self._read_retrieval_params(payload)
+        settings = get_settings()
+        options = self._request_preferences(payload, user, settings)
+        settings = settings.model_copy(update={key: value for key, value in options.items() if key.startswith("rerank_")})
         hits = retrieve_question(
             question,
-            get_settings(),
+            settings,
             retrieval_method=params["retrieval_method"],
             top_k=params["top_k"],
             similarity_threshold=params["similarity_threshold"],
@@ -766,6 +784,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         params = self._read_retrieval_params(payload)
 
         settings = get_settings()
+        options = self._request_preferences(payload, user, settings)
+        settings = settings.model_copy(update={key: value for key, value in options.items() if key.startswith("rerank_")})
         batch = run_batch(
             settings,
             anchor_eval_labels(settings, read_questions()),
@@ -784,6 +804,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         self._send_json(
             {
                 "summary": batch["summary"],
+                "performance": batch.get("performance") or {},
                 "labelled": batch["labelled"],
                 "total": batch["total"],
                 "stale_total": batch["stale_total"],
@@ -795,6 +816,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                         "relevant": row["relevant"],
                         "stale": row["stale"],
                         "elapsed_ms": round(row["elapsed"] * 1000, 1),
+                        "rerank": row.get("rerank") or {},
                     }
                     for row in batch["rows"]
                 ],

@@ -49,11 +49,14 @@ def ingest(
 def ask(
     question: str,
     user_id: str | None = typer.Option(None, "--user-id"),
+    rerank: bool | None = typer.Option(None, "--rerank/--no-rerank", help="启用或关闭独立模型重排"),
 ) -> None:
     from app.service import answer_question
     from app.access import load_access_policy
 
-    settings = get_settings()
+    settings = get_settings().model_copy(deep=True)
+    if rerank is not None:
+        settings.rerank_enabled = rerank
     try:
         policy = load_access_policy(settings.access_policy_file)
         user = policy.user_context(user_id) if policy and user_id else None
@@ -128,6 +131,8 @@ def _snapshot_config(settings, method, top_k, pool, threshold) -> dict:
         rrf_k = None
 
     return {
+        **{key: getattr(settings, key) for key in ("rerank_enabled", "rerank_model", "rerank_pool_size",
+             "rerank_timeout", "rerank_score_filter_enabled", "rerank_score_threshold")},
         "method": method or settings.retrieval_method,
         "top_k": top_k if top_k is not None else settings.retrieval_top_k,
         "candidate_pool": pool if pool is not None else settings.candidate_pool_size,
@@ -159,6 +164,7 @@ def retrieve(
         None, "--threshold", help="只对 vector 生效；hybrid 与 bm25 会忽略它。"
     ),
     user_id: str | None = typer.Option(None, "--user-id"),
+    rerank: bool | None = typer.Option(None, "--rerank/--no-rerank", help="启用或关闭独立模型重排"),
 ) -> None:
     """只看检索结果，**不生成答案**。
 
@@ -169,7 +175,9 @@ def retrieve(
     from app.access import load_access_policy
     from app.service import retrieve_question
 
-    settings = get_settings()
+    settings = get_settings().model_copy(deep=True)
+    if rerank is not None:
+        settings.rerank_enabled = rerank
     try:
         policy = load_access_policy(settings.access_policy_file)
         user = policy.user_context(user_id) if policy and user_id else None
@@ -276,6 +284,7 @@ def eval_run(
     pool: int | None = typer.Option(None, "--pool"),
     threshold: float | None = typer.Option(None, "--threshold"),
     user_id: str | None = typer.Option(None, "--user-id"),
+    rerank: bool | None = typer.Option(None, "--rerank/--no-rerank", help="启用或关闭独立模型重排"),
     show_hits: bool = typer.Option(False, "--show-hits", help="逐题打印召回的切片。"),
     save: Path | None = typer.Option(
         None, "--save", help="把这次跑批写成快照文件，之后用 eval compare 对比。"
@@ -313,7 +322,9 @@ def eval_run(
         )
         raise typer.Exit(code=1)
 
-    settings = get_settings()
+    settings = get_settings().model_copy(deep=True)
+    if rerank is not None:
+        settings.rerank_enabled = rerank
     policy = load_access_policy(settings.access_policy_file)
     user = policy.user_context(user_id) if policy and user_id else None
 
@@ -433,6 +444,9 @@ def eval_run(
             label = f"Recall@{name.split('@')[1]}（下界）"
         summary.add_row(label, _fmt_number(value))
     console.print(summary)
+    performance = batch.get("performance") or {}
+    if performance.get("p95_latency_ms") is not None:
+        console.print(f"P95 {performance['p95_latency_ms']:.0f} ms · 重排回退 {performance['rerank_fallbacks']} 次")
 
 
 @eval_app.command("compare")
