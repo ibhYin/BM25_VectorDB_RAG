@@ -26,6 +26,7 @@ def settings(**kwargs):
 
 def test_reranker_maps_indices_preserves_source_ranks_and_never_changes_original(monkeypatch):
     def post(url, **kwargs):
+        assert url == "https://api.siliconflow.cn/v1/rerank"
         assert kwargs["json"]["documents"] == [hit["text"] for hit in HITS]
         assert kwargs["json"]["top_n"] == 3 and not kwargs["json"]["return_documents"]
         assert kwargs["timeout"] == 10 and kwargs["allow_redirects"] is False
@@ -39,6 +40,15 @@ def test_reranker_maps_indices_preserves_source_ranks_and_never_changes_original
     assert "rerank_rank" not in HITS[0]
     assert detail["status"] == "completed" and detail["output_count"] == 2
     assert "private-document" not in json.dumps(detail)
+
+
+def test_reranker_accepts_service_base_url(monkeypatch):
+    def post(url, **kwargs):
+        assert url == "https://api.siliconflow.cn/v1/rerank"
+        return Response({"results": [{"index": i, "relevance_score": .5} for i in range(3)]})
+    monkeypatch.setattr("rag.reranker.requests.post", post)
+    rows, detail = rerank_hits("query", HITS, settings(rerank_url="https://api.siliconflow.cn/v1"), 2)
+    assert len(rows) == 2 and detail["status"] == "completed"
 
 
 @pytest.mark.parametrize("results", [[], [{"index": 0, "relevance_score": .4}] * 3,

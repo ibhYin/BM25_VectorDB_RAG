@@ -413,6 +413,17 @@ def endpoint_credentials(target: str) -> tuple[str, str]:
     return settings.embedding_base_url, settings.embedding_api_key
 
 
+def rerank_base_url(value: str) -> str:
+    """Accept either the service base URL or the full /rerank endpoint."""
+    root = value.rstrip("/")
+    return root[:-len("/rerank")] if root.endswith("/rerank") else root
+
+
+def rerank_endpoint_url(value: str) -> str:
+    root = value.rstrip("/")
+    return root if root.endswith("/rerank") else f"{root}/rerank"
+
+
 CONFIG_SECTIONS = {
     "rerank": set(RERANK_CONFIG_FIELDS),
     "llm": {"openai_base_url", "openai_api_key", "llm_model"},

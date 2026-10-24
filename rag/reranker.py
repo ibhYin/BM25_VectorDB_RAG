@@ -11,7 +11,7 @@ from time import perf_counter
 
 import requests
 
-from app.config import Settings
+from app.config import Settings, rerank_endpoint_url
 
 
 logger = logging.getLogger(__name__)
@@ -69,7 +69,7 @@ def rerank_hits(question: str, hits: list[dict], settings: Settings, top_k: int)
             raise ValueError(message)
         error_type, message = "invalid_response", "重排服务返回的数据不完整或格式错误"
         # ponytail: one request, no SDK/retries; a different provider needs explicit protocol support.
-        with requests.post(settings.rerank_url, json=body, headers={
+        with requests.post(rerank_endpoint_url(settings.rerank_url), json=body, headers={
             "Authorization": f"Bearer {settings.rerank_api_key}",
             "X-Trace-Id": detail["request_id"],
         }, timeout=settings.rerank_timeout, allow_redirects=False) as response:

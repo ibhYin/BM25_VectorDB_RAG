@@ -52,7 +52,7 @@ def test_corrupt_preferences_are_not_overwritten(tmp_path, monkeypatch):
 
 
 def test_rerank_config_validation_and_secret_view(monkeypatch):
-    from app.config import endpoint_credentials, runtime_config_view
+    from app.config import endpoint_credentials, rerank_base_url, rerank_endpoint_url, runtime_config_view
     settings = Settings(_env_file=None, rerank_api_key="fake-private-secret")
     monkeypatch.setattr("app.config.get_settings", lambda: settings)
     view = runtime_config_view()
@@ -61,6 +61,9 @@ def test_rerank_config_validation_and_secret_view(monkeypatch):
     assert WebRequestHandler._read_config_updates({"rerank_api_key": ""}) == {}
     assert WebRequestHandler._read_config_updates({"rerank_enabled": False}) == {"rerank_enabled": "false"}
     assert endpoint_credentials("rerank") == (settings.rerank_url, "fake-private-secret")
+    assert rerank_base_url("https://api.siliconflow.cn/v1/rerank") == "https://api.siliconflow.cn/v1"
+    assert rerank_base_url("https://api.siliconflow.cn/v1/") == "https://api.siliconflow.cn/v1"
+    assert rerank_endpoint_url("https://api.siliconflow.cn/v1") == "https://api.siliconflow.cn/v1/rerank"
     with pytest.raises(ValueError):
         Settings(_env_file=None, rerank_score_filter_enabled=True)
     with pytest.raises(ValueError):
@@ -80,6 +83,26 @@ def test_rerank_test_endpoint_returns_diagnostic_without_candidates(monkeypatch)
     handler._send_json = result.update
     handler._handle_rerank_test()
     assert result["status"] == "degraded" and "candidates" not in result
+
+
+def test_rerank_model_catalog_accepts_base_url_and_filters_models(monkeypatch):
+    settings = Settings(_env_file=None)
+    captured = {}
+    monkeypatch.setattr("app.web.get_settings", lambda: settings)
+    def list_models(base_url, api_key):
+        captured.update(base_url=base_url, api_key=api_key)
+        return {"scope": "cloud", "models": [
+            {"id": "BAAI/bge-reranker-v2-m3"}, {"id": "Qwen/Qwen3-Embedding-8B"},
+        ], "error": ""}
+    monkeypatch.setattr("app.model_catalog.list_models", list_models)
+    result = {}
+    handler = object.__new__(WebRequestHandler)
+    handler._require_admin = lambda: None
+    handler._read_json = lambda: {"target": "rerank", "base_url": "https://api.siliconflow.cn/v1", "api_key": "fake"}
+    handler._send_json = result.update
+    handler._handle_list_models()
+    assert captured == {"base_url": "https://api.siliconflow.cn/v1", "api_key": "fake"}
+    assert [model["id"] for model in result["models"]] == ["BAAI/bge-reranker-v2-m3"]
 
 
 def test_preferences_api_scopes_by_authenticated_identity(monkeypatch):

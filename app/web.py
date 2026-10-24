@@ -396,7 +396,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         self._send_json(detail)
 
     def _handle_list_models(self) -> None:
-        from app.config import endpoint_credentials
+        from app.config import endpoint_credentials, rerank_base_url
         from app.model_catalog import list_models
 
         self._require_admin()
@@ -421,7 +421,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             if isinstance(raw_api_key, str) and raw_api_key.strip()
             else stored_api_key
         )
-        catalog = list_models(base_url.rsplit("/", 1)[0] if target == "rerank" else base_url, api_key)
+        catalog = list_models(rerank_base_url(base_url) if target == "rerank" else base_url, api_key)
         if target == "rerank":
             # ponytail: SiliconFlow names its rerank models explicitly; use typed catalog metadata for other providers.
             catalog["models"] = [model for model in catalog.get("models", []) if "rerank" in model["id"].lower()]

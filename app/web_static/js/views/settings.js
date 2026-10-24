@@ -10,6 +10,7 @@ const el = {
   rerankModel: document.querySelector("#config-rerank-model"),
   rerankCustom: document.querySelector("#config-rerank-model-custom"),
   rerankHint: document.querySelector("#config-rerank-models-hint"),
+  rerankRefreshModels: document.querySelector("#config-rerank-refresh-models"),
   rerankPool: document.querySelector("#config-rerank-pool-size"),
   rerankTimeout: document.querySelector("#config-rerank-timeout"),
   chunkSize: document.querySelector("#config-chunk-size"),
@@ -389,6 +390,7 @@ async function refreshModels() {
   }
   refreshing = true;
   el.refreshModels.disabled = true;
+  el.rerankRefreshModels.disabled = true;
   el.refreshModels.textContent = "刷新中…";
   feedback.textContent = "刷新中…使用当前输入的地址与密钥；密钥留空使用已保存密钥，不保存配置。";
   try {
@@ -402,8 +404,40 @@ async function refreshModels() {
   finally {
     refreshing = false;
     el.refreshModels.disabled = false;
+    el.rerankRefreshModels.disabled = false;
     el.refreshModels.textContent = "刷新模型列表";
     renderEmbeddingStatuses();
+    renderActions();
+  }
+}
+
+async function refreshRerankModels() {
+  if (refreshing) return;
+  const button = el.rerankRefreshModels;
+  if (/[•]|\*\*\*|已配置/.test(el.rerankApiKey.value)) {
+    message("rerank", "请使用真实密钥或留空使用已保存密钥，不能使用脱敏占位符", true);
+    return;
+  }
+  refreshing = true;
+  button.disabled = true;
+  el.refreshModels.disabled = true;
+  button.textContent = "获取中…";
+  message("rerank", "正在用当前地址和密钥获取重排模型；不会保存配置。");
+  try {
+    const result = await pickers.rerank.load({
+      baseUrl: el.rerankUrl.value,
+      apiKey: el.rerankApiKey.value,
+    });
+    message("rerank", result.error
+      ? `获取重排模型失败：${result.error}`
+      : `已获取 ${result.count} 个重排模型`, Boolean(result.error));
+  } catch (error) {
+    message("rerank", `获取重排模型失败：${error.message}`, true);
+  } finally {
+    refreshing = false;
+    button.disabled = false;
+    el.refreshModels.disabled = false;
+    button.textContent = "获取重排模型";
     renderActions();
   }
 }
@@ -423,6 +457,7 @@ export default {
     }
     el.reset.addEventListener("click", () => discard("all"));
     el.refreshModels.addEventListener("click", refreshModels);
+    el.rerankRefreshModels.addEventListener("click", refreshRerankModels);
     document.querySelector("#config-rerank-test").addEventListener("click", async event => {
       const button = event.currentTarget;
       if (Object.keys(changesFor("rerank")).length) { message("rerank", "请先保存或放弃本节修改，再测试已保存连接", true); return; }
