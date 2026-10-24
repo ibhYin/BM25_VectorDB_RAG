@@ -106,6 +106,40 @@ def test_answer_job_persists_light_retrieval_summary(monkeypatch, tmp_path) -> N
     assert turn["retrieval"]["bm25_candidates"] == 1
     assert "retrieval_trace" not in turn["retrieval"]
     assert "vector_hits" not in turn["retrieval"]
+    assert turn["retrieval"]["llm_model"] == store._settings.llm_model
+
+
+@pytest.mark.parametrize("kind", ["answer", "aggregate"])
+def test_queued_jobs_freeze_model_and_credentials_without_changing_defaults(monkeypatch, kind):
+    from app.aggregate_jobs import AggregateJobStore
+
+    settings = Settings(_env_file=None, llm_model="default-before", openai_api_key="fake-before")
+    store = AnswerJobStore(settings) if kind == "answer" else AggregateJobStore(settings)
+    queued = []
+    seen = []
+    monkeypatch.setattr(store._executor, "submit", lambda fn, *args: queued.append((fn, args)))
+
+    def fake_run(question, run_settings, **kwargs):
+        seen.append((run_settings.llm_model, run_settings.openai_api_key))
+        return {"answer": "mock", "vector_hits": []}
+
+    monkeypatch.setattr("app.service.answer_question", fake_run)
+    monkeypatch.setattr("app.aggregate.run_aggregate", fake_run)
+    extra = () if kind == "answer" else ({"sample_size": 10},)
+    default_job = store.create("default question", *extra)
+    selected_job = store.create("selected question", *extra, llm_model="conversation-model")
+    assert settings.llm_model == "default-before"
+    assert selected_job["llm_model"] == "conversation-model"
+    settings.llm_model = "default-after"
+    settings.openai_api_key = "fake-after"
+    for fn, args in queued:
+        fn(*args)
+    store._executor.shutdown(wait=True)
+
+    assert seen == [("default-before", "fake-before"), ("conversation-model", "fake-before")]
+    assert store.get_for_user(default_job["id"])["status"] == "completed"
+    assert store.get_for_user(selected_job["id"])["status"] == "completed"
+    assert "openai_api_key" not in selected_job
 
 
 def test_answer_job_streams_partial_answer_into_job(

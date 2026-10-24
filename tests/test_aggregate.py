@@ -142,7 +142,7 @@ def test_run_aggregate_counts_distinct_documents(monkeypatch) -> None:
     assert top["chunk_count"] == 2
     assert {item["doc_id"] for item in top["evidence"]} == {"doc-a", "doc-b"}
     assert result["meta"]["relevant_chunks"] == 4
-    assert any("样本估计" in warning for warning in result["meta"]["warnings"])
+    assert any("不代表全库" in warning for warning in result["meta"]["warnings"])
 
 
 def test_run_aggregate_returns_empty_result_without_hits(monkeypatch) -> None:

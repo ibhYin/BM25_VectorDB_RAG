@@ -10,7 +10,6 @@ import {
   setupBackTop,
   startServerStatsPolling,
 } from "./core.js";
-import aggregate from "./views/aggregate.js";
 import ask from "./views/ask.js";
 import audit from "./views/audit.js";
 import evaluation from "./views/eval.js";
@@ -20,7 +19,8 @@ import users from "./views/users.js";
 import { setupSelectSearch } from "./select-search.js";
 
 router.register("ask", ask);
-router.register("aggregate", aggregate);
+// ponytail: keep old bookmarks working; both modes now live in the ask workspace.
+router.register("aggregate", { show() { queueMicrotask(() => router.navigate("ask", { mode: "aggregate" })); } });
 router.register("library", library);
 router.register("settings", settings);
 router.register("audit", audit);
@@ -30,6 +30,19 @@ router.register("users", users);
 document.querySelector("#warning-rebuild").addEventListener("click", () => requestIndexRebuild());
 
 // --- shell controls -------------------------------------------------------
+
+document.addEventListener("click", event => {
+  for (const menu of document.querySelectorAll(".shell-popover[open]")) {
+    if (!menu.contains(event.target) || event.target.closest("a")) menu.open = false;
+  }
+});
+document.addEventListener("keydown", event => {
+  if (event.key !== "Escape") return;
+  for (const menu of document.querySelectorAll(".shell-popover[open]")) {
+    if (menu.contains(document.activeElement)) menu.querySelector("summary").focus();
+    menu.open = false;
+  }
+});
 
 el.refreshButton.addEventListener("click", () => {
   emit("staging:refresh");

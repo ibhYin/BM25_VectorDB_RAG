@@ -285,6 +285,10 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             raise RequestError(HTTPStatus.BAD_REQUEST, "Question is required")
 
         params = self._read_retrieval_params(payload)
+        model = self._read_request_model(payload)
+        settings = settings.model_copy(deep=True)
+        if model is not None:
+            settings.llm_model = model
         result = answer_question(
             question,
             settings,
@@ -408,6 +412,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
 
         try:
             params = self._read_retrieval_params(payload)
+            model = self._read_request_model(payload)
             job = get_answer_store().create(
                 question_value,
                 top_k=params["top_k"],
@@ -419,6 +424,7 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 fusion_alpha=params["fusion_alpha"],
                 user=user,
                 conversation_id=conversation_id,
+                llm_model=model,
             )
         except ValueError as exc:
             raise RequestError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
@@ -450,8 +456,9 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             raise RequestError(HTTPStatus.BAD_REQUEST, "Question is required")
 
         params = self._read_aggregate_params(payload)
+        model = self._read_request_model(payload)
         try:
-            job = get_aggregate_store().create(question, params, user=user)
+            job = get_aggregate_store().create(question, params, user=user, llm_model=model)
         except ValueError as exc:
             raise RequestError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
         self._send_json(job, status=HTTPStatus.ACCEPTED)
@@ -1375,6 +1382,17 @@ class WebRequestHandler(BaseHTTPRequestHandler):
                 f"{field} must start with http:// or https://",
             )
         return value
+
+    def _read_request_model(self, payload: dict[str, object]) -> str | None:
+        if "llm_model" not in payload:
+            return None
+        model = self._clean_model_name(payload["llm_model"], "llm_model")
+        if not model:
+            raise RequestError(HTTPStatus.BAD_REQUEST, "llm_model must not be empty")
+        # 会话覆盖沿用现有模型选择权限，不扩大普通用户可用的模型范围。
+        if model != get_settings().llm_model:
+            self._require_admin()
+        return model
 
     @classmethod
     def _clean_model_name(cls, value: object, field: str) -> str:

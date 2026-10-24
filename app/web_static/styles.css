@@ -83,7 +83,8 @@ svg {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  height: 58px;
+  min-height: 58px;
+  flex-wrap: wrap;
   padding: 0 18px;
   background: var(--surface);
   border-bottom: 1px solid var(--line);
@@ -94,9 +95,11 @@ svg {
   align-items: center;
   gap: 12px;
   min-width: 0;
+  flex: 0 1 auto;
 }
 
 .brand-mark {
+  flex: none;
   display: grid;
   place-items: center;
   width: 34px;
@@ -111,17 +114,14 @@ svg {
 .brand-text h1 {
   font-size: 15px;
   font-weight: 650;
-}
-
-.brand-text p {
-  font-size: 12px;
-  color: var(--ink-soft);
+  white-space: nowrap;
 }
 
 .header-actions {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: none;
 }
 
 .chip {
@@ -356,6 +356,8 @@ svg {
   font-size: 13px;
   color: var(--ink-soft);
   text-decoration: none;
+  white-space: nowrap;
+  flex: none;
   transition: background-color 120ms ease, color 120ms ease;
 }
 
@@ -389,12 +391,14 @@ svg {
 
 .page-ask {
   padding: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .ask-layout {
   --rail-right: 360px;
   --rail-conv: 232px;
-  height: 100%;
+  flex: 1;
   min-height: 0;
   display: grid;
   grid-template-columns: var(--rail-conv) 6px minmax(0, 1fr) 6px var(--rail-right);
@@ -1572,8 +1576,7 @@ svg {
   .app-nav {
     order: 3;
     width: 100%;
-    overflow-x: auto;
-    scrollbar-width: none;
+    flex-wrap: wrap;
   }
 
   .app-nav::-webkit-scrollbar {
@@ -1603,14 +1606,6 @@ svg {
   .chat-stream {
     min-height: 320px;
     max-height: 56vh;
-  }
-
-  .brand-text p {
-    display: none;
-  }
-
-  .header-actions .chip {
-    display: none;
   }
 
   .brand-text h1 {
@@ -1858,8 +1853,39 @@ svg {
 .search-select-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .config-field .search-select { max-width: none; }
 .staging-actions .search-select { width: auto; min-width: 160px; flex: 1; }
-.ask-head-right .search-select { width: 240px; max-width: 65vw; }
-.ask-head-right .search-select-input { height: 28px; font-size: 12px; }
+.model-dialog .search-select { max-width: none; }
+.model-dialog .search-select-options { position: relative; top: 0; margin-top: 6px; box-shadow: none; }
+.model-dialog > p, .model-search-label { display: block; margin: 12px 0; font-size: 12px; color: var(--ink-soft); }
+.model-dialog .config-actions { margin-top: 16px; }
+.model-trigger { max-width: min(340px, 42vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-trigger::after { content: " ▾"; }
+.ask-model-readonly { display: block; max-width: min(340px, 65vw); overflow: hidden; text-overflow: ellipsis; line-height: 24px; }
+
+.shell-popover { position: relative; }
+.shell-popover > summary { padding: 6px 10px; cursor: pointer; white-space: nowrap; border-radius: var(--radius); }
+.shell-popover:has(.active) > summary, .shell-popover[open] > summary { color: var(--accent-strong); background: var(--accent-soft); }
+.shell-popover:has(.chip.warn) > summary { color: var(--danger); background: var(--danger-soft); }
+.shell-popover-panel { position: absolute; top: calc(100% + 8px); right: 0; z-index: 40; width: min(360px, calc(100vw - 24px)); max-height: 70dvh; overflow: auto; padding: 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: 0 4px 16px rgb(33 31 28 / 12%); }
+.management-links { width: 150px; display: grid; gap: 4px; }
+.system-status-panel { display: flex; flex-wrap: wrap; gap: 10px; }
+.system-status-panel > p, .system-status-panel > strong { width: 100%; overflow-wrap: anywhere; }
+.system-status-panel .chip { height: auto; white-space: normal; }
+#server-stats-detail { white-space: pre-line; font-size: 12px; color: var(--ink-soft); }
+.workspace-toolbar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 18px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.workspace-modes { display: flex; gap: 4px; }
+.workspace-modes button { padding: 6px 12px; border-radius: var(--radius); white-space: nowrap; }
+.workspace-modes [aria-pressed="true"] { color: var(--accent-strong); background: var(--accent-soft); }
+.workspace-toolbar .ask-head-right { min-width: 0; flex-wrap: wrap; }
+.workspace-toolbar .kb-status { max-width: min(360px, 75vw); white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.aggregate-workspace { flex: 1; min-height: 0; overflow-y: auto; padding: 18px; }
+.aggregate-workspace > * + * { margin-top: 14px; }
+.retrieval-settings { flex: none; border-top: 1px solid var(--line); }
+.retrieval-settings > summary { padding: 8px 18px; cursor: pointer; font-size: 12px; }
+.retrieval-settings > summary span { margin-left: 12px; color: var(--ink-soft); }
+#resizer-bar:has(+ .retrieval-settings:not([open])) { display: none; }
+.aggregate-mode .ask-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.aggregate-mode .conv-rail, .aggregate-mode .ask-rail, .aggregate-mode .resizer { display: none; }
+.aggregate-mode .ask-main { width: 100%; max-width: 1160px; margin: 0 auto; min-width: 0; }
 .search-select-options {
   position: absolute;
   top: calc(100% + 4px);
@@ -2756,37 +2782,6 @@ svg {
   margin-left: auto;
 }
 
-/* 比 .config-select（34px）紧凑一档，才塞得进头部这一行 */
-.ask-model-select,
-.ask-model-custom {
-  height: 28px;
-  padding: 0 8px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
-  background: var(--bg);
-  font: inherit;
-  font-size: 12px;
-  color: var(--ink);
-}
-
-.ask-model-select {
-  max-width: 220px;
-  cursor: pointer;
-}
-
-.ask-model-hint {
-  font-size: 11px;
-  color: var(--ink-faint);
-}
-
-.ask-model-hint:empty {
-  display: none;
-}
-
-.ask-model-hint.error {
-  color: var(--danger);
-}
-
 /* 策略里定义了、但本实例不服务的知识库。用虚线且不抢眼：它是说明，不是告警。 */
 .kb-note {
   padding: 3px 9px;
@@ -2794,7 +2789,8 @@ svg {
   border-radius: 999px;
   font-size: 11.5px;
   color: var(--ink-faint);
-  white-space: nowrap;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 /* 竖向拖出来的高度。min-height: min-content 兜住内容——检索参数栏在窄窗会换行，
@@ -3145,55 +3141,11 @@ svg {
 
 /* ============================ 聚合统计 ============================ */
 
-.aggregate-form {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.aggregate-question-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--ink-soft);
-}
-
-.aggregate-question-field textarea {
-  width: 100%;
-  min-height: 78px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--surface);
-  color: var(--ink);
-  font: inherit;
-  font-size: 13.5px;
-  line-height: 1.5;
-  resize: vertical;
-}
-
 .aggregate-options {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 14px;
-}
-
-.aggregate-options select {
-  height: 28px;
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--surface);
-  color: var(--ink);
-  font: inherit;
-  font-size: 12.5px;
-}
-
-.aggregate-status {
-  font-size: 12.5px;
-  color: var(--ink-soft);
 }
 
 .aggregate-note {
@@ -3214,6 +3166,7 @@ svg {
 
 .aggregate-category-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;

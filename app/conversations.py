@@ -52,6 +52,7 @@ HIT_FIELDS = (
 # Per-turn retrieval summary. Deliberately excludes the full candidate trace:
 # history only needs the counts and each final hit's provenance.
 RETRIEVAL_FIELDS = (
+    "llm_model",
     "retrieval_method",
     "top_k",
     "pool",

@@ -341,3 +341,52 @@ def test_creating_an_answer_job_with_a_bad_conversation_id_type_is_rejected(
         handler._handle_create_answer_job()
 
     assert error.value.status == HTTPStatus.BAD_REQUEST
+
+
+@pytest.mark.parametrize("value", [None, "", "bad model", 42, "x" * 129])
+def test_request_model_rejects_invalid_input(value):
+    handler, _ = make_api_handler()
+    with pytest.raises(RequestError) as error:
+        handler._read_request_model({"llm_model": value})
+    assert error.value.status == HTTPStatus.BAD_REQUEST
+
+
+def test_request_model_preserves_existing_selection_permission(monkeypatch):
+    from app.config import Settings
+
+    monkeypatch.setattr("app.web.get_settings", lambda: Settings(_env_file=None, llm_model="default"))
+    handler, _ = make_api_handler()
+    def deny():
+        raise RequestError(HTTPStatus.FORBIDDEN, "admin required")
+    handler._require_admin = deny
+    assert handler._read_request_model({}) is None
+    assert handler._read_request_model({"llm_model": "default"}) == "default"
+    with pytest.raises(RequestError) as error:
+        handler._read_request_model({"llm_model": "other"})
+    assert error.value.status == HTTPStatus.FORBIDDEN
+
+
+@pytest.mark.parametrize("kind", ["ask", "answer", "aggregate"])
+def test_request_model_reaches_each_execution_path_without_global_write(monkeypatch, kind):
+    from types import SimpleNamespace
+    from app.config import Settings
+
+    settings = Settings(_env_file=None, llm_model="default")
+    monkeypatch.setattr("app.web.get_settings", lambda: settings)
+    observed = {}
+    def create(*args, **kwargs):
+        observed.update(kwargs)
+        return {"id": "fake"}
+    def answer(question, run_settings, **kwargs):
+        observed["llm_model"] = run_settings.llm_model
+        assert run_settings is not settings
+        return {"answer": "mock", "retrieval_method": "vector"}
+    monkeypatch.setattr("app.answer_jobs.get_answer_store", lambda: SimpleNamespace(create=create))
+    monkeypatch.setattr("app.aggregate_jobs.get_aggregate_store", lambda: SimpleNamespace(create=create))
+    monkeypatch.setattr("app.service.answer_question", answer)
+    handler, captured = make_api_handler(payload={"question": "mock", "llm_model": "conversation-model"})
+    handler._require_admin = lambda: None
+    getattr(handler, {"ask": "_handle_ask", "answer": "_handle_create_answer_job", "aggregate": "_handle_create_aggregate_job"}[kind])()
+    assert observed["llm_model"] == "conversation-model"
+    assert settings.llm_model == "default"
+    assert captured["status"] in (200, 202)

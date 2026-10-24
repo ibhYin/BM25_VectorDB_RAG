@@ -13,7 +13,6 @@
         <span class="brand-mark" aria-hidden="true">R</span>
         <div class="brand-text">
           <h1>知识库工作台</h1>
-          <p id="service-summary">正在连接服务…</p>
         </div>
       </div>
 
@@ -22,17 +21,29 @@
         <a class="nav-link" href="#/library" data-route="library">
           知识库<span id="nav-library-badge" class="nav-badge" hidden>0</span>
         </a>
-        <a class="nav-link" href="#/aggregate" data-route="aggregate">聚合</a>
-        <a class="nav-link" id="nav-settings" href="#/settings" data-route="settings">设置</a>
-        <a class="nav-link" id="nav-audit" href="#/audit" data-route="audit" hidden>审计</a>
-        <a class="nav-link" id="nav-eval" href="#/eval" data-route="eval" hidden>评估</a>
-        <a class="nav-link" id="nav-users" href="#/users" data-route="users" hidden>用户</a>
+        <details class="shell-popover" id="management-menu" hidden>
+          <summary>管理</summary>
+          <div class="shell-popover-panel management-links">
+            <a class="nav-link" id="nav-settings" href="#/settings" data-route="settings">设置</a>
+            <a class="nav-link" id="nav-audit" href="#/audit" data-route="audit" hidden>审计</a>
+            <a class="nav-link" id="nav-eval" href="#/eval" data-route="eval" hidden>评估</a>
+            <a class="nav-link" id="nav-users" href="#/users" data-route="users" hidden>用户</a>
+          </div>
+        </details>
       </nav>
 
       <div class="header-actions">
-        <span id="vector-status" class="chip loading"><span class="loading-spinner" aria-hidden="true"></span><span>加载中</span></span>
-        <span id="model-status" class="chip loading"><span class="loading-spinner" aria-hidden="true"></span><span>加载中</span></span>
-        <span id="server-stats" class="chip" title="服务器资源占用"><span class="loading-spinner" aria-hidden="true"></span><span>资源…</span></span>
+        <details class="shell-popover">
+          <summary>系统状态</summary>
+          <div class="shell-popover-panel system-status-panel">
+            <strong>服务与资源</strong>
+            <p id="service-summary">正在连接服务…</p>
+            <span id="vector-status" class="chip loading">加载中</span>
+            <span id="model-status" class="chip loading">加载中</span>
+            <span id="server-stats" class="chip">资源加载中</span>
+            <p id="server-stats-detail"></p>
+          </div>
+        </details>
         <div id="user-switcher" class="user-switcher" hidden>
           <button id="user-button" class="user-button" type="button" aria-haspopup="menu" aria-expanded="false">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/></svg>
@@ -63,6 +74,33 @@
 
     <!-- ============================ 问答 ============================ -->
     <section class="page page-ask" id="page-ask" aria-label="知识库问答">
+      <div class="workspace-toolbar">
+        <div class="workspace-modes" role="group" aria-label="工作模式">
+          <button id="mode-ask" type="button" aria-pressed="true" aria-controls="chat-stream">问答</button>
+          <button id="mode-aggregate" type="button" aria-pressed="false" aria-controls="aggregate-workspace">归类统计</button>
+        </div>
+        <div class="ask-head-right">
+          <span class="chip ask-model-readonly" id="ask-llm-readonly" hidden></span>
+          <button id="ask-model-open" class="ghost-button model-trigger" type="button" aria-haspopup="dialog" aria-controls="ask-model-dialog" hidden>选择模型</button>
+          <div class="kb-picker">
+            <button id="kb-status" class="kb-status" type="button" aria-haspopup="menu" aria-expanded="false">—</button>
+            <div id="kb-menu" class="kb-menu" role="menu" hidden></div>
+          </div>
+          <span class="kb-note" id="kb-others" hidden></span>
+          <button id="clear-chat-button" class="icon-button" type="button" title="清空当前对话显示" aria-label="清空当前对话显示">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h18M19 6v14H5V6M9 6V3h6v3"/></svg>
+          </button>
+        </div>
+      </div>
+      <dialog id="ask-model-dialog" class="rebuild-dialog model-dialog" aria-labelledby="ask-model-title" aria-describedby="ask-model-scope">
+        <h2 id="ask-model-title">选择对话模型</h2>
+        <p id="ask-model-scope">仅影响当前会话的后续请求，全局默认模型在设置页修改。</p>
+        <label class="model-search-label" for="ask-llm-model-custom">搜索模型名称或 ID</label>
+        <select id="ask-llm-model" aria-label="对话模型" hidden></select>
+        <input id="ask-llm-model-custom" aria-label="搜索模型名称或 ID" type="text" placeholder="搜索模型…" autocomplete="off" spellcheck="false" hidden />
+        <p id="ask-llm-hint" role="status" aria-live="polite"></p>
+        <form method="dialog" class="config-actions"><button class="ghost-button" type="submit">关闭</button></form>
+      </dialog>
       <div class="ask-layout">
         <aside class="conv-rail" aria-label="对话记录">
           <button id="new-conversation" class="primary-button conv-new" type="button">新对话</button>
@@ -79,25 +117,6 @@
               <h2>问答</h2>
               <p id="run-status" role="status" aria-live="polite">就绪</p>
             </div>
-            <!-- 改动会写进服务器配置、对所有人生效，所以放在会话信息这一侧，
-                 而不是下面那排「按请求」的检索参数里 —— 放那里会被当成只影响这一次。
-                 非管理员看不到它（由 canConfigure() 决定）。 -->
-            <div class="ask-head-right">
-              <!-- 不能改的人也看得到当前用的是哪个模型：它直接决定答案质量，
-                   藏起来只会让人不知道自己在跟哪个模型说话。 -->
-              <span class="chip ask-model-readonly" id="ask-llm-readonly" hidden></span>
-              <select id="ask-llm-model" class="ask-model-select" aria-label="对话模型（改动保存在服务器上）" hidden></select>
-              <input id="ask-llm-model-custom" aria-label="自定义对话模型" class="ask-model-custom" type="text" placeholder="输入模型名" autocomplete="off" spellcheck="false" hidden />
-              <span class="ask-model-hint" id="ask-llm-hint" role="status" aria-live="polite"></span>
-              <div class="kb-picker">
-                <button id="kb-status" class="kb-status" type="button" aria-haspopup="menu" aria-expanded="false">—</button>
-                <div id="kb-menu" class="kb-menu" role="menu" hidden></div>
-              </div>
-              <span class="kb-note" id="kb-others" hidden></span>
-              <button id="clear-chat-button" class="icon-button" type="button" title="清空当前对话" aria-label="清空当前对话">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-              </button>
-            </div>
           </div>
 
           <div class="chat-stream" id="chat-stream" aria-live="polite">
@@ -108,8 +127,20 @@
             </div>
           </div>
 
+          <section id="aggregate-workspace" class="aggregate-workspace" aria-label="样本归类统计" hidden>
+            <p class="aggregate-note">仅描述当前检索样本，不代表全库数量或占比。</p>
+            <div class="aggregate-options">
+              <label class="mini-field"><span>样本片段数</span><input id="aggregate-sample-size" type="number" form="ask-form" min="10" max="500" step="1" value="200" placeholder="200" required disabled /></label>
+              <label class="mini-field"><span>返回类别数</span><input id="aggregate-top-categories" type="number" form="ask-form" min="1" max="10" step="1" value="3" placeholder="3" required disabled /></label>
+            </div>
+            <p id="aggregate-status" role="status" aria-live="polite">在下方输入主题，开始归类统计</p>
+            <div id="aggregate-output"></div>
+          </section>
+
           <div class="resizer-row" id="resizer-bar" role="separator" aria-orientation="horizontal" aria-label="调整检索参数栏高度" tabindex="0"></div>
 
+          <details class="retrieval-settings">
+          <summary>检索设置<span>召回、融合与过滤</span></summary>
           <div class="settings-bar" role="group" aria-label="检索参数">
             <div class="param-group" role="group" aria-label="召回">
               <span class="param-group-label">召回</span>
@@ -151,6 +182,8 @@
               </label>
             </div>
           </div>
+
+          </details>
 
           <div class="resizer-row" id="resizer-form" role="separator" aria-orientation="horizontal" aria-label="调整输入区高度" tabindex="0"></div>
 
@@ -305,43 +338,6 @@
           <button id="doc-load-more" class="ghost-button" type="button" hidden>加载更多</button>
         </div>
       </div>
-    </section>
-
-    <!-- ============================ 聚合统计 ============================ -->
-    <section class="page" id="page-aggregate" hidden aria-label="聚合统计">
-      <div class="page-head">
-        <h2>聚合统计</h2>
-        <p>对召回样本做语义归类计数，例如「出现违约条款最多的三种情况」</p>
-      </div>
-
-      <form id="aggregate-form" class="panel aggregate-form">
-        <label class="aggregate-question-field">
-          <span>聚合问题</span>
-          <textarea id="aggregate-question" rows="3" required placeholder="例如：知识库里的历史合同，出现违约条款最多的三种情况是什么？"></textarea>
-        </label>
-        <div class="aggregate-options">
-          <label class="mini-field">
-            <span>样本片段数</span>
-            <input id="aggregate-sample-size" type="number" min="10" max="500" step="10" value="200" required placeholder="200" />
-          </label>
-          <label class="mini-field">
-            <span>返回类别数</span>
-            <input id="aggregate-top-categories" type="number" min="1" max="10" step="1" value="3" required placeholder="3" />
-          </label>
-          <label class="mini-field">
-            <span>检索方式</span>
-            <select id="aggregate-method">
-              <option value="hybrid">混合</option>
-              <option value="vector">向量</option>
-              <option value="bm25">BM25</option>
-            </select>
-          </label>
-          <button id="aggregate-submit" class="primary-button" type="submit">开始聚合</button>
-        </div>
-        <p id="aggregate-status" class="aggregate-status" role="status" aria-live="polite">就绪</p>
-      </form>
-
-      <div id="aggregate-output"></div>
     </section>
 
     <!-- ============================ 设置 ============================ -->

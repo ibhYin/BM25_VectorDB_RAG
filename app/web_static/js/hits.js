@@ -8,7 +8,7 @@
 // 混合检索的卡片会显示「向量 → BM25 → 融合」名次轨迹；缺少新字段的旧数据
 // （历史对话）只显示已有的分数。
 
-const USED_BADGE_LABELS = { used: "已用", unused: "未用", candidate: "候选" };
+const USED_BADGE_LABELS = { used: "已引用", unused: "未引用", candidate: "候选" };
 const SOURCE_LABELS = { vector: "向量", bm25: "BM25" };
 
 export function setUsedBadge(card, used) {
@@ -16,6 +16,7 @@ export function setUsedBadge(card, used) {
   if (!badge) return;
   badge.className = `used-badge ${used}`;
   badge.textContent = USED_BADGE_LABELS[used] || "";
+  badge.title = "按答案中的切片引用标记判断；未引用不代表模型未读取或未使用";
 }
 
 function fmt(value, digits = 2) {
@@ -124,6 +125,7 @@ export function createVectorHitCard(hit, options = {}) {
     const badge = document.createElement("span");
     badge.className = `used-badge ${used}`;
     badge.textContent = badgeLabel;
+    badge.title = "按答案中的切片引用标记判断；未引用不代表模型未读取或未使用";
     titleRow.append(badge);
   }
   const source = sourceLabel(hit.sources);

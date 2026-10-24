@@ -14,7 +14,7 @@ from rag.vector_store import get_embeddings
 
 ProgressCallback = Callable[[str, dict[str, object]], None]
 MAX_EVIDENCE_PER_CATEGORY = 3
-SAMPLE_NOTE = "基于召回样本估计，非全库精确计数。"
+SAMPLE_NOTE = "仅描述当前检索样本，不代表全库数量或占比。"
 
 
 def _unit(vector: list[float]) -> list[float]:

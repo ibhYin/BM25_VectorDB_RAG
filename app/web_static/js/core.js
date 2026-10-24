@@ -278,6 +278,7 @@ const ADMIN_PAGES = ["settings", "audit", "eval", "users"];
 
 function renderNavGating() {
   const allowed = canConfigure();
+  document.querySelector("#management-menu").hidden = !allowed;
   const links = {
     settings: el.navSettings,
     audit: el.navAudit,
@@ -359,8 +360,10 @@ export async function refreshStatus() {
     el.serviceSummary.textContent = `${status.llm_model} · ${status.embedding_model}`;
     el.vectorStatus.textContent = status.chroma_exists ? "向量库可用" : "向量库未创建";
     el.vectorStatus.classList.toggle("ok", status.chroma_exists);
+    el.vectorStatus.classList.remove("warn");
     el.modelStatus.textContent = status.has_openai_api_key ? "LLM 已配置" : "LLM 未配置";
     el.modelStatus.classList.toggle("ok", status.has_openai_api_key);
+    el.modelStatus.classList.remove("warn");
     renderIndexWarning(status);
     emit("status", status);
     notifyViews("onStatus", status);
@@ -369,6 +372,10 @@ export async function refreshStatus() {
     el.serviceSummary.textContent = "服务连接失败";
     el.vectorStatus.textContent = "服务不可用";
     el.modelStatus.textContent = "服务不可用";
+    for (const chip of [el.vectorStatus, el.modelStatus]) {
+      chip.classList.remove("ok");
+      chip.classList.add("warn");
+    }
     el.indexWarning.hidden = true;
     emit("status", null);
     notifyViews("onStatus", null);
@@ -415,6 +422,7 @@ export async function refreshServerStats() {
     stats = await requestJson("/api/system-stats");
   } catch (_) {
     el.serverStats.textContent = "资源不可用";
+    document.querySelector("#server-stats-detail").textContent = "暂时无法读取服务器资源，请稍后重试。";
     el.serverStats.classList.remove("ok", "warn");
     return;
   }
@@ -425,9 +433,9 @@ export async function refreshServerStats() {
   const load = stats.cpu_load;
 
   const parts = [];
-  parts.push(`CPU ${load === null || load === undefined ? "?" : load.toFixed(2)}`);
-  parts.push(`内存 ${memPercent === null || memPercent === undefined ? "?" : `${memPercent}%`}`);
-  parts.push(`盘 ${diskPercent === null || diskPercent === undefined ? "?" : `${diskPercent}%`}`);
+  parts.push(`CPU ${load === null || load === undefined ? "暂不可用" : load.toFixed(2)}`);
+  parts.push(`内存 ${memPercent === null || memPercent === undefined ? "暂不可用" : `${memPercent}%`}`);
+  parts.push(`盘 ${diskPercent === null || diskPercent === undefined ? "暂不可用" : `${diskPercent}%`}`);
   el.serverStats.textContent = parts.join(" · ");
 
   // tooltip：完整明细
@@ -448,6 +456,7 @@ export async function refreshServerStats() {
         : "向量服务 未知",
   ].filter(Boolean);
   el.serverStats.title = detail.join("\n");
+  document.querySelector("#server-stats-detail").textContent = detail.join("\n");
 
   const warned =
     (memPercent !== null && memPercent !== undefined && memPercent >= 90) ||

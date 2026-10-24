@@ -5,7 +5,6 @@ import {
   createSpinner,
   formatTime,
   on,
-  refreshStatus,
   requestJson,
   router,
   shortDocLabel,
@@ -16,6 +15,7 @@ import { createVectorHitCard, setUsedBadge } from "../hits.js";
 import { createModelPicker } from "../model-picker.js";
 import { enableResize } from "../resizer.js";
 import { resetSelectSearch } from "../select-search.js";
+import { submitAggregate } from "./aggregate.js";
 
 const el = {
   chatStream: document.querySelector("#chat-stream"),
@@ -58,6 +58,8 @@ const el = {
 };
 
 let mounted = false;
+let workspaceMode = "ask";
+let conversationModel = "";
 
 // 流式答案：轮询期间不断把 job 里的增量答案重渲染进同一个 article。
 let streamingAnswerEl = null;
@@ -129,6 +131,42 @@ function updateRetrievalControls() {
   el.fusionAlphaField.hidden = fusionOff || !weighted;
 }
 
+function setWorkspaceMode(mode) {
+  workspaceMode = mode === "aggregate" ? "aggregate" : "ask";
+  const aggregate = workspaceMode === "aggregate";
+  document.querySelector("#page-ask").classList.toggle("aggregate-mode", aggregate);
+  document.querySelector("#mode-ask").setAttribute("aria-pressed", String(!aggregate));
+  document.querySelector("#mode-aggregate").setAttribute("aria-pressed", String(aggregate));
+  document.querySelector("#aggregate-workspace").hidden = !aggregate;
+  el.chatStream.hidden = aggregate;
+  document.querySelector(".ask-head h2").textContent = aggregate ? "样本归类统计" : "问答";
+  el.runStatus.hidden = aggregate;
+  el.clearChatButton.hidden = aggregate;
+  el.retrievalTopK.disabled = aggregate;
+  el.retrievalTopK.closest("label").hidden = aggregate;
+  for (const id of ["aggregate-sample-size", "aggregate-top-categories"]) {
+    document.getElementById(id).disabled = !aggregate;
+  }
+  el.question.placeholder = aggregate
+    ? "输入归类主题，例如：检索样本中的违约条款有哪些类别？"
+    : "输入问题，Enter 发送 · Shift+Enter 换行";
+  el.askButton.title = aggregate ? "开始归类统计" : "发送";
+  el.askButton.setAttribute("aria-label", el.askButton.title);
+}
+
+function requestParams() {
+  return {
+    llm_model: llmPicker.value() || state.status?.llm_model,
+    retrieval_method: getRetrievalMethod(),
+    top_k: Number(el.retrievalTopK.value),
+    candidate_pool: el.candidatePool.disabled ? undefined : Number(el.candidatePool.value),
+    similarity_threshold: el.similarityThreshold.disabled ? undefined : Number(el.similarityThreshold.value),
+    fusion_method: el.candidatePool.disabled ? undefined : getFusionMethod(),
+    fusion_k: el.candidatePool.disabled || getFusionMethod() !== "rrf" ? undefined : Number(el.fusionK.value),
+    fusion_alpha: el.candidatePool.disabled || getFusionMethod() !== "weighted" ? undefined : Number(el.fusionAlpha.value),
+  };
+}
+
 // --- answer rendering -----------------------------------------------------
 
 // A citation may or may not carry a chunk id; bold and inline code ride along in
@@ -150,7 +188,7 @@ function createCitationChip(docId, chunkId) {
   return chip;
 }
 
-// 从答案文本收集被引用的完整切片 id（doc_id#chunk_N），用来给匹配内容标「已用」。
+// 从答案文本收集被引用的完整切片 id（doc_id#chunk_N），用来给匹配内容标「已引用」。
 function extractCitedChunkIds(answerText) {
   const cited = new Set();
   if (!answerText) return cited;
@@ -181,7 +219,7 @@ function aggregateDocs(hits, answerText) {
   return docs;
 }
 
-// 从「这一轮」的 hits + 答案算某文档的已用/未用切片，跳文档查看器并双色高亮。
+// 从「这一轮」的 hits + 答案算某文档的已引用/未引用切片，跳文档查看器并双色高亮。
 function navigateToDoc(hits, answerText, docId, chunkId) {
   const cited = answerText ? extractCitedChunkIds(answerText) : null;
   const sameDoc = (hits || []).filter((item) => item.doc_id === docId);
@@ -212,7 +250,7 @@ function renderRetrievedDocs(answerEl, hits, answerText) {
     chip.type = "button";
     chip.className = "doc-chip";
     chip.textContent = doc.used
-      ? `${doc.title}（已用 ${doc.used}/${doc.total}）`
+      ? `${doc.title}（已引用 ${doc.used}/${doc.total}）`
       : `${doc.title}（${doc.total} 片）`;
     chip.title = "在文档查看器中查看该文档的命中切片";
     chip.addEventListener("click", () =>
@@ -223,7 +261,7 @@ function renderRetrievedDocs(answerEl, hits, answerText) {
   answerEl.append(row);
 }
 
-// 跳到知识库文档查看器，并把「同一文档下」的命中切片按已用/未用分色高亮。
+// 跳到知识库文档查看器，并把「同一文档下」的命中切片按已引用/未引用分色高亮。
 // 答案还没生成时（候选期）不传高亮集合，只定位点击的切片。
 function openHitInOriginal(hit) {
   const hits = selectedTurnHits ?? (state.vectorHits || []);
@@ -397,6 +435,7 @@ function finalizeAnswer(job) {
       ...detail,
       retrieval_method: job.retrieval_method,
       fusion_method: job.fusion_method,
+      llm_model: job.llm_model,
     },
   };
   streamingAnswerEl._turn = turn;
@@ -433,6 +472,8 @@ function retrievalSource() {
     key: job?.id || "live",
     hits: state.vectorHits || [],
     answer: job?.answer || "",
+    status: job?.stages?.vector_search?.status || "pending",
+    error: job?.error || "",
     retrieval: {
       ...detail,
       retrieval_method: job?.retrieval_method,
@@ -443,7 +484,7 @@ function retrievalSource() {
 }
 
 let retrievalStructureKey = "";
-// chunk_id → { card, used }：结构不变时只更新已用/未用徽标，不重建 DOM，
+// chunk_id → { card, used }：结构不变时只更新已引用/未引用徽标，不重建 DOM，
 // 免得 300ms 一次的轮询把用户展开的 <details> 收掉。
 let retrievalCards = new Map();
 
@@ -490,20 +531,21 @@ function buildStages(method, source, trace, hits) {
     ).slice().sort((a, b) => a.bm25_rank - b.bm25_rank);
     const vectorCount = trace
       ? trace.vector_count
-      : (retrieval.vector_candidates ?? vectorRows.length);
+      : retrieval.vector_candidates;
     const bm25Count = trace
       ? trace.bm25_count
-      : (retrieval.bm25_candidates ?? bm25Rows.length);
+      : retrieval.bm25_candidates;
     const unionCount = trace ? trace.union_count : retrieval.union_candidates;
     const historyNote = candidates
       ? ""
-      : " 历史记录只保留最终结果的名次，候选池未保存。";
+      : " 历史候选明细未保存；下方仅展示最终结果中可追溯的条目，不代表完整召回池。";
     return [
       {
         key: "vector",
         index: "①",
         title: "向量召回",
-        stat: `${vectorCount ?? vectorRows.length} 条`,
+        stat: vectorCount != null ? `${vectorCount} 条` : vectorRows.length ? "总数未记录" : "未记录",
+        empty: vectorCount === 0 ? "向量这一路没有命中" : "历史召回明细未保存，无法还原候选列表",
         note: `按 L2 距离换算分排序，是候选来源之一。${historyNote}`,
         rows: vectorRows,
         score: (row) => `相似度 ${fmt(row.similarity)}`,
@@ -514,7 +556,8 @@ function buildStages(method, source, trace, hits) {
         key: "bm25",
         index: "②",
         title: "BM25 召回",
-        stat: `${bm25Count ?? bm25Rows.length} 条`,
+        stat: bm25Count != null ? `${bm25Count} 条` : bm25Rows.length ? "总数未记录" : "未记录",
+        empty: bm25Count === 0 ? "BM25 这一路没有命中" : "历史召回明细未保存，无法还原候选列表",
         note: `在持久化 FTS5 索引上检索全库，与向量路相互独立，不是对①的重排。${historyNote}`,
         rows: bm25Rows,
         score: (row) => `BM25 ${fmt(row.bm25_score)}`,
@@ -655,7 +698,7 @@ function renderStage(stage, cited) {
   if (!stage.rows.length) {
     const empty = document.createElement("li");
     empty.className = "stage-empty";
-    empty.textContent = stage.key === "bm25" ? "BM25 这一路没有命中" : "这一路没有结果";
+    empty.textContent = stage.empty || "这一路没有结果";
     list.append(empty);
   }
   for (const row of stage.rows) {
@@ -693,7 +736,10 @@ function renderRetrieval() {
     source.key,
     method,
     hits.map((hit) => hit.chunk_id).join("␟"),
-    trace ? trace.candidates.length : 0,
+    trace?.candidates?.length || 0,
+    source.retrieval.vector_candidates,
+    source.retrieval.bm25_candidates,
+    source.status,
     source.pinned ? "pinned" : "live",
   ].join("|");
 
@@ -705,12 +751,17 @@ function renderRetrieval() {
   retrievalCards = new Map();
   el.retrievalStages.replaceChildren();
 
-  if (!hits.length && !trace) {
+  if (method === "system" || (!hits.length && !trace && source.status !== "completed"
+      && source.retrieval.vector_candidates == null && source.retrieval.bm25_candidates == null)) {
     const empty = document.createElement("div");
     empty.className = "empty-list";
     empty.textContent = method === "system"
       ? "本次由系统状态直接回答，未检索知识库。"
-      : "暂无上下文";
+      : source.pinned ? "历史检索明细未保存"
+        : source.status === "failed" ? `检索失败：${source.error || "请查看问答过程"}`
+          : source.status === "running" ? "检索中…"
+            : source.status === "skipped" ? "本次未执行检索"
+              : "尚未执行检索";
     el.retrievalStages.append(empty);
     return;
   }
@@ -957,6 +1008,13 @@ async function ask(event) {
     return;
   }
 
+  const params = requestParams();
+  conversationModel ||= params.llm_model || "";
+  if (workspaceMode === "aggregate") {
+    await submitAggregate(question, params);
+    return;
+  }
+
   lastQuestionEl = addChatMessage("question", question);
   el.question.value = "";
   el.askButton.disabled = true;
@@ -986,23 +1044,7 @@ async function ask(event) {
       body: JSON.stringify({
         question,
         conversation_id: conversationId,
-        retrieval_method: getRetrievalMethod(),
-        top_k: Number(el.retrievalTopK.value),
-        candidate_pool: el.candidatePool.disabled
-          ? undefined
-          : Number(el.candidatePool.value),
-        similarity_threshold: el.similarityThreshold.disabled
-          ? undefined
-          : Number(el.similarityThreshold.value),
-        fusion_method: el.candidatePool.disabled ? undefined : getFusionMethod(),
-        fusion_k:
-          el.candidatePool.disabled || getFusionMethod() !== "rrf"
-            ? undefined
-            : Number(el.fusionK.value),
-        fusion_alpha:
-          el.candidatePool.disabled || getFusionMethod() !== "weighted"
-            ? undefined
-            : Number(el.fusionAlpha.value),
+        ...params,
       }),
     });
     state.answerJob = job;
@@ -1121,6 +1163,8 @@ function selectConversation(conversationId) {
 
 function newConversation() {
   selectConversation("");
+  conversationModel = "";
+  setupModelSwitcher();
   resetChatStream();
   el.question.focus();
 }
@@ -1142,12 +1186,17 @@ async function deleteConversation(conversationId) {
 async function openConversation(conversationId) {
   if (conversationId === convState.currentId) return;
   selectConversation(conversationId);
+  conversationModel = "";
+  setupModelSwitcher();
   resetChatStream();
 
   try {
     const conversation = await requestJson(
       `/api/conversations/${encodeURIComponent(conversationId)}`,
     );
+    if (convState.currentId !== conversationId) return;
+    conversationModel = conversation.turns?.at(-1)?.retrieval?.llm_model || "";
+    setupModelSwitcher();
     const empty = el.chatStream.querySelector(".empty-chat");
     if (empty) empty.remove();
 
@@ -1367,34 +1416,40 @@ async function loadKnowledgeBases() {
 
 // --- 对话模型 -------------------------------------------------------------
 
-// 门禁用 canConfigure() 而不是 state.identity.isAdmin：本地直连后端（不经过
-// scripts/dev_proxy.py）时没有 /api/me，isAdmin 会是 false，而开放模式下后端是
-// 允许改配置的 —— 用 isAdmin 会让这个选择器永远不显示。
+// 沿用管理员模型选择权限；会话选择只随请求发送，不写全局配置。
 const llmPicker = createModelPicker({
   select: el.llmModel,
   custom: el.llmModelCustom,
   hint: el.llmHint,
   target: "llm",
 });
+el.llmModelCustom.placeholder = "搜索模型名称或 ID；自定义按 Enter 确认";
 
 let modelSwitcherReady = false;
 
 async function setupModelSwitcher(status = state.status) {
-  const model = status?.llm_model || "";
+  const allowed = canConfigure();
+  if (allowed && document.querySelector("#ask-model-dialog").open) return;
+  const model = (allowed && conversationModel) || status?.llm_model || "";
   // 开机时身份还没到（state.identity.user 为 null），canConfigure() 按开放模式算成
   // 允许，于是选择器会先显示出来；等拿到身份发现其实是普通用户，靠 onIdentity 收回。
-  const allowed = canConfigure();
   el.llmModel.hidden = !allowed;
+  const trigger = document.querySelector("#ask-model-open");
+  trigger.hidden = !allowed;
+  trigger.textContent = model || "选择模型";
+  trigger.title = `当前会话模型：${model || "未配置"}`;
   // 不能改的人也要知道现在用的是哪个模型——它直接决定答案质量。所以给一个只读的
   // chip，而不是干脆什么都不显示。
   el.llmReadonly.hidden = allowed;
   el.llmReadonly.textContent = model ? `模型 ${model}` : "";
   el.llmReadonly.title = model ? `当前对话模型：${model}（由管理员配置）` : "";
   if (!allowed) {
+    llmPicker.setValue(model);
     // 下拉、自定义输入框、提示都是「能改」才该出现的东西，一个都不能留。此前只收
     // 了下拉：开机时身份还没到，canConfigure() 按开放模式算成允许，于是去拉模型
     // 列表（非管理员必然 403），而错误分支会把自定义框显示出来——等身份到了就
     // 留下一个没人能用的输入框和一句「可在自定义里手动输入」。
+    document.querySelector("#ask-model-dialog").close();
     el.llmHint.textContent = "";
     el.llmHint.classList.remove("error");
     return;
@@ -1406,7 +1461,9 @@ async function setupModelSwitcher(status = state.status) {
   }
   modelSwitcherReady = true;
   await llmPicker.load();
-  reflectModel(model);
+  if (!document.querySelector("#ask-model-dialog").open) {
+    reflectModel(conversationModel || status?.llm_model || "");
+  }
 }
 
 /** 把下拉同步到某个模型：列表里有就选中，没有就保持自定义输入。 */
@@ -1419,28 +1476,32 @@ function reflectModel(model) {
   llmPicker.syncFromSelect();
 }
 
-async function switchModel() {
-  const model = llmPicker.value();
-  if (!model) return;
-  try {
-    await requestJson("/api/config", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ llm_model: model }),
-    });
-    // 说「保存在服务器上」而不是「对后续问答生效」：answer_question 是在生成那一
-    // 步才读 llm_model 的，正在跑的问答也可能用上新模型。
-    showToast(`已切换到 ${model}，保存在服务器上，对所有人生效`);
-    refreshStatus();
-  } catch (error) {
-    showToast(error.message, "error");
-  }
-}
-
 function bindModelSwitcher() {
+  const trigger = document.querySelector("#ask-model-open");
+  const dialog = document.querySelector("#ask-model-dialog");
+  trigger.addEventListener("click", async () => {
+    dialog.showModal();
+    el.llmModelCustom.focus();
+    el.llmModelCustom.select();
+    await llmPicker.load();
+  });
+  dialog.addEventListener("close", () => {
+    resetSelectSearch(el.llmModel);
+    trigger.focus();
+  });
+  dialog.addEventListener("keydown", event => {
+    if (event.key === "Escape" && !event.isComposing) {
+      event.preventDefault();
+      dialog.close();
+    }
+  });
   el.llmModel.addEventListener("change", () => {
     llmPicker.syncFromSelect();
-    switchModel();
+    conversationModel = llmPicker.value();
+    trigger.textContent = conversationModel;
+    trigger.title = `当前会话模型：${conversationModel}`;
+    if (dialog.open) dialog.close();
+    showToast(`当前会话后续请求使用 ${conversationModel}`);
   });
 }
 
@@ -1452,7 +1513,16 @@ export default {
     mounted = true;
 
     setupResizers();
+    setWorkspaceMode("ask");
+    document.querySelector("#mode-ask").addEventListener("click", () => setWorkspaceMode("ask"));
+    document.querySelector("#mode-aggregate").addEventListener("click", () => setWorkspaceMode("aggregate"));
     bindModelSwitcher();
+    document.addEventListener("invalid", event => {
+      if (event.target.form === el.askForm) {
+        const details = event.target.closest("details");
+        if (details) details.open = true;
+      }
+    }, true);
     loadKnowledgeBases();
 
     el.kbStatus.addEventListener("click", toggleKnowledgeBaseMenu);
@@ -1535,7 +1605,8 @@ export default {
     updateRetrievalControls();
   },
 
-  show() {
+  show(params) {
+    if (params?.mode) setWorkspaceMode(params.mode);
     renderKnowledgeBaseStatus();
     // 状态还没到就别装：此时身份也未知，初始化只会拿着空模型去拉一次列表
     // （非管理员必被 403），等 onStatus / onIdentity 到了自然会装。
@@ -1553,6 +1624,7 @@ export default {
   },
 
   onStatus(status) {
+    setupModelSwitcher(status);
     if (!status || state.retrievalInitialized) return;
     setRetrievalMethod(status.retrieval_method || "vector");
     el.retrievalTopK.value = status.retrieval_top_k ?? 20;
@@ -1563,7 +1635,5 @@ export default {
     el.fusionAlpha.value = status.fusion_alpha ?? 0.5;
     state.retrievalInitialized = true;
     updateRetrievalControls();
-    // 模型名来自 status，所以选择器要等它到了再装
-    setupModelSwitcher(status);
   },
 };

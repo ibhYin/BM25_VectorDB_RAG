@@ -1,18 +1,13 @@
-// 聚合统计页：对召回样本做语义归类计数。结果是样本估计，不是全库精确统计。
+// 问答工作区的归类统计模式；复用输入区，保留独立后台任务。
 
 import { requestJson, router } from "../core.js";
 
-let mounted = false;
 let pollingJobId = "";
-let pollTimer = null;
 
 const el = {
-  form: document.querySelector("#aggregate-form"),
-  question: document.querySelector("#aggregate-question"),
   sampleSize: document.querySelector("#aggregate-sample-size"),
   topCategories: document.querySelector("#aggregate-top-categories"),
-  method: document.querySelector("#aggregate-method"),
-  submit: document.querySelector("#aggregate-submit"),
+  submit: document.querySelector("#ask-button"),
   status: document.querySelector("#aggregate-status"),
   output: document.querySelector("#aggregate-output"),
 };
@@ -108,11 +103,14 @@ function renderResult(result) {
   el.output.replaceChildren();
   const sample = result.sample || {};
   const meta = result.meta || {};
+  const heading = document.createElement("h3");
+  heading.textContent = result.question || "归类统计结果";
+  el.output.append(heading);
 
   const note = document.createElement("div");
   note.className = "aggregate-note";
   note.textContent = [
-    `样本估计：基于 ${sample.chunks || 0} 个片段 / ${sample.docs || 0} 篇文档`,
+    `检索样本：${sample.chunks || 0} 个片段 / ${sample.docs || 0} 篇文档`,
     `模型 ${meta.model || "未知"}`,
     `耗时 ${((Number(meta.elapsed_ms) || 0) / 1000).toFixed(1)} 秒`,
   ].join(" · ");
@@ -165,16 +163,10 @@ async function poll(jobId) {
     renderError(error.message);
     return;
   }
-  pollTimer = setTimeout(() => poll(jobId), 400);
+  setTimeout(() => poll(jobId), 400);
 }
-
-async function submit(event) {
-  event.preventDefault();
-  const question = el.question.value.trim();
-  if (!question || pollingJobId) {
-    if (!question) el.question.focus();
-    return;
-  }
+export async function submitAggregate(question, params) {
+  if (!question || pollingJobId) return;
 
   el.submit.disabled = true;
   el.output.replaceChildren();
@@ -187,7 +179,7 @@ async function submit(event) {
         question,
         sample_size: Number(el.sampleSize.value),
         top_categories: Number(el.topCategories.value),
-        retrieval_method: el.method.value,
+        ...params,
       }),
     });
     pollingJobId = job.id;
@@ -199,23 +191,3 @@ async function submit(event) {
     renderError(error.message);
   }
 }
-
-export default {
-  name: "aggregate",
-
-  mount() {
-    if (mounted) return;
-    mounted = true;
-    el.form.addEventListener("submit", submit);
-  },
-
-  show() {
-    el.question.focus();
-  },
-
-  hide() {
-    // 页面切走时保留轮询：任务较长，回来时结果应当还在。
-    clearTimeout(pollTimer);
-    if (pollingJobId) pollTimer = setTimeout(() => poll(pollingJobId), 400);
-  },
-};

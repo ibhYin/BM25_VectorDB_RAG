@@ -48,6 +48,7 @@ class AnswerJobStore:
         fusion_alpha: float | None = None,
         user: UserContext | None = None,
         conversation_id: str | None = None,
+        llm_model: str | None = None,
     ) -> dict[str, Any]:
         question = question.strip()
         if not question:
@@ -57,6 +58,9 @@ class AnswerJobStore:
             raise ValueError("retrieval_method must be vector, bm25 or hybrid")
         if fusion_method is not None and fusion_method not in ("rrf", "weighted"):
             raise ValueError("fusion_method must be rrf or weighted")
+        run_settings = self._settings.model_copy(deep=True)
+        if llm_model is not None:
+            run_settings.llm_model = llm_model
 
         with self._lock:
             job_id = uuid.uuid4().hex
@@ -64,6 +68,7 @@ class AnswerJobStore:
             job: dict[str, Any] = {
                 "id": job_id,
                 "question": question,
+                "llm_model": run_settings.llm_model,
                 "status": "queued",
                 "error": "",
                 "answer": "",
@@ -94,7 +99,7 @@ class AnswerJobStore:
             self._jobs[job_id] = job
             self._prune_locked()
 
-        self._executor.submit(self._run, job_id)
+        self._executor.submit(self._run, job_id, run_settings)
         return self.get_for_user(job_id, user)
 
     def get(self, job_id: str) -> dict[str, Any]:
@@ -110,7 +115,7 @@ class AnswerJobStore:
                 raise PermissionError("Answer job is not available")
             return self._snapshot(job)
 
-    def _run(self, job_id: str) -> None:
+    def _run(self, job_id: str, settings: Settings) -> None:
         from app.conversations import get_conversation_store, owner_of
         from app.service import answer_question
 
@@ -156,7 +161,7 @@ class AnswerJobStore:
         try:
             result = answer_question(
                 question,
-                self._settings,
+                settings,
                 progress=progress,
                 top_k=job.get("top_k"),
                 similarity_threshold=job.get("similarity_threshold"),
@@ -196,6 +201,7 @@ class AnswerJobStore:
             retrieval_detail = dict(
                 (job["stages"].get("vector_search") or {}).get("detail") or {}
             )
+            retrieval_detail["llm_model"] = settings.llm_model
 
         # 写对话放在任务锁之外：append 会全量重写文件，占着锁会阻塞状态轮询。
         # 失败只记日志——异常在这里抛出会被 executor 的 future 吞掉，那一轮就静默丢了。

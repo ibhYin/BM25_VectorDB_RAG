@@ -35,16 +35,21 @@ class AggregateJobStore:
         question: str,
         params: dict[str, Any],
         user: UserContext | None = None,
+        llm_model: str | None = None,
     ) -> dict[str, Any]:
         question = question.strip()
         if not question:
             raise ValueError("Question is required")
+        run_settings = self._settings.model_copy(deep=True)
+        if llm_model is not None:
+            run_settings.llm_model = llm_model
         with self._lock:
             job_id = uuid.uuid4().hex
             now = utc_now()
             job: dict[str, Any] = {
                 "id": job_id,
                 "question": question,
+                "llm_model": run_settings.llm_model,
                 "status": "queued",
                 "stage": "queued",
                 "progress": {},
@@ -59,7 +64,7 @@ class AggregateJobStore:
             self._jobs[job_id] = job
             self._prune_locked()
 
-        self._executor.submit(self._run, job_id)
+        self._executor.submit(self._run, job_id, run_settings)
         return self.get_for_user(job_id, user)
 
     def get_for_user(
@@ -74,7 +79,7 @@ class AggregateJobStore:
                 raise PermissionError("Aggregate job is not available")
             return self._snapshot(job)
 
-    def _run(self, job_id: str) -> None:
+    def _run(self, job_id: str, settings: Settings) -> None:
         from app.aggregate import run_aggregate
 
         with self._lock:
@@ -99,7 +104,7 @@ class AggregateJobStore:
         try:
             result = run_aggregate(
                 question,
-                self._settings,
+                settings,
                 user=user,
                 progress=progress,
                 **params,
