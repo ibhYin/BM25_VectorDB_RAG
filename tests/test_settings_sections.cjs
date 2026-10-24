@@ -5,11 +5,11 @@ const vm = require('node:vm');
 const html = fs.readFileSync('app/web_static/index.html', 'utf8');
 const settingsHtml = html.slice(html.indexOf('<section class="page" id="page-settings"'), html.indexOf('<!-- ============================ 审计'));
 const collapsibleSections = [...settingsHtml.matchAll(/<details\b([^>]*)>([\s\S]*?)<\/details>/g)];
-assert.equal(collapsibleSections.length, 5, 'all four configuration sections and index status must collapse');
+assert.equal(collapsibleSections.length, 6, 'all five configuration sections and index status must collapse');
 for (const [index, [, attributes, content]] of collapsibleSections.entries()) {
   assert.doesNotMatch(attributes, /\bopen\b/, 'settings sections must default to collapsed');
   assert.match(content, /^\s*<summary>[\s\S]+?<\/summary>/, 'each section needs a native keyboard-accessible summary');
-  if (index < 4) assert.match(content, new RegExp(`</summary>\\s*<fieldset id="config-section-${['llm', 'embedding', 'mineru', 'asr'][index]}"`));
+  if (index < 5) assert.match(content, new RegExp(`</summary>\\s*<fieldset id="config-section-${['llm', 'embedding', 'rerank', 'mineru', 'asr'][index]}"`));
   else assert.match(content, /索引状态/);
 }
 class Element {
@@ -27,6 +27,8 @@ const document = { querySelector(id) { if (!nodes.has(id)) nodes.set(id, new Ele
 let saved = {
   openai_base_url: 'https://old-llm.test/v1', llm_model: 'chat-old',
   embedding_base_url: 'https://old-embed.test/v1', embedding_model: 'embed-old',
+  rerank_url: 'https://old-rerank.test/v1/rerank', rerank_model: 'rerank-old',
+  rerank_pool_size: 50, rerank_timeout: 10,
   mineru_model_version: 'vlm', audio_transcribe_provider: 'openai', audio_transcribe_base_url: '', audio_transcribe_model: '',
   aliyun_region: 'cn-shanghai', chunk_size: 800, chunk_overlap: 120, embedding_max_input_bytes: 512, embedding_batch_size: 10,
 };
@@ -78,11 +80,12 @@ const node = id => document.querySelector(`#config-${id}`);
   invalid.listener({ target: { closest(selector) { assert.equal(selector, 'details'); return collapsed; } } });
   assert.equal(collapsed.open, true, 'invalid fields must reveal their section for correction');
   await context.loadConfig();
-  assert.equal(requests.filter(request => request.url === '/api/models').length, 2, 'opening settings must load both full model catalogs');
+  assert.equal(requests.filter(request => request.url === '/api/models').length, 3, 'opening settings must load all three model catalogs');
   assert.equal(node('llm-save').disabled, true);
   assert.equal(node('embedding-reset').disabled, true);
   assert.equal(node('aliyun-region').value, 'cn-shanghai');
   assert.equal(node('chunk-size').value, 800);
+  assert.equal(node('rerank-timeout').value, 10);
   assert.equal(node('llm-model-custom').required, true);
   node('llm-model-custom').value = 'chat';
   context.renderActions('llm');

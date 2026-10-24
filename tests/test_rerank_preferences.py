@@ -52,7 +52,7 @@ def test_corrupt_preferences_are_not_overwritten(tmp_path, monkeypatch):
 
 
 def test_rerank_config_validation_and_secret_view(monkeypatch):
-    from app.config import runtime_config_view
+    from app.config import endpoint_credentials, runtime_config_view
     settings = Settings(_env_file=None, rerank_api_key="fake-private-secret")
     monkeypatch.setattr("app.config.get_settings", lambda: settings)
     view = runtime_config_view()
@@ -60,10 +60,26 @@ def test_rerank_config_validation_and_secret_view(monkeypatch):
     assert "fake-private-secret" not in json.dumps(view)
     assert WebRequestHandler._read_config_updates({"rerank_api_key": ""}) == {}
     assert WebRequestHandler._read_config_updates({"rerank_enabled": False}) == {"rerank_enabled": "false"}
+    assert endpoint_credentials("rerank") == (settings.rerank_url, "fake-private-secret")
     with pytest.raises(ValueError):
         Settings(_env_file=None, rerank_score_filter_enabled=True)
     with pytest.raises(ValueError):
         Settings(_env_file=None, rerank_url="https://user:secret@example.test/rerank")
+
+
+def test_rerank_test_endpoint_returns_diagnostic_without_candidates(monkeypatch):
+    settings = Settings(_env_file=None, rerank_api_key="fake-private-secret")
+    monkeypatch.setattr("app.web.get_settings", lambda: settings)
+    monkeypatch.setattr("rag.reranker.rerank_hits", lambda *args: ([], {
+        "status": "degraded", "reason": "fallback", "error_message": "timeout",
+        "candidates": [{"text": "must not leave the server"}],
+    }))
+    result = {}
+    handler = object.__new__(WebRequestHandler)
+    handler._require_admin = lambda: None
+    handler._send_json = result.update
+    handler._handle_rerank_test()
+    assert result["status"] == "degraded" and "candidates" not in result
 
 
 def test_preferences_api_scopes_by_authenticated_identity(monkeypatch):

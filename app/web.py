@@ -203,6 +203,8 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             self._handle_preferences(update=True)
         elif parsed.path == "/api/config":
             self._handle_update_config()
+        elif parsed.path == "/api/rerank/test":
+            self._handle_rerank_test()
         elif parsed.path == "/api/models":
             self._handle_list_models()
         elif parsed.path == "/api/index-rebuild":
@@ -382,6 +384,17 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             }
         )
 
+    def _handle_rerank_test(self) -> None:
+        from rag.reranker import rerank_hits
+        self._require_admin()
+        settings = get_settings().model_copy(deep=True, update={"rerank_enabled": True, "rerank_score_filter_enabled": False})
+        _, detail = rerank_hits("什么是知识库检索？", [
+            {"chunk_id": "sample#chunk_1", "rank": 1, "text": "知识库检索从文档中查找与问题相关的内容。"},
+            {"chunk_id": "sample#chunk_2", "rank": 2, "text": "今天的天气晴朗。"},
+        ], settings, 2)
+        detail.pop("candidates", None)
+        self._send_json(detail)
+
     def _handle_list_models(self) -> None:
         from app.config import endpoint_credentials
         from app.model_catalog import list_models
@@ -389,9 +402,9 @@ class WebRequestHandler(BaseHTTPRequestHandler):
         self._require_admin()
         payload = self._read_json()
         target = payload.get("target")
-        if target not in ("llm", "embedding"):
+        if target not in ("llm", "embedding", "rerank"):
             raise RequestError(
-                HTTPStatus.BAD_REQUEST, "target must be llm or embedding"
+                HTTPStatus.BAD_REQUEST, "target must be llm, embedding or rerank"
             )
 
         stored_base_url, stored_api_key = endpoint_credentials(target)
@@ -408,7 +421,10 @@ class WebRequestHandler(BaseHTTPRequestHandler):
             if isinstance(raw_api_key, str) and raw_api_key.strip()
             else stored_api_key
         )
-        catalog = list_models(base_url, api_key)
+        catalog = list_models(base_url.rsplit("/", 1)[0] if target == "rerank" else base_url, api_key)
+        if target == "rerank":
+            # ponytail: SiliconFlow names its rerank models explicitly; use typed catalog metadata for other providers.
+            catalog["models"] = [model for model in catalog.get("models", []) if "rerank" in model["id"].lower()]
         if catalog.get("error"):
             from app.rebuild import safe_error
             catalog["error"] = safe_error(str(catalog["error"]).replace(api_key, "[REDACTED]") if api_key else catalog["error"], get_settings())

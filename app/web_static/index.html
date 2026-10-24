@@ -181,6 +181,15 @@
                 <output id="similarity-threshold-value" for="similarity-threshold">0.35</output>
               </label>
             </div>
+            <div class="param-group" id="rerank-options" role="group" aria-label="模型重排">
+              <label class="mini-field"><input id="rerank-enabled" type="checkbox" form="ask-form" disabled /><span>启用模型重排</span></label>
+              <span id="rerank-model-label" class="section-hint">读取重排配置…</span>
+              <label class="mini-field"><span>重排候选数</span><input id="rerank-pool-size" type="number" form="ask-form" min="1" max="500" value="50" placeholder="50" required disabled /></label>
+              <label class="mini-field"><input id="rerank-score-filter-enabled" type="checkbox" form="ask-form" disabled /><span>启用分数过滤</span></label>
+              <label class="mini-field"><span>最低相关性分</span><input id="rerank-score-threshold" type="number" form="ask-form" min="0" max="1" step="0.01" placeholder="0–1" disabled /></label>
+              <span id="rerank-preferences-status" class="section-hint" role="status" aria-live="polite">读取用户偏好…</span>
+              <button id="rerank-preferences-retry" type="button" class="text-button" hidden>重试</button>
+            </div>
           </div>
 
           </details>
@@ -414,6 +423,23 @@
             </div>
           </div>
         </fieldset>
+        </details>
+
+        <details class="config-group settings-section">
+          <summary><span class="config-group-title">重排服务（硅基流动）</span></summary>
+          <fieldset id="config-section-rerank" class="config-group" aria-label="重排服务" aria-describedby="config-rerank-status">
+            <label class="config-field"><span>完整重排接口地址</span><input id="config-rerank-url" type="url" placeholder="https://api.siliconflow.cn/v1/rerank" required autocomplete="off" /></label>
+            <label class="config-field"><span>独立 API Key</span><input id="config-rerank-api-key" type="password" placeholder="留空保持已保存密钥" autocomplete="new-password" /></label>
+            <div class="config-field"><span>重排模型</span><select id="config-rerank-model" aria-label="重排模型" aria-required="true"></select><input id="config-rerank-model-custom" type="text" aria-label="搜索或填写重排模型" placeholder="BAAI/bge-reranker-v2-m3" hidden /></div>
+            <p id="config-rerank-models-hint" class="config-model-hint"></p>
+            <label class="config-field"><span>默认重排候选数</span><input id="config-rerank-pool-size" type="number" min="1" max="500" value="50" placeholder="50" required /></label>
+            <label class="config-field"><span>请求超时（秒）</span><input id="config-rerank-timeout" type="number" min="1" max="60" step="0.1" value="10" placeholder="10" required /></label>
+            <p class="config-hint">配置保存在服务器；首次默认关闭重排和分数过滤，问答设置按账号记忆。保存不调用重排模型。测试连接仅发送内置样例。</p>
+            <div class="config-section-actions"><span id="config-rerank-status" class="config-status" role="status" aria-live="polite"></span><div class="config-actions">
+              <button id="config-rerank-test" class="ghost-button" type="button">测试已保存连接</button>
+              <button id="config-rerank-reset" class="ghost-button" type="button" disabled>放弃本节修改</button><button id="config-rerank-save" class="primary-button" type="button" disabled>保存本节</button>
+            </div></div>
+          </fieldset>
         </details>
 
         <details class="config-group settings-section">

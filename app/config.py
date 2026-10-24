@@ -401,11 +401,13 @@ def runtime_config_view() -> dict[str, object]:
 
 
 def endpoint_credentials(target: str) -> tuple[str, str]:
-    """Effective (base_url, api_key) for the "llm" or "embedding" endpoint."""
+    """Effective (base_url, api_key) for an LLM, embedding or rerank endpoint."""
 
-    if target not in ("llm", "embedding"):
-        raise ValueError("target must be llm or embedding")
+    if target not in ("llm", "embedding", "rerank"):
+        raise ValueError("target must be llm, embedding or rerank")
     settings = get_settings()
+    if target == "rerank":
+        return settings.rerank_url, settings.rerank_api_key
     if target == "llm":
         return settings.openai_base_url, settings.openai_api_key
     return settings.embedding_base_url, settings.embedding_api_key

@@ -34,6 +34,13 @@ const el = {
   candidatePool: document.querySelector("#candidate-pool"),
   similarityThreshold: document.querySelector("#similarity-threshold"),
   similarityThresholdValue: document.querySelector("#similarity-threshold-value"),
+  rerankEnabled: document.querySelector("#rerank-enabled"),
+  rerankModelLabel: document.querySelector("#rerank-model-label"),
+  rerankPoolSize: document.querySelector("#rerank-pool-size"),
+  rerankScoreFilterEnabled: document.querySelector("#rerank-score-filter-enabled"),
+  rerankScoreThreshold: document.querySelector("#rerank-score-threshold"),
+  rerankPreferencesStatus: document.querySelector("#rerank-preferences-status"),
+  rerankPreferencesRetry: document.querySelector("#rerank-preferences-retry"),
   processList: document.querySelector("#process-list"),
   processToggle: document.querySelector("#process-toggle"),
   retrievalStages: document.querySelector("#retrieval-stages"),
@@ -60,6 +67,10 @@ const el = {
 let mounted = false;
 let workspaceMode = "ask";
 let conversationModel = "";
+let retrievalPreferences = null;
+let retrievalPreferencesEpoch = 0;
+let preferencesSaving = false;
+let preferencesDirty = false;
 
 // 流式答案：轮询期间不断把 job 里的增量答案重渲染进同一个 article。
 let streamingAnswerEl = null;
@@ -86,6 +97,98 @@ const convState = {
 };
 
 // --- retrieval controls ---------------------------------------------------
+
+function updateRerankControls() {
+  const configured = Boolean(retrievalPreferences?.rerank_configured);
+  const enabled = configured && el.rerankEnabled.checked;
+  const filtering = enabled && el.rerankScoreFilterEnabled.checked;
+  el.rerankEnabled.disabled = !configured;
+  el.rerankPoolSize.disabled = !enabled;
+  el.rerankScoreFilterEnabled.disabled = !enabled;
+  el.rerankScoreThreshold.disabled = !filtering;
+  el.rerankScoreThreshold.required = filtering;
+  if (retrievalPreferences) {
+    el.rerankModelLabel.textContent = configured
+      ? `模型 · ${retrievalPreferences.rerank_model || "未命名"}`
+      : "未配置重排服务，请联系管理员";
+  }
+}
+
+function applyRetrievalPreferences(preferences) {
+  retrievalPreferences = preferences;
+  el.retrievalTopK.value = preferences.top_k ?? el.retrievalTopK.value;
+  el.rerankPoolSize.value = preferences.rerank_pool_size ?? el.rerankPoolSize.value;
+  el.rerankEnabled.checked = Boolean(preferences.rerank_enabled && preferences.rerank_configured);
+  el.rerankScoreFilterEnabled.checked = Boolean(preferences.rerank_score_filter_enabled);
+  el.rerankScoreThreshold.value = preferences.rerank_score_threshold ?? "";
+  el.rerankPreferencesRetry.hidden = true;
+  el.rerankPreferencesStatus.textContent = "偏好已按当前账号恢复";
+  el.rerankPreferencesStatus.classList.remove("error");
+  updateRerankControls();
+}
+
+async function loadRetrievalPreferences() {
+  const epoch = ++retrievalPreferencesEpoch;
+  el.rerankPreferencesStatus.textContent = "读取当前账号偏好…";
+  el.rerankPreferencesStatus.classList.remove("error");
+  el.rerankPreferencesRetry.hidden = true;
+  try {
+    const preferences = await requestJson("/api/preferences");
+    if (epoch !== retrievalPreferencesEpoch) return;
+    applyRetrievalPreferences(preferences);
+  } catch (error) {
+    if (epoch !== retrievalPreferencesEpoch) return;
+    el.rerankPreferencesStatus.textContent = `偏好读取失败：${error.message}`;
+    el.rerankPreferencesStatus.classList.add("error");
+    el.rerankPreferencesRetry.hidden = false;
+  }
+}
+
+function retrievalPreferencePayload() {
+  const threshold = String(el.rerankScoreThreshold.value).trim();
+  return {
+    rerank_enabled: el.rerankEnabled.checked,
+    rerank_pool_size: Number(el.rerankPoolSize.value),
+    rerank_score_filter_enabled: el.rerankScoreFilterEnabled.checked,
+    rerank_score_threshold: threshold === "" ? null : Number(threshold),
+    top_k: Number(el.retrievalTopK.value),
+  };
+}
+
+async function saveRetrievalPreferences() {
+  if (!retrievalPreferences) return;
+  if (preferencesSaving) {
+    preferencesDirty = true;
+    return;
+  }
+  const payload = retrievalPreferencePayload();
+  if (payload.rerank_score_filter_enabled && payload.rerank_score_threshold === null) {
+    el.rerankPreferencesStatus.textContent = "启用分数过滤后请填写最低相关性分";
+    el.rerankPreferencesStatus.classList.add("error");
+    return;
+  }
+  preferencesSaving = true;
+  el.rerankPreferencesStatus.textContent = "保存当前账号偏好…";
+  el.rerankPreferencesStatus.classList.remove("error");
+  try {
+    const saved = await requestJson("/api/preferences", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    retrievalPreferences = { ...retrievalPreferences, ...saved };
+    el.rerankPreferencesStatus.textContent = "偏好已保存，下次进入自动恢复";
+  } catch (error) {
+    el.rerankPreferencesStatus.textContent = `偏好保存失败：${error.message}`;
+    el.rerankPreferencesStatus.classList.add("error");
+  } finally {
+    preferencesSaving = false;
+    if (preferencesDirty) {
+      preferencesDirty = false;
+      saveRetrievalPreferences();
+    }
+  }
+}
 
 function getRetrievalMethod() {
   const checked = document.querySelector('input[name="retrieval-method"]:checked');
@@ -129,6 +232,7 @@ function updateRetrievalControls() {
   const weighted = getFusionMethod() === "weighted";
   el.fusionKField.hidden = fusionOff || weighted;
   el.fusionAlphaField.hidden = fusionOff || !weighted;
+  updateRerankControls();
 }
 
 function setWorkspaceMode(mode) {
@@ -155,6 +259,7 @@ function setWorkspaceMode(mode) {
 }
 
 function requestParams() {
+  const preferences = retrievalPreferences ? retrievalPreferencePayload() : {};
   return {
     llm_model: llmPicker.value() || state.status?.llm_model,
     retrieval_method: getRetrievalMethod(),
@@ -164,6 +269,7 @@ function requestParams() {
     fusion_method: el.candidatePool.disabled ? undefined : getFusionMethod(),
     fusion_k: el.candidatePool.disabled || getFusionMethod() !== "rrf" ? undefined : Number(el.fusionK.value),
     fusion_alpha: el.candidatePool.disabled || getFusionMethod() !== "weighted" ? undefined : Number(el.fusionAlpha.value),
+    ...preferences,
   };
 }
 
@@ -427,6 +533,7 @@ function finalizeAnswer(job) {
   // 把该轮数据挂到答案与对应的问题消息上，点击任一可查看这轮的检索详情。
   // 这一份留在内存里，所以还带着完整候选轨迹；写进对话文件的是轻量摘要。
   const detail = job.stages?.vector_search?.detail || {};
+  const rerankStage = job.stages?.rerank || {};
   const turn = {
     key: `job:${job.id || ""}`,
     hits: job.vector_hits || [],
@@ -436,6 +543,7 @@ function finalizeAnswer(job) {
       retrieval_method: job.retrieval_method,
       fusion_method: job.fusion_method,
       llm_model: job.llm_model,
+      rerank: { ...(rerankStage.detail || {}), status: rerankStage.status || "skipped" },
     },
   };
   streamingAnswerEl._turn = turn;
@@ -468,6 +576,7 @@ function retrievalSource() {
   }
   const job = state.answerJob;
   const detail = job?.stages?.vector_search?.detail || {};
+  const rerankStage = job?.stages?.rerank || {};
   return {
     key: job?.id || "live",
     hits: state.vectorHits || [],
@@ -478,6 +587,7 @@ function retrievalSource() {
       ...detail,
       retrieval_method: job?.retrieval_method,
       fusion_method: job?.fusion_method,
+      rerank: { ...(rerankStage.detail || {}), status: rerankStage.status || "skipped" },
     },
     pinned: false,
   };
@@ -507,17 +617,78 @@ function pageLabel(hit) {
 function fusionNote(retrieval) {
   const fusion = retrieval.retrieval_trace?.fusion || {};
   const method = fusion.method || retrieval.fusion_method || "rrf";
+  const next = retrieval.rerank?.enabled ? "后续交给独立重排模型。" : "当前按融合结果直接取最终 Top-K。";
   if (method === "weighted") {
     const alpha = fusion.alpha ?? retrieval.fusion_alpha;
-    return `加权融合 α=${fmt(alpha)}：α·相似度 + (1−α)·归一化 BM25；相似度未校准，属近似排序。`;
+    return `加权融合 α=${fmt(alpha)}：α·相似度 + (1−α)·归一化 BM25；相似度未校准，属近似排序。${next}`;
   }
   const k = fusion.k ?? retrieval.fusion_k;
-  return `RRF k=${k ?? "—"}：只按两路名次组合，缺席路贡献为零，分数不能与相似度/BM25 比较。当前是融合排序，未接入独立 rerank 模型。`;
+  return `RRF k=${k ?? "—"}：只按两路名次组合，缺席路贡献为零，分数不能与相似度/BM25 比较。${next}`;
+}
+
+const RERANK_DIAGNOSTIC_FIELDS = [
+  "status", "reason", "model", "pool_size", "input_count", "output_count",
+  "filtered_count", "score_filter_enabled", "score_threshold", "elapsed_ms",
+  "http_status", "error_type", "error_code", "error_message", "request_id",
+  "provider_request_id", "created_at", "task_id",
+];
+
+function rerankDiagnosticText(detail) {
+  const safe = { stage: "rerank" };
+  for (const key of RERANK_DIAGNOSTIC_FIELDS) {
+    const value = detail?.[key];
+    if (value !== undefined && value !== null && value !== "") safe[key] = value;
+  }
+  return JSON.stringify(safe, null, 2);
+}
+
+function rerankStage(retrieval, hits, finalRankById, index) {
+  const detail = retrieval.rerank || {};
+  if (!detail.enabled) return null;
+  const status = detail.status || "pending";
+  const reason = {
+    disabled: "功能关闭",
+    no_candidates: "没有候选",
+    single_candidate: "只有一个候选",
+    fallback: "调用失败，已回退原排序",
+  }[detail.reason] || detail.reason || "";
+  const counts = detail.input_count != null || detail.output_count != null
+    ? `${detail.input_count ?? "—"} → ${detail.output_count ?? hits.length}`
+    : `${hits.length} 条`;
+  let note = `模型 ${detail.model || "—"} · ${counts}`;
+  if (detail.elapsed_ms != null) note += ` · ${detail.elapsed_ms} ms`;
+  if (status === "degraded" || status === "failed") {
+    note = `${reason || "重排调用失败"} · ${detail.error_message || detail.error_type || "未提供错误详情"} · ${note}`;
+  } else if (status === "skipped") {
+    note = `未调用重排模型 · ${reason || "已跳过"} · ${note}`;
+  } else if (status === "running") {
+    note = `正在调用重排模型 · ${note}`;
+  } else if (detail.score_filter_enabled) {
+    note += ` · 阈值 ≥ ${fmt(detail.score_threshold)} · 过滤 ${detail.filtered_count ?? 0} 条`;
+  }
+  return {
+    key: "rerank",
+    index,
+    title: status === "degraded" || status === "failed" ? "模型重排（已回退）" : "模型重排",
+    stat: status === "completed" ? `${detail.input_count ?? hits.length} → ${hits.length} 条` : counts,
+    empty: status === "completed" && detail.score_filter_enabled
+      ? "没有达到阈值的证据"
+      : status === "degraded" ? "重排失败，最终使用原融合排序" : "没有重排结果",
+    note,
+    rows: hits,
+    cards: true,
+    open: true,
+    diagnostic: status === "degraded" || status === "failed" ? { ...detail, status } : null,
+    score: (row) => row.rerank_score != null ? `相关度 ${fmt(row.rerank_score)}` : "回退排序",
+    rankOf: (row) => row.rerank_rank ?? row.rank,
+    finalRankById,
+  };
 }
 
 function buildStages(method, source, trace, hits) {
   const retrieval = source.retrieval;
   const finalRankById = new Map(hits.map((hit) => [hit.chunk_id, hit.rank]));
+  const reranking = Boolean(retrieval.rerank?.enabled);
 
   if (method === "hybrid") {
     const candidates = trace && Array.isArray(trace.candidates) ? trace.candidates : null;
@@ -539,7 +710,13 @@ function buildStages(method, source, trace, hits) {
     const historyNote = candidates
       ? ""
       : " 历史候选明细未保存；下方仅展示最终结果中可追溯的条目，不代表完整召回池。";
-    return [
+    const fusionRows = reranking && candidates ? candidates : hits;
+    const fusionScore = (row) => {
+      const method = trace?.fusion?.method || retrieval.fusion_method;
+      if (method === "weighted") return `加权 ${fmt(row.weighted_score)}`;
+      return `RRF ${fmt(row.rrf_score)}`;
+    };
+    const stages = [
       {
         key: "vector",
         index: "①",
@@ -568,42 +745,58 @@ function buildStages(method, source, trace, hits) {
         key: "fusion",
         index: "③",
         title: "融合",
-        stat: unionCount != null
-          ? `并集 ${unionCount} → 最终 ${hits.length}`
-          : `最终 ${hits.length}`,
+        stat: reranking
+          ? `并集 ${unionCount ?? "—"} → 重排 ${retrieval.rerank.input_count ?? fusionRows.length}`
+          : unionCount != null ? `并集 ${unionCount} → 最终 ${hits.length}` : `最终 ${hits.length}`,
         note: fusionNote(retrieval),
-        rows: hits,
-        cards: true,
+        rows: fusionRows,
+        cards: !reranking,
+        open: !reranking,
+        score: fusionScore,
+        rankOf: (row) => row.final_rank ?? row.rank,
         finalRankById,
       },
     ];
+    const finalRerank = rerankStage(retrieval, hits, finalRankById, "④");
+    if (finalRerank) stages.push(finalRerank);
+    return stages;
   }
 
   if (method === "bm25") {
-    return [{
+    const stage = {
       key: "single",
       index: "①",
       title: "BM25 关键词召回",
-      stat: `${hits.length} 条`,
-      note: "在持久化 FTS5 索引上检索全库。",
+      stat: reranking ? `${retrieval.rerank.input_count ?? hits.length} 条输入` : `${hits.length} 条`,
+      note: `在持久化 FTS5 索引上检索全库。${reranking ? "下方仅保留最终入选条目。" : ""}`,
       rows: hits,
-      cards: true,
+      cards: !reranking,
+      open: !reranking,
+      score: (row) => `BM25 ${fmt(row.bm25_score)}`,
+      rankOf: (row) => row.retrieval_rank ?? row.bm25_rank ?? row.rank,
       finalRankById,
-    }];
+    };
+    const finalRerank = rerankStage(retrieval, hits, finalRankById, "②");
+    return finalRerank ? [stage, finalRerank] : [stage];
   }
 
   if (method === "vector") {
     const threshold = retrieval.similarity_threshold;
-    return [{
+    const stage = {
       key: "single",
       index: "①",
       title: "向量召回",
-      stat: `${hits.length} 条`,
-      note: `按距离换算分取 Top-K${threshold != null ? `，阈值 ≥ ${fmt(threshold)}` : ""}。`,
+      stat: reranking ? `${retrieval.rerank.input_count ?? hits.length} 条输入` : `${hits.length} 条`,
+      note: `按距离换算分取 Top-K${threshold != null ? `，阈值 ≥ ${fmt(threshold)}` : ""}。${reranking ? "下方仅保留最终入选条目。" : ""}`,
       rows: hits,
-      cards: true,
+      cards: !reranking,
+      open: !reranking,
+      score: (row) => `相似度 ${fmt(row.similarity)}`,
+      rankOf: (row) => row.retrieval_rank ?? row.vector_rank ?? row.rank,
       finalRankById,
-    }];
+    };
+    const finalRerank = rerankStage(retrieval, hits, finalRankById, "②");
+    return finalRerank ? [stage, finalRerank] : [stage];
   }
 
   return [];
@@ -666,12 +859,23 @@ function createStageCard(hit, cited) {
   return card;
 }
 
+async function copyRerankDiagnostic(detail, button) {
+  const original = button.textContent;
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error("当前浏览器不支持剪贴板");
+    await navigator.clipboard.writeText(rerankDiagnosticText(detail));
+    button.textContent = "已复制";
+    setTimeout(() => { button.textContent = original; }, 1500);
+  } catch (error) {
+    showToast(`复制诊断失败：${error.message}`, "error");
+  }
+}
+
 function renderStage(stage, cited) {
   const details = document.createElement("details");
   details.className = "retrieval-stage";
   details.dataset.stage = stage.key;
-  // 两路候选默认收起，把空间留给最终结果；单路模式只有一段，直接展开。
-  details.open = stage.key !== "vector" && stage.key !== "bm25";
+  details.open = stage.open ?? (stage.key !== "vector" && stage.key !== "bm25");
 
   const head = document.createElement("summary");
   head.className = "stage-head";
@@ -708,7 +912,19 @@ function renderStage(stage, cited) {
     list.append(item);
   }
 
-  details.append(head, note, list);
+  details.append(head, note);
+  if (stage.diagnostic) {
+    const actions = document.createElement("div");
+    actions.className = "stage-diagnostic-actions";
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "text-button";
+    copy.textContent = "复制失败诊断";
+    copy.addEventListener("click", () => copyRerankDiagnostic(stage.diagnostic, copy));
+    actions.append(copy);
+    details.append(actions);
+  }
+  details.append(list);
   return details;
 }
 
@@ -739,6 +955,8 @@ function renderRetrieval() {
     trace?.candidates?.length || 0,
     source.retrieval.vector_candidates,
     source.retrieval.bm25_candidates,
+    source.retrieval.rerank?.status,
+    source.retrieval.rerank?.output_count,
     source.status,
     source.pinned ? "pinned" : "live",
   ].join("|");
@@ -820,6 +1038,7 @@ const processDefinitions = [
   ["system", "系统问答"],
   ["encode", "问题编码"],
   ["vector_search", "向量搜索"],
+  ["rerank", "模型重排"],
   ["answer", "生成答案"],
 ];
 
@@ -871,15 +1090,18 @@ function processSummary(stages) {
     stage: (stages || {})[key] || {},
   }));
   const failed = entries.find((entry) => entry.stage.status === "failed");
+  const degraded = entries.find((entry) => entry.stage.status === "degraded");
   const running = entries.find((entry) => entry.stage.status === "running");
-  const completed = entries.filter((entry) => entry.stage.status === "completed").length;
+  const terminal = entries.filter((entry) => ["completed", "degraded", "skipped"].includes(entry.stage.status)).length;
   if (failed) return `× ${failed.label} 失败`;
   if (running) return `${running.label}…`;
-  if (completed === entries.length) {
+  if (terminal === entries.length) {
     const seconds = elapsedSeconds(job);
-    return `✓ 完成${seconds !== null ? ` · 共 ${seconds} 秒` : ""}`;
+    return degraded
+      ? `! ${degraded.label}失败，已回退${seconds !== null ? ` · 共 ${seconds} 秒` : ""}`
+      : `✓ 完成${seconds !== null ? ` · 共 ${seconds} 秒` : ""}`;
   }
-  if (completed > 0) return `进行中 · 已完成 ${completed}/${entries.length}`;
+  if (terminal > 0) return `进行中 · 已完成 ${terminal}/${entries.length}`;
   return "等待执行";
 }
 
@@ -902,8 +1124,23 @@ function stageDetail(key, stage) {
   const detail = stage.detail || {};
   const duration = detail.duration_ms !== undefined ? ` · ${detail.duration_ms} ms` : "";
   if (stage.status === "pending") return "等待执行";
-  if (stage.status === "running") return "正在执行";
+  if (stage.status === "running") {
+    return key === "rerank"
+      ? `正在调用 ${detail.model || "重排模型"} · 输入 ${detail.input_count ?? "—"} 条`
+      : "正在执行";
+  }
   if (stage.status === "failed") return "执行失败";
+  if (key === "rerank") {
+    const counts = `${detail.input_count ?? "—"} → ${detail.output_count ?? "—"}`;
+    if (stage.status === "degraded") {
+      return `失败回退 · ${detail.error_message || detail.error_type || "重排服务不可用"} · ${counts}${duration}`;
+    }
+    if (stage.status === "skipped") {
+      const reasons = { disabled: "功能关闭", no_candidates: "没有候选", single_candidate: "只有一个候选" };
+      return `已跳过 · ${reasons[detail.reason] || detail.reason || "无需重排"}${duration}`;
+    }
+    return `${detail.model || "重排模型"} · ${counts}${duration}`;
+  }
   if (stage.status === "skipped") return "已跳过";
   if (key === "encode") {
     const preview = Array.isArray(detail.vector_preview)
@@ -960,6 +1197,8 @@ function updateRunStatusFromJob(job) {
       vector: "正在搜索向量数据库...",
     };
     setRunStatusLoading(true, messages[job.retrieval_method] || messages.vector);
+  } else if (stages.rerank && stages.rerank.status === "running") {
+    setRunStatusLoading(true, "正在重排检索结果...");
   } else if (stages.encode && stages.encode.status === "running") {
     setRunStatusLoading(true, "正在编码问题...");
   } else if (job.status === "queued") {
@@ -982,8 +1221,8 @@ async function waitForAnswer(jobId, epoch) {
     state.answerJob = job;
     if (job.stages?.vector_search?.status === "completed") {
       state.vectorHits = job.vector_hits || [];
-      renderRetrieval();
     }
+    renderRetrieval();
     // 答案还在生成就边生成边显示（流式）。
     if (job.status !== "completed" && job.answer) renderStreamingAnswer(job.answer);
     renderProcess();
@@ -1542,6 +1781,7 @@ export default {
     el.askForm.addEventListener("submit", ask);
     el.processToggle.addEventListener("click", toggleProcess);
     el.retrievalToggle.addEventListener("click", toggleRetrievalStages);
+    el.rerankPreferencesRetry.addEventListener("click", loadRetrievalPreferences);
     el.clearChatButton.addEventListener("click", clearChat);
     el.newConversation.addEventListener("click", newConversation);
     // 点某条问答：右侧证据栏切到那一轮的检索切片（再点同一条取消）。
@@ -1590,6 +1830,16 @@ export default {
         if (!state.answerJob) renderProcess();
       });
     }
+    for (const element of [el.retrievalTopK, el.rerankPoolSize, el.rerankScoreThreshold]) {
+      element.addEventListener("change", saveRetrievalPreferences);
+    }
+    for (const element of [el.rerankEnabled, el.rerankScoreFilterEnabled]) {
+      element.addEventListener("change", () => {
+        state.retrievalInitialized = true;
+        updateRetrievalControls();
+        saveRetrievalPreferences();
+      });
+    }
     el.retrievalMethod.addEventListener("change", () => {
       state.retrievalInitialized = true;
       updateRetrievalControls();
@@ -1608,6 +1858,8 @@ export default {
   show(params) {
     if (params?.mode) setWorkspaceMode(params.mode);
     renderKnowledgeBaseStatus();
+    // 管理员可能在设置页刚改过重排服务；重新进入工作区时刷新账号偏好与配置状态。
+    if (retrievalPreferences) loadRetrievalPreferences();
     // 状态还没到就别装：此时身份也未知，初始化只会拿着空模型去拉一次列表
     // （非管理员必被 403），等 onStatus / onIdentity 到了自然会装。
     if (state.status) setupModelSwitcher(state.status);
@@ -1621,13 +1873,18 @@ export default {
   onIdentity() {
     // 身份到了才谈得上判断该不该显示模型选择器（开机时它按开放模式先显示了出来）。
     setupModelSwitcher();
+    retrievalPreferences = null;
+    el.rerankEnabled.checked = false;
+    el.rerankScoreFilterEnabled.checked = false;
+    updateRerankControls();
+    loadRetrievalPreferences();
   },
 
   onStatus(status) {
     setupModelSwitcher(status);
     if (!status || state.retrievalInitialized) return;
     setRetrievalMethod(status.retrieval_method || "vector");
-    el.retrievalTopK.value = status.retrieval_top_k ?? 20;
+    el.retrievalTopK.value = retrievalPreferences?.top_k ?? status.retrieval_top_k ?? 20;
     el.candidatePool.value = status.candidate_pool_size ?? 100;
     el.similarityThreshold.value = status.similarity_threshold ?? 0.35;
     setFusionMethod(status.fusion_method || "rrf");

@@ -624,6 +624,10 @@ svg {
   text-align: right;
 }
 
+.section-hint.error {
+  color: var(--danger);
+}
+
 .text-button {
   font-size: 12px;
   color: var(--accent);
@@ -3349,6 +3353,12 @@ svg {
   font-size: 11px;
   line-height: 1.5;
   color: var(--ink-soft);
+}
+
+.stage-diagnostic-actions {
+  padding: 0 10px 8px;
+  display: flex;
+  justify-content: flex-end;
 }
 
 .stage-list {

@@ -1,10 +1,17 @@
-// 设置页：模型接入配置（LLM / Embedding / MinerU）与索引状态。
+// 设置页：模型接入配置（LLM / Embedding / Rerank / MinerU / ASR）与索引状态。
 
 import { formatBytes, on, refreshStatus, requestJson, showToast, state } from "../core.js";
 import { createModelPicker } from "../model-picker.js";
 import { resetSelectSearch } from "../select-search.js";
 
 const el = {
+  rerankUrl: document.querySelector("#config-rerank-url"),
+  rerankApiKey: document.querySelector("#config-rerank-api-key"),
+  rerankModel: document.querySelector("#config-rerank-model"),
+  rerankCustom: document.querySelector("#config-rerank-model-custom"),
+  rerankHint: document.querySelector("#config-rerank-models-hint"),
+  rerankPool: document.querySelector("#config-rerank-pool-size"),
+  rerankTimeout: document.querySelector("#config-rerank-timeout"),
   chunkSize: document.querySelector("#config-chunk-size"),
   chunkOverlap: document.querySelector("#config-chunk-overlap"),
   embeddingMaxInputBytes: document.querySelector("#config-embedding-max-input-bytes"),
@@ -68,6 +75,8 @@ const configState = { loaded: null, clearMineruToken: false };
 // 模型选择控件（下拉 + 自定义输入）交给共享模块。字段与提交仍归本页管，
 // picker 只负责展示——它已经被问答页复用，所以不能耦合本页的 configState。
 const pickers = {
+  rerank: createModelPicker({ select: el.rerankModel, custom: el.rerankCustom,
+    hint: el.rerankHint, target: "rerank", requireBaseUrl: true }),
   llm: createModelPicker({
     select: el.llmModel,
     custom: el.llmModelCustom,
@@ -216,10 +225,19 @@ function collectConfigChanges() {
     const value = Number(fields[key].value);
     if (value !== Number(loaded[key])) changes[key] = value;
   }
+  if (el.rerankUrl.value.trim() !== (loaded.rerank_url || "")) changes.rerank_url = el.rerankUrl.value.trim();
+  if (el.rerankApiKey.value.trim()) changes.rerank_api_key = el.rerankApiKey.value.trim();
+  if (pickers.rerank.value() !== (loaded.rerank_model || "")) changes.rerank_model = pickers.rerank.value();
+  for (const key of ["rerank_pool_size", "rerank_timeout"]) {
+    const value = Number(fields[key].value);
+    if (value !== Number(loaded[key])) changes[key] = value;
+  }
   return changes;
 }
 
 const fields = {
+  rerank_url: el.rerankUrl, rerank_api_key: el.rerankApiKey,
+  rerank_pool_size: el.rerankPool, rerank_timeout: el.rerankTimeout,
   openai_base_url: el.openaiBaseUrl, openai_api_key: el.openaiApiKey,
   embedding_base_url: el.embeddingBaseUrl, embedding_api_key: el.embeddingApiKey,
   mineru_api_token: el.mineruToken, mineru_model_version: el.mineruVersion,
@@ -232,12 +250,13 @@ const fields = {
   embedding_max_input_bytes: el.embeddingMaxInputBytes, embedding_batch_size: el.embeddingBatchSize,
 };
 const sections = {
+  rerank: ["rerank_url", "rerank_api_key", "rerank_model", "rerank_pool_size", "rerank_timeout"],
   llm: ["openai_base_url", "openai_api_key", "llm_model"],
   embedding: ["embedding_base_url", "embedding_api_key", "embedding_model", "chunk_size", "chunk_overlap", "embedding_max_input_bytes", "embedding_batch_size"],
   mineru: ["mineru_api_token", "clear_mineru_api_token", "mineru_model_version"],
   asr: Object.keys(fields).filter(key => key.startsWith("audio_") || key.startsWith("aliyun_")),
 };
-const secretKeys = new Set(["openai_api_key", "embedding_api_key", "mineru_api_token", "audio_transcribe_api_key", "aliyun_access_key_id", "aliyun_access_key_secret", "aliyun_appkey"]);
+const secretKeys = new Set(["rerank_api_key", "openai_api_key", "embedding_api_key", "mineru_api_token", "audio_transcribe_api_key", "aliyun_access_key_id", "aliyun_access_key_secret", "aliyun_appkey"]);
 const actions = Object.fromEntries(Object.keys(sections).map(name => [name, {
   save: document.querySelector(`#config-${name}-save`),
   reset: document.querySelector(`#config-${name}-reset`),
@@ -284,7 +303,7 @@ function applySection(name) {
       field.placeholder = config[`${key}_set`] ? `已配置 ${config[`${key}_hint`]} · 留空保持不变` : "留空保持不变";
     } else field.value = config[key] ?? field.defaultValue ?? "";
   }
-  if (name === "llm" || name === "embedding") pickers[name].setValue(config[`${name === "llm" ? "llm" : "embedding"}_model`] || "");
+  if (pickers[name]) pickers[name].setValue(config[`${name}_model`] || "");
   for (const select of actions[name].group.querySelectorAll("select")) resetSelectSearch(select);
   if (name === "mineru") configState.clearMineruToken = false;
   toggleAsrFields();
@@ -321,7 +340,7 @@ async function save(name) {
   const changes = changesFor(name);
   if (!Object.keys(changes).length) return;
   const names = name === "all" ? Object.keys(sections) : [name];
-  if (names.some(section => ["llm", "embedding"].includes(section) && !pickers[section].value())) {
+  if (names.some(section => ["llm", "embedding", "rerank"].includes(section) && !pickers[section].value())) {
     message(name, "请选择或填写本节的模型名", true); return;
   }
   const dirtyBefore = Object.fromEntries(Object.keys(sections).map(key => [key, Boolean(Object.keys(changesFor(key)).length)]));
@@ -365,7 +384,7 @@ async function save(name) {
 async function refreshModels() {
   if (refreshing) return;
   const feedback = document.querySelector("#config-models-feedback");
-  if ([el.openaiApiKey, el.embeddingApiKey].some(field => /[•]|\*\*\*|已配置/.test(field.value))) {
+  if ([el.openaiApiKey, el.embeddingApiKey, el.rerankApiKey].some(field => /[•]|\*\*\*|已配置/.test(field.value))) {
     feedback.textContent = "刷新失败：请使用真实密钥或留空使用已保存密钥，不能提交脱敏占位符"; return;
   }
   refreshing = true;
@@ -373,11 +392,11 @@ async function refreshModels() {
   el.refreshModels.textContent = "刷新中…";
   feedback.textContent = "刷新中…使用当前输入的地址与密钥；密钥留空使用已保存密钥，不保存配置。";
   try {
-    const results = await Promise.all(["llm", "embedding"].map(target => pickers[target].load({
-      baseUrl: target === "llm" ? el.openaiBaseUrl.value : (el.embeddingBaseUrl.value.trim() || el.openaiBaseUrl.value),
-      apiKey: (target === "llm" ? el.openaiApiKey : el.embeddingApiKey).value,
+    const results = await Promise.all(["llm", "embedding", "rerank"].map(target => pickers[target].load({
+      baseUrl: target === "rerank" ? el.rerankUrl.value : target === "llm" ? el.openaiBaseUrl.value : (el.embeddingBaseUrl.value.trim() || el.openaiBaseUrl.value),
+      apiKey: (target === "rerank" ? el.rerankApiKey : target === "llm" ? el.openaiApiKey : el.embeddingApiKey).value,
     })));
-    feedback.textContent = results.map((result, index) => `${index ? "Embedding" : "LLM"}：${result.error ? `刷新失败 ${result.error}` : `${result.count} 个模型`}`).join("；");
+    feedback.textContent = results.map((result, index) => `${["LLM", "Embedding", "重排"][index]}：${result.error ? `刷新失败 ${result.error}` : `${result.count} 个模型`}`).join("；");
     feedback.classList.toggle("error", results.some(result => result.error));
   } catch (error) { feedback.textContent = `刷新失败：${error.message}；可重试`; }
   finally {
@@ -404,6 +423,17 @@ export default {
     }
     el.reset.addEventListener("click", () => discard("all"));
     el.refreshModels.addEventListener("click", refreshModels);
+    document.querySelector("#config-rerank-test").addEventListener("click", async event => {
+      const button = event.currentTarget;
+      if (Object.keys(changesFor("rerank")).length) { message("rerank", "请先保存或放弃本节修改，再测试已保存连接", true); return; }
+      button.disabled = true;
+      message("rerank", "正在发送内置样例测试…");
+      try {
+        const result = await requestJson("/api/rerank/test", { method: "POST" });
+        message("rerank", `${result.status === "completed" ? "连接成功" : "连接失败"} · ${result.elapsed_ms} ms${result.error_message ? ` · ${result.error_message}` : ""}${result.provider_request_id ? ` · 请求 ${result.provider_request_id}` : ""}`, result.status !== "completed");
+      } catch (error) { message("rerank", `测试失败：${error.message}`, true); }
+      finally { button.disabled = false; }
+    });
     el.mineruClear.addEventListener("click", () => {
       configState.clearMineruToken = true;
       el.mineruToken.value = "";
@@ -414,7 +444,7 @@ export default {
       if (el.mineruToken.value.trim()) configState.clearMineruToken = false;
       renderActions("mineru");
     });
-    for (const target of ["llm", "embedding"]) {
+    for (const target of ["llm", "embedding", "rerank"]) {
       pickers[target].select.addEventListener("change", () => {
         pickers[target].syncFromSelect();
         renderEmbeddingStatuses(); renderActions(target);
