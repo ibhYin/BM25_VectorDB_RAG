@@ -73,6 +73,14 @@ ollama serve
 
 若桌面 Ollama 已在运行，不重复执行 `serve`。首次下载需要网络、磁盘及模型运行内存；这组模型用于短示例，不承诺硬件性能或回答质量。`ollama` 是本地兼容接口的 SDK 占位值，不是真实 API 密钥。也可以在 `.env` 配置已有的 OpenAI 兼容 Chat/Embedding 服务，二者可独立设置端点、模型和密钥；云端调用可能计费。
 
+### 嵌入模型与索引绑定
+
+项目不绑定固定的嵌入模型：任何 OpenAI 兼容的 `POST /embeddings` 都可以通过 `EMBEDDING_MODEL`、`EMBEDDING_BASE_URL`、`EMBEDDING_API_KEY` 接入；`Base URL` 填到 `/v1` 一级即可，SDK 会自行追加 `/embeddings`。设置页保存的值写入被忽略的 `config/runtime_config.json`，优先于 `.env` 中同名字段。
+
+`.env.example` 的 Ollama `bge-m3`（1024 维）只是首次跑通的用例；当前维护者的索引由火山方舟 Coding Plan 的 `doubao-embedding-vision-251215`（OpenAI 兼容接口，实测 2048 维）建立。两者维度不同，向量不能混用。
+
+索引目录中的 `index_manifest.json` 记录建立时的模型名，打开或追加前逐次校验。模型不一致时向量路直接拒绝，混合检索降级为 BM25 并持续显示降级原因；更换模型只能新建索引目录重新入库或重建，改一个配置字段不会迁移旧向量。
+
 回到项目终端，首次入库并整理到受管理目录，再启动服务：
 
 ```sh
