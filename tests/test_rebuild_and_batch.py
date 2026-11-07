@@ -1,9 +1,12 @@
 """Temporary Chroma + deterministic local embeddings; never touch real indexes/APIs."""
 import json
+import time
 from pathlib import Path
 
+import httpx
 import pytest
 from langchain_core.documents import Document
+from langchain_openai import OpenAIEmbeddings
 
 from app import config, rebuild, service
 from app.config import Settings
@@ -12,6 +15,7 @@ from app.web import RequestError, WebRequestHandler
 from rag import markdown_cache, vector_store
 from rag.index_manifest import read_index_embedding_model, write_index_manifest
 from rag.splitter import split_documents
+from rag.vector_store import get_embeddings
 
 
 class Embeddings:
@@ -113,6 +117,50 @@ def test_failure_retains_old_index_and_redacts_credentials(corpus, tmp_path, mon
     # Failed task released the mutation/rebuild gate.
     with service.knowledge_base_lock.mutation():
         pass
+
+
+@pytest.mark.parametrize("recovers", [True, False])
+def test_rebuild_handles_embedding_rate_limit_before_switching_index(corpus, tmp_path, monkeypatch, recovers):
+    settings, old = corpus
+    old_dir = settings.chroma_persist_dir
+    old_ids = old.get()["ids"]
+    plan = rebuild.prepare(settings)
+    clock = {"now": 0.0}
+    calls = []
+
+    def sleep(seconds):
+        clock["now"] += seconds
+
+    def handler(request):
+        calls.append(request)
+        if not recovers or clock["now"] < 60:
+            return httpx.Response(429, json={"error": {
+                "code": "AccountRateLimitExceeded", "message": "Requests are too frequent."}})
+        texts = json.loads(request.content)["input"]
+        return httpx.Response(200, json={"data": [
+            {"index": i, "embedding": [float(len(text)), 1.0, 2.0]} for i, text in enumerate(texts)]})
+
+    monkeypatch.setattr(time, "sleep", sleep)
+    monkeypatch.setattr(vector_store, "OpenAIEmbeddings", lambda **kwargs: OpenAIEmbeddings(
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        http_async_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)), **kwargs))
+    monkeypatch.setattr(vector_store, "get_embeddings", get_embeddings)
+    jobs = UploadJobStore(settings, tmp_path / "jobs.json")
+    job = jobs.create_rebuild(plan["plan_id"])
+    jobs._executor.shutdown(wait=True)
+    result = jobs.snapshot_job(job["id"])
+    if recovers:
+        assert result["status"] == "completed", result
+        assert settings.chroma_persist_dir != old_dir
+        assert read_index_embedding_model(settings.chroma_persist_dir) == "new-model"
+        assert service.index_management_store(settings).get()["ids"] == old_ids
+    else:
+        assert result["status"] == "failed"
+        assert len(calls) == 7
+        assert "AccountRateLimitExceeded" in result["error"]
+        assert settings.chroma_persist_dir == old_dir
+        assert old.get()["ids"] == old_ids
+        assert result["cleanup_status"] == "cleaned"
 
 
 def test_missing_original_uses_chunks_or_complete_parse_but_never_concatenates(corpus):

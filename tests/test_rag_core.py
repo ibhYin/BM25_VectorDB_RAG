@@ -555,3 +555,72 @@ def test_system_question_short_circuits_retrieval_and_answer(monkeypatch) -> Non
     assert ("system", "completed") in stages
     for stage in ("condense", "encode", "vector_search", "answer"):
         assert (stage, "skipped") in stages
+
+
+def test_split_documents_drops_repeated_page_headers() -> None:
+    """MinerU 把每页页眉标成一级标题；不能让它变成一条独立切片占满 top-k。"""
+
+    header = "# 甲股份有限公司 2021 年年度报告全文"
+    body = "。公司本期实现营业收入 123 亿元，同比增长 8%。" * 6
+    text = "\n\n".join([header, body, header, body + "第二页正文。", header, body + "第三页正文。"])
+
+    chunks = split_documents(
+        [Document(page_content=text, metadata={"source": "data/raw/a.pdf"})],
+        chunk_size=400,
+        chunk_overlap=0,
+    )
+
+    assert chunks
+    assert all(len(c.page_content.strip()) >= 40 for c in chunks)
+    bodies = [c.page_content.strip() for c in chunks]
+    assert len(bodies) == len(set(bodies))
+
+
+def test_split_documents_keeps_short_single_chunk_document() -> None:
+    """单切片的小文档（示例、测试夹具）不能被当成页眉删掉。"""
+
+    chunks = split_documents(
+        [Document(page_content="机密内容", metadata={"source": "data/raw/secret.md"})],
+        chunk_size=100,
+        chunk_overlap=0,
+    )
+
+    assert [c.page_content for c in chunks] == ["机密内容"]
+
+
+def test_cached_query_embeddings_reuses_vectors_and_survives_restart(tmp_path: Path) -> None:
+    """评估重跑必须拿到同一批查询向量，否则指标会被嵌入服务的抖动淹没。"""
+
+    from rag.vector_store import CachedQueryEmbeddings
+
+    calls = []
+
+    class FakeInner:
+        model = "fake-embed"
+
+        def embed_query(self, text):
+            calls.append(text)
+            return [float(len(text)), 0.5, 0.25]
+
+        def __getattr__(self, name):
+            raise AssertionError(f"不该访问 {name}")
+
+    cache_file = tmp_path / "query-cache.json"
+    first = CachedQueryEmbeddings(FakeInner(), cache_file)
+
+    assert first.embed_query("你好") == [2.0, 0.5, 0.25]
+    assert first.embed_query("你好") == [2.0, 0.5, 0.25]
+    assert calls == ["你好"], "同一段文本第二次必须走缓存"
+
+    # 换一个进程/实例仍应命中磁盘缓存，且不碰内层模型。
+    second = CachedQueryEmbeddings(FakeInner(), cache_file)
+    assert second.embed_query("你好") == [2.0, 0.5, 0.25]
+    assert calls == ["你好"], "重启后也必须命中缓存"
+
+    # 换模型要重新取向量：同一文本在不同模型下不可复用。
+    class OtherModel(FakeInner):
+        model = "another-embed"
+
+    third = CachedQueryEmbeddings(OtherModel(), cache_file)
+    third.embed_query("你好")
+    assert calls == ["你好", "你好"]

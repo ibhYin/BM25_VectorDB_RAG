@@ -1,13 +1,20 @@
 import hashlib
 import atexit
 import fcntl
+import json
+import math
+import os
+import time
 from contextlib import contextmanager
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from threading import Lock
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
+from openai import APIConnectionError, APIStatusError
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential_jitter
 
 from rag.index_manifest import ensure_index_embedding_model, read_index_embedding_model
 
@@ -161,6 +168,42 @@ def build_vector_id(document: Document) -> str:
     return "document_" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24]
 
 
+def _embedding_retryable(exc: BaseException) -> bool:
+    if isinstance(exc, APIConnectionError):
+        return True
+    if not isinstance(exc, APIStatusError):
+        return False
+    if exc.status_code == 429:
+        return exc.code not in {"QuotaExceeded", "AccountQuotaExceeded", "SetLimitExceeded", "insufficient_quota"}
+    return exc.status_code in {408, 409} or exc.status_code >= 500
+
+
+def _embedding_retry_wait(state) -> float:
+    exc = state.outcome.exception()
+    response = getattr(exc, "response", None)
+    headers = response.headers if response is not None else {}
+    for name, scale in (("retry-after-ms", 1000), ("retry-after", 1)):
+        value = headers.get(name)
+        if value is None:
+            continue
+        try:
+            seconds = float(value) / scale
+        except ValueError:
+            if name != "retry-after":
+                continue
+            try:
+                seconds = parsedate_to_datetime(value).timestamp() - time.time()
+            except (ValueError, TypeError, OverflowError):
+                continue
+        if math.isfinite(seconds) and seconds > 0:
+            # ponytail: a background job waits at most five minutes per retry;
+            # longer server cooldowns surface the original error for a later run.
+            if seconds > 300:
+                raise exc
+            return seconds
+    return wait_exponential_jitter(initial=5, jitter=1, max=60)(state)
+
+
 def get_embeddings(
     model: str,
     embedding_api_key: str = "",
@@ -170,12 +213,19 @@ def get_embeddings(
     kwargs = {"api_key": embedding_api_key} if embedding_api_key else {}
     kwargs["chunk_size"] = batch_size
     kwargs["request_timeout"] = 60
-    kwargs["max_retries"] = 2
+    # Retry at the API batch boundary: completed batches must not be sent again.
+    # Disable SDK retries so the two retry policies cannot multiply attempts.
+    kwargs["max_retries"] = 0
     if embedding_base_url:
         # ponytail: custom gateways enforce their own context limits.
         kwargs["base_url"] = embedding_base_url
         kwargs["check_embedding_ctx_length"] = False
-    return OpenAIEmbeddings(model=model, **kwargs)
+    embeddings = OpenAIEmbeddings(model=model, **kwargs)
+    retry_request = retry(retry=retry_if_exception(_embedding_retryable),
+                          wait=_embedding_retry_wait, stop=stop_after_attempt(7), reraise=True)
+    embeddings.client.create = retry_request(embeddings.client.create)
+    embeddings.async_client.create = retry_request(embeddings.async_client.create)
+    return embeddings
 
 
 def get_vector_store(
@@ -413,3 +463,73 @@ def set_document_access_group(
             metadatas=updated[start : start + batch_size],
         )
     return len(ids)
+
+
+class CachedQueryEmbeddings:
+    """评估专用：把查询向量按文本缓存到磁盘，让同一批问题重跑时结果可复现。
+
+    为什么需要：所测的嵌入服务（火山方舟 doubao-embedding-vision）对同一段文本
+    连续调用返回的向量并不完全一致——同一次请求里两条相同文本的余弦相似度约
+    0.9996。查询侧因此每次都略有抖动，top-k 边界上的切片会被换掉。实测同一份
+    标注重跑三次，混合检索的 Hit@5 在 0.500 / 0.528 / 0.556 之间跳，波动与要测
+    的效应同量级，结论会被噪声淹没。
+
+    只在评估路径上接入（`RETRIEVAL_QUERY_CACHE` 指向文件时才启用），线上问答保持
+    每次真实调用：缓存住用户问题会让无关的新问题也不得不先算一次哈希，而那里本来
+    就没有可比性需求。
+
+    缓存键是 `模型名 + 问题原文` 的哈希：换模型或改题面都必须重新取向量。
+    """
+
+    def __init__(self, inner, path: Path):
+        self._inner = inner
+        self._path = Path(path)
+        self._lock = Lock()
+        self._data: dict[str, list[float]] = {}
+        try:
+            payload = json.loads(self._path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                self._data = {str(k): list(v) for k, v in payload.items() if isinstance(v, list)}
+        except (OSError, json.JSONDecodeError, ValueError):
+            self._data = {}
+
+    def _key(self, text: str) -> str:
+        model = str(getattr(self._inner, "model", "") or "")
+        return hashlib.sha256(f"{model}\x1f{text}".encode("utf-8")).hexdigest()
+
+    def __getattr__(self, name):
+        # 未覆盖的属性（batch_size、client 等）一律透传给真实实例。
+        return getattr(self._inner, name)
+
+    def embed_query(self, text: str) -> list[float]:
+        key = self._key(text)
+        with self._lock:
+            cached = self._data.get(key)
+        if cached is not None:
+            return list(cached)
+        vector = self._inner.embed_query(text)
+        with self._lock:
+            self._data[key] = [float(v) for v in vector]
+            self._flush()
+        return vector
+
+    def _flush(self) -> None:
+        temporary = self._path.with_name(self._path.name + ".tmp")
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            temporary.write_text(json.dumps(self._data), encoding="utf-8")
+            os.replace(temporary, self._path)
+        except OSError:
+            pass  # 缓存写不进去不该让检索失败，最坏情况是下次再取一遍向量。
+
+
+def with_query_cache(inner):
+    """按需给查询向量套一层磁盘缓存。
+
+    `RETRIEVAL_QUERY_CACHE` 指向缓存文件时才启用；未设置时原样返回，线上问答不受
+    影响。做成装饰器而不是工厂，是为了让调用方仍然自己构造内层实例——测试会把
+    `app.service.get_embeddings` 换掉，工厂内部直接取模块函数会绕过那个替换点。
+    """
+
+    path = os.environ.get("RETRIEVAL_QUERY_CACHE", "").strip()
+    return CachedQueryEmbeddings(inner, Path(path)) if path else inner

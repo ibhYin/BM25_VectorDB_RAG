@@ -13,6 +13,11 @@ from app.access import AccessPolicy, document_access_metadata
 # （日期、正文句子、公式都会被标成标题），按它切只会把句子从中间劈开。
 HEADING_PATTERN = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*$", re.MULTILINE)
 
+# 去掉标题后正文少于这个字符数的切片视为页眉/模板行；只对「已被切成多片」的
+# 文档生效。与 docs/prune_boilerplate.py 的判据保持一致。
+MIN_BODY_CHARS = 10
+PRUNABLE_CHUNKS = 3
+
 PLAIN_SEPARATORS = [
     "\n## ",
     "\n### ",
@@ -87,9 +92,10 @@ def split_documents(
             size = min(size, max_input_bytes // width)
         overlap = chunk_overlap * size // chunk_size
         if document.metadata.get("structured_by"):
-            chunks.extend(_split_by_headers(document, size, overlap))
+            document_chunks = _split_by_headers(document, size, overlap)
         else:
-            chunks.extend(_split_by_size([document], size, overlap))
+            document_chunks = _split_by_size([document], size, overlap)
+        chunks.extend(_drop_boilerplate(document_chunks))
 
     chunk_counts_by_doc_id: dict[str, int] = {}
     for chunk in chunks:
@@ -113,6 +119,50 @@ def split_documents(
         )
 
     return chunks
+
+
+def _drop_boilerplate(chunks: list[Document]) -> list[Document]:
+    """丢掉没有检索价值的切片：重复页眉、只有标题没有正文的模板行。
+
+    MinerU 会把每页页眉当成一级标题，于是同一句「XX公司 2021 年年度报告全文」
+    在每页各切出一片。这些片只有几十个字符、彼此几乎完全一样，既答不了问题，
+    又会因为「短文本向量彼此很近」把真正的正文挤出 top-k——实测一份年报索引里
+    17.7% 是这类切片，向量路 top-5 曾被它们整屏占满。
+
+    判据不是「短」，而是「去掉标题后没有实质正文」（`## 目 录`、`## 释义`、
+    `## √适用 □不适用`），再加同文档内完全重复。按长度一刀切会把
+    「## 1 引言 / 引言正文」这种短但有用的章节一起删掉。
+
+    只在文档本身被切成多片时才裁剪：单切片的小文档（示例、测试夹具）保留原样。
+    """
+
+    if len(chunks) < PRUNABLE_CHUNKS:
+        return chunks
+
+    kept: list[Document] = []
+    seen: set[str] = set()
+    for chunk in chunks:
+        if is_boilerplate(chunk.page_content):
+            continue
+        body = _normalise_body(chunk.page_content)
+        if body in seen:
+            continue
+        seen.add(body)
+        kept.append(chunk)
+    return kept or chunks
+
+
+def is_boilerplate(text: str) -> bool:
+    """去掉 Markdown 标题行与空白后，剩下不到 `MIN_BODY_CHARS` 个字符就算废片。"""
+
+    body = "\n".join(
+        line for line in (text or "").splitlines() if not HEADING_PATTERN.match(line.strip())
+    )
+    return len(_normalise_body(body)) < MIN_BODY_CHARS
+
+
+def _normalise_body(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()
 
 
 def _split_by_size(

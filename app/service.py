@@ -40,6 +40,7 @@ from rag.vector_store import (
     get_vector_store,
     replace_documents,
     set_document_access_group,
+    with_query_cache,
 )
 
 
@@ -1183,10 +1184,12 @@ def _retrieve_locked(
             encode_detail = None
             query_ms = None
             try:
-                embeddings = get_embeddings(
-                    settings.embedding_model,
-                    settings.embedding_api_key,
-                    settings.embedding_base_url,
+                embeddings = with_query_cache(
+                    get_embeddings(
+                        settings.embedding_model,
+                        settings.embedding_api_key,
+                        settings.embedding_base_url,
+                    )
                 )
                 vector_store = get_vector_store(
                     settings.chroma_persist_dir,
@@ -1362,10 +1365,12 @@ def _retrieve_locked(
             ],
         }
     else:
-        embeddings = get_embeddings(
-            settings.embedding_model,
-            settings.embedding_api_key,
-            settings.embedding_base_url,
+        embeddings = with_query_cache(
+            get_embeddings(
+                settings.embedding_model,
+                settings.embedding_api_key,
+                settings.embedding_base_url,
+            )
         )
         vector_store = get_vector_store(
             settings.chroma_persist_dir,
