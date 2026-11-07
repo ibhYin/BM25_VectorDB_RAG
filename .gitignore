@@ -42,3 +42,7 @@ reports/
 *.pem
 
 config/user_preferences.json
+
+# 评估用查询向量缓存与 36 题评估集（只在生成它们的索引下有含义）
+data/eval-query-cache.json
+data/retrieval_eval_36.jsonl
